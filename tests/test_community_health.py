@@ -70,9 +70,15 @@ class CommunityHealthTests(unittest.TestCase):
         return (ROOT / relative).read_text(encoding="utf-8")
 
     def assert_ci_security_contract(self, text: str) -> None:
+        self.assertNotRegex(text, r'''(?i)["'][a-z_][a-z0-9_-]*["']\s*:''')
         self.assertRegex(text, r"(?m)^name: CI$")
         jobs_text = text.split("\njobs:\n", 1)[1]
         job_matches = list(re.finditer(r"(?m)^  ([a-z0-9_-]+):$", jobs_text))
+        canonical_job_names = [match.group(1) for match in job_matches]
+        self.assertEqual(
+            re.findall(r"(?m)^  ([a-z0-9_-]+)\s*:", jobs_text),
+            canonical_job_names,
+        )
         jobs = {
             match.group(1): jobs_text[
                 match.start() : (
@@ -96,7 +102,7 @@ class CommunityHealthTests(unittest.TestCase):
             len(re.findall(r"(?i)(?<![a-z0-9_-])uses\s*:", text)),
             len(actions),
         )
-        self.assertNotRegex(text, r"\bsecrets(?:\.|\[)")
+        self.assertNotRegex(text, r"(?i)\bsecrets\b")
         self.assertNotRegex(
             text,
             r"(?i)(?<![a-z0-9_-])cache(?:-[a-z0-9_-]+)?\s*:",
@@ -258,8 +264,18 @@ class CommunityHealthTests(unittest.TestCase):
                 "    steps:\n      - { name: Unapproved, uses: evil/example@main }\n",
                 1,
             ),
+            "quoted flow action": text.replace(
+                "    steps:\n",
+                '    steps:\n      - { name: Unapproved, "uses": evil/example@main }\n',
+                1,
+            ),
             "secret context": text.replace(
                 "name: CI", "name: CI\n# ${{ secrets.CARGO_TOKEN }}", 1
+            ),
+            "spaced secret context": text.replace(
+                "        env:\n",
+                '        env:\n          TOKEN: ${{ secrets ["CARGO_TOKEN"] }}\n',
+                1,
             ),
             "cache config": text.replace(
                 "          toolchain: stable",
@@ -271,10 +287,20 @@ class CommunityHealthTests(unittest.TestCase):
                 '        with: { python-version: "3.14", cache: pip }',
                 1,
             ),
+            "quoted flow cache config": text.replace(
+                "        with:\n          python-version: \"3.14\"",
+                '        with: { python-version: "3.14", "cache": pip }',
+                1,
+            ),
             "write permission": text.replace("contents: read", "contents: write", 1),
             "flow write permission": text.replace(
                 "    permissions:\n      contents: read\n    steps:",
                 "    permissions: { contents: write }\n    steps:",
+                1,
+            ),
+            "quoted flow write permission": text.replace(
+                "\n  dependency-review:\n",
+                '\n    "permissions": { "contents": "write" }\n\n  dependency-review:\n',
                 1,
             ),
             "extra read permission": text.replace(
@@ -284,6 +310,16 @@ class CommunityHealthTests(unittest.TestCase):
             ),
             "workflow rename": text.replace("name: CI", "name: Build", 1),
             "required rename": text.replace("    name: required", "    name: optional", 1),
+            "quoted flow job": text.replace(
+                "\n  quality:\n",
+                '\n  "shadow": { name: Shadow, runs-on: ubuntu-latest }\n\n  quality:\n',
+                1,
+            ),
+            "unquoted flow job": text.replace(
+                "\n  quality:\n",
+                "\n  shadow: { name: Shadow, runs-on: ubuntu-latest }\n\n  quality:\n",
+                1,
+            ),
         }
         for name, mutation in mutations.items():
             with self.subTest(mutation=name):
