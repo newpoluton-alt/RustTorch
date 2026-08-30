@@ -1,299 +1,677 @@
-format_version = 1
+format_version = 2
 package = "rusttorch"
 crate = "rusttorch"
 tch = "0.26.0"
 pytorch_reference = "v2.13.0"
 pytorch_commit = "cf30153"
-python_parity = "verified on CPU: strict bidirectional SafeTensors, Linear/residual forward and gradients, CE, MSE, one Adam and SGD step"
 
 [[api]]
-python_symbol = "torch.Tensor / torch.device / torch.dtype / torch.nn.functional reduction"
-rust_symbol = "rusttorch::{Tensor, Device, Kind, Reduction}"
-source = "tch public API"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "reexport"
-support = "mvp"
-differences = "Rust uses tch enums and methods directly."
-tests = ["root reexport compile tests"]
+id = "amp"
+python_symbols = ["torch.amp.autocast", "torch.amp.GradScaler"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Automatic mixed precision, gradient scaling, and dtype policy are not exposed yet."
+source = "torch/amp/autocast_mode.py"
+evidence = []
+notes = "A future surface must state supported devices and dtypes and carry backend parity evidence."
 
 [[api]]
-python_symbol = "torch.manual_seed"
-rust_symbol = "rusttorch::manual_seed"
+id = "audio"
+python_symbols = ["torch.utils.data.Dataset for audio samples"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Audio decoding, resampling, feature extraction, and augmentation belong in an optional data package."
+source = "torch/utils/data/dataset.py"
+evidence = []
+notes = "Decoded typed samples will use the shared RustTorch data-loading core."
+
+[[api]]
+id = "autograd.forward_ad"
+python_symbols = ["torch.autograd.forward_ad"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Forward-mode automatic differentiation and dual tensors are not exposed."
+source = "torch/autograd/forward_ad.py"
+evidence = []
+notes = "This row is separate from the currently tested reverse-mode subset."
+
+[[api]]
+id = "autograd.reverse_mode"
+python_symbols = ["torch.Tensor.backward", "torch.no_grad", "torch.Tensor.detach"]
+rust_symbols = ["rusttorch::Tensor", "rusttorch::no_grad", "rusttorch::no_grad_guard"]
+status = "partial"
+implementation = "libtorch"
+scope = "Reverse-mode gradients through the tested eager and graph operations, plus tested no-grad and detach behavior."
+source = "torch/autograd/__init__.py"
+evidence = ["tests/eager.rs::gradients_accumulate_across_eager_residual_branches", "tests/eager.rs::no_grad_and_detach_stop_gradient_recording"]
+notes = "LibTorch owns autograd; hooks, custom Function, forward AD, and the rest of the Python surface remain outside this claim."
+
+[[api]]
+id = "codec"
+python_symbols = ["torch.utils.data.Dataset for encoded media"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "General image, audio, and video codec integration is not included in the core crate."
+source = "torch/utils/data/dataset.py"
+evidence = []
+notes = "Optional format packages will turn encoded records into typed loader samples."
+
+[[api]]
+id = "compiler.compile"
+python_symbols = ["torch.compile"]
+rust_symbols = []
+status = "python_only"
+implementation = "none"
+scope = "CPython frame capture, Dynamo guards, and Python graph-break semantics are not native RustTorch APIs."
+source = "torch/_dynamo/eval_frame.py"
+evidence = []
+notes = "Rust deployment may consume compatible artifacts later without claiming Python runtime parity."
+
+[[api]]
+id = "compiler.export"
+python_symbols = ["torch.export.export"]
+rust_symbols = []
+status = "python_only"
+implementation = "none"
+scope = "Python program capture, dynamic Python object handling, and Python-side export diagnostics are not native RustTorch APIs."
+source = "torch/export/__init__.py"
+evidence = []
+notes = "Capture is tracked separately from planned PT2 artifact interoperability."
+
+[[api]]
+id = "compiler.export.interop"
+python_symbols = ["torch.export.save", "torch.export.load"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "PT2 ExportedProgram archive import, validation, execution, and export are not implemented."
+source = "torch/export/__init__.py"
+evidence = []
+notes = "Artifact support must pin the archive version and supported operator set."
+
+[[api]]
+id = "compiler.fx"
+python_symbols = ["torch.fx.Graph", "torch.fx.GraphModule", "torch.fx.symbolic_trace"]
+rust_symbols = []
+status = "python_only"
+implementation = "none"
+scope = "Python symbolic tracing, dynamic module reconstruction, and FX graph compatibility are not provided."
+source = "torch/fx/graph.py"
+evidence = []
+notes = "RustTorch's typed graph has separate rows and is not described as FX-compatible."
+
+[[api]]
+id = "core.device"
+python_symbols = ["torch.device", "torch.cuda.is_available", "torch.backends.mps.is_available"]
+rust_symbols = ["rusttorch::Device", "rusttorch::DeviceSpec", "rusttorch::DeviceCapabilities", "rusttorch::available_devices", "rusttorch::resolve_device"]
+status = "supported"
+implementation = "mixed"
+scope = "CPU resolution, runtime-reported CUDA and MPS capability mapping, explicit unavailable-device errors, and CUDA-then-MPS-then-CPU automatic selection."
+source = "torch/__init__.py"
+evidence = ["tests/device.rs::cpu_resolves_explicitly", "tests/device.rs::reported_capabilities_match_resolved_devices", "tests/device.rs::unavailable_or_out_of_range_cuda_is_an_error", "tests/device.rs::explicit_mps_is_resolved_or_rejected_without_fallback"]
+notes = "Accelerator branches are conditional on the linked runtime; this row does not claim a CUDA or MPS pass on every host."
+
+[[api]]
+id = "core.random"
+python_symbols = ["torch.manual_seed"]
+rust_symbols = ["rusttorch::manual_seed"]
+status = "partial"
+implementation = "libtorch"
+scope = "A seed can be delegated to LibTorch; deterministic behavior and cross-language stream identity are not yet verified by a focused test."
 source = "torch/random.py"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "delegate"
-support = "mvp"
-differences = "Delegates to tch; cross-language RNG stream identity is not promised."
-tests = ["deterministic Rust tests"]
+evidence = []
+notes = "The public function remains partial until executable evidence proves its documented contract."
 
 [[api]]
-python_symbol = "torch.nn.Module"
-rust_symbol = "rusttorch::nn::Module"
-source = "torch/nn/modules/module.py"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "composite_port"
-support = "mvp"
-differences = "Rust trait and ownership replace Python dynamic attributes and hooks."
-tests = ["eager forward, train/eval, residual autograd"]
+id = "core.tensor"
+python_symbols = ["torch.Tensor", "torch.dtype", "torch.nn.functional reduction"]
+rust_symbols = ["rusttorch::Tensor", "rusttorch::Kind", "rusttorch::Reduction"]
+status = "partial"
+implementation = "libtorch"
+scope = "Root type reexports plus the tensor construction, dtype, device, and eager operations exercised by current RustTorch tests."
+source = "torch/_tensor.py"
+evidence = ["tests/eager.rs::tensor_core_types_are_reexported"]
+notes = "Reexporting tch::Tensor is not evidence that every torch.Tensor method matches PyTorch."
 
 [[api]]
-python_symbol = "torch.nn.Linear"
-rust_symbol = "rusttorch::nn::{Linear, LinearConfig, linear}"
-source = "torch/nn/modules/linear.py"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "composite_port"
-support = "mvp"
-differences = "Configuration is expressed by Rust constructors/builders; computation delegates to tch."
-state_dict = ["weight", "bias"]
-tests = ["shape, bias/no-bias, deterministic output, gradients, naming"]
+id = "data.loader"
+python_symbols = ["torch.utils.data.Dataset", "torch.utils.data.DataLoader", "torch.utils.data.Sampler"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Fallible datasets, deterministic sampling, batching, collation, and streaming iteration are planned."
+source = "torch/utils/data/dataloader.py"
+evidence = []
+notes = "Workers, pinned memory, sharding, and checkpointable iteration are later milestones."
 
 [[api]]
-python_symbol = "torch.nn.Identity"
-rust_symbol = "rusttorch::nn::Identity"
-source = "torch/nn/modules/linear.py"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "delegate"
-support = "mvp"
-differences = "No arbitrary ignored Python arguments."
-tests = ["eager and graph identity"]
+id = "distributed.c10d"
+python_symbols = ["torch.distributed.init_process_group", "torch.distributed.ProcessGroup"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Collectives, process groups, rendezvous, and distributed error handling are not exposed."
+source = "torch/distributed/distributed_c10d.py"
+evidence = []
+notes = "Future support must enumerate transports, operating systems, and failure semantics."
 
 [[api]]
-python_symbol = "torch.nn.ReLU"
-rust_symbol = "rusttorch::nn::ReLU"
+id = "distributed.ddp"
+python_symbols = ["torch.nn.parallel.DistributedDataParallel"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Distributed data parallel training, bucket scheduling, and state synchronization are not implemented."
+source = "torch/nn/parallel/distributed.py"
+evidence = []
+notes = "This depends on an independently verified process-group foundation."
+
+[[api]]
+id = "distributed.fsdp"
+python_symbols = ["torch.distributed.fsdp.FullyShardedDataParallel"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Parameter sharding, resharding, mixed precision, and distributed checkpoint integration are not implemented."
+source = "torch/distributed/fsdp/fully_sharded_data_parallel.py"
+evidence = []
+notes = "FSDP follows process groups, distributed checkpointing, and memory benchmarks."
+
+[[api]]
+id = "distributions"
+python_symbols = ["torch.distributions.Distribution"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Probability distributions, transforms, constraints, sampling, and log-probability APIs are not exposed."
+source = "torch/distributions/distribution.py"
+evidence = []
+notes = "Each future distribution requires numerical and gradient parity evidence."
+
+[[api]]
+id = "fft"
+python_symbols = ["torch.fft"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "The torch.fft namespace is not wrapped or compatibility-tested."
+source = "torch/fft/__init__.py"
+evidence = []
+notes = "Future coverage will be split by transform family and normalization behavior."
+
+[[api]]
+id = "func"
+python_symbols = ["torch.func"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Function transforms such as vmap, grad, jacrev, jacfwd, and functionalization are not exposed."
+source = "torch/_functorch/apis.py"
+evidence = []
+notes = "Rust interfaces require explicit ownership and mutation semantics."
+
+[[api]]
+id = "graph.executor"
+python_symbols = ["torch.fx.Interpreter"]
+rust_symbols = ["rusttorch::graph::EagerExecutor", "rusttorch::graph::GraphModule", "rusttorch::graph::GraphInputs", "rusttorch::graph::GraphOutputs"]
+status = "supported"
+implementation = "mixed"
+scope = "Fallible eager execution of RustTorch typed graphs with named inputs and outputs, mode tracking, autograd, and runtime tensor-spec validation."
+source = "torch/fx/interpreter.py"
+evidence = ["tests/graph.rs::all_public_graph_operations_execute_with_expected_values", "tests/graph.rs::residual_branch_accumulates_input_and_all_linear_parameter_gradients", "tests/graph.rs::runtime_rejects_dtype_rank_and_known_dimension_mismatches"]
+notes = "Execution delegates kernels to LibTorch and does not consume Python FX graphs."
+
+[[api]]
+id = "graph.inspection"
+python_symbols = ["torch.fx.Graph.print_tabular", "torch.fx.Graph.__str__"]
+rust_symbols = ["rusttorch::graph::Graph::summary", "rusttorch::graph::Graph::to_dot", "rusttorch::graph::GraphModule::summary", "rusttorch::graph::GraphModule::to_dot"]
+status = "supported"
+implementation = "rusttorch"
+scope = "Deterministic textual summaries and DOT output for RustTorch graphs."
+source = "torch/fx/graph.py"
+evidence = ["tests/graph.rs::summary_and_dot_are_deterministic_and_describe_the_graph"]
+notes = "DOT generation returns text and does not invoke Graphviz."
+
+[[api]]
+id = "graph.ir"
+python_symbols = ["torch.fx.Graph", "torch.fx.Node"]
+rust_symbols = ["rusttorch::graph::Graph", "rusttorch::graph::GraphBuilder", "rusttorch::graph::Node", "rusttorch::graph::NodeId", "rusttorch::graph::ValueId", "rusttorch::graph::TensorSpec"]
+status = "partial"
+implementation = "rusttorch"
+scope = "The tested construction, validation, branching, named-value, topological-order, reachability, and tensor-spec behavior of RustTorch's typed DAG."
+source = "torch/fx/graph.py"
+evidence = ["tests/graph.rs::builder_rejects_a_value_from_another_graph", "tests/graph.rs::builder_rejects_duplicate_node_names", "tests/graph.rs::graph_without_an_output_is_rejected"]
+notes = "This is neither FX serialization nor full FX node and transformation parity."
+
+[[api]]
+id = "graph.ops"
+python_symbols = ["ATen identity, linear, relu, gelu, dropout, flatten, add, sub, mul, cat, mse_loss, and cross_entropy operations"]
+rust_symbols = ["rusttorch::graph::GraphOp", "rusttorch::graph::GraphBuilder"]
+status = "supported"
+implementation = "mixed"
+scope = "Exactly the enumerated graph operations, eager execution, current validation, and tested shape-propagation rules."
+source = "torch/nn/functional.py"
+evidence = ["tests/graph.rs::all_public_graph_operations_execute_with_expected_values", "tests/graph.rs::binary_shape_propagation_preserves_dimension_order"]
+notes = "Arbitrary ATen dispatch and unlisted operators are not included."
+
+[[api]]
+id = "graph.passes"
+python_symbols = ["torch.fx.passes"]
+rust_symbols = ["rusttorch::graph::GraphPass", "rusttorch::graph::Validation", "rusttorch::graph::DeadNodeElimination", "rusttorch::graph::ShapePropagation", "rusttorch::graph::PassReport"]
+status = "supported"
+implementation = "rusttorch"
+scope = "Validation, dead-node deactivation, and the tested shape-propagation subset for RustTorch graphs."
+source = "torch/fx/passes/__init__.py"
+evidence = ["tests/graph.rs::finish_eliminates_dead_nodes_and_propagates_flatten_linear_shapes"]
+notes = "These passes operate on RustTorch graphs and do not accept arbitrary FX passes."
+
+[[api]]
+id = "linalg"
+python_symbols = ["torch.linalg"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "The torch.linalg namespace is not wrapped or compatibility-tested."
+source = "torch/linalg/__init__.py"
+evidence = []
+notes = "Future rows will split decompositions, solvers, norms, and matrix functions."
+
+[[api]]
+id = "nested"
+python_symbols = ["torch.nested"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Nested tensor construction, operators, autograd, and layout behavior are not exposed."
+source = "torch/nested/__init__.py"
+evidence = []
+notes = "Support depends on stable LibTorch bindings and backend evidence."
+
+[[api]]
+id = "nn.attention"
+python_symbols = ["torch.nn.MultiheadAttention", "torch.nn.functional.scaled_dot_product_attention"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Multi-head and scaled-dot-product attention modules, masks, kernels, and fast paths are not exposed."
 source = "torch/nn/modules/activation.py"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "delegate"
-support = "mvp"
-differences = "Only verified MVP options are exposed."
-tests = ["eager, graph, backend parity"]
+evidence = []
+notes = "Backend and dtype-dependent kernels require separate compatibility evidence."
 
 [[api]]
-python_symbol = "torch.nn.GELU"
-rust_symbol = "rusttorch::nn::Gelu"
-source = "torch/nn/modules/activation.py"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "delegate"
-support = "mvp"
-differences = "Unsupported approximation modes return an error rather than being ignored."
-tests = ["eager, graph, backend parity"]
+id = "nn.convolution"
+python_symbols = ["torch.nn.Conv1d", "torch.nn.Conv2d", "torch.nn.Conv3d", "torch.nn.functional.conv2d"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Convolution modules and functional variants are not exposed through RustTorch."
+source = "torch/nn/modules/conv.py"
+evidence = []
+notes = "Future coverage will name dimensions, padding, groups, dtypes, and backends."
 
 [[api]]
-python_symbol = "torch.nn.Dropout"
-rust_symbol = "rusttorch::nn::Dropout"
+id = "nn.cross_entropy"
+python_symbols = ["torch.nn.functional.cross_entropy"]
+rust_symbols = ["rusttorch::nn::functional::cross_entropy"]
+status = "supported"
+implementation = "libtorch"
+scope = "Default class-index cross entropy with deterministic values on the tested shape."
+source = "torch/nn/functional.py"
+evidence = ["tests/eager.rs::mse_and_cross_entropy_have_deterministic_values"]
+notes = "Weights, custom ignore index, label smoothing, probability targets, and reduction selection are not exposed."
+
+[[api]]
+id = "nn.dropout"
+python_symbols = ["torch.nn.Dropout", "torch.nn.functional.dropout"]
+rust_symbols = ["rusttorch::nn::Dropout", "rusttorch::nn::functional::dropout"]
+status = "partial"
+implementation = "mixed"
+scope = "Validated probabilities, explicit functional mode, module train/eval behavior, boundary probabilities, and evaluation gradients."
 source = "torch/nn/modules/dropout.py"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "composite_port"
-support = "mvp"
-differences = "Probability validation and train/eval state are Rust-owned; kernels delegate to tch."
-tests = ["training active, evaluation identity, evaluation autograd"]
+evidence = ["tests/eager.rs::dropout_boundary_probabilities_and_eval_gradients_are_correct"]
+notes = "The full stochastic distribution, all shapes and dtypes, and backend parity are not claimed."
 
 [[api]]
-python_symbol = "torch.nn.Flatten"
-rust_symbol = "rusttorch::nn::Flatten"
+id = "nn.flatten"
+python_symbols = ["torch.nn.Flatten", "torch.flatten"]
+rust_symbols = ["rusttorch::nn::Flatten", "rusttorch::nn::functional::flatten"]
+status = "supported"
+implementation = "libtorch"
+scope = "Dimension-range flattening with Rust integer dimensions for the tested default and graph negative-end ranges."
 source = "torch/nn/modules/flatten.py"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "delegate"
-support = "mvp"
-differences = "Rust integer dimensions; unsupported ranges are structured errors where recoverable."
-tests = ["eager and graph flatten"]
+evidence = ["tests/eager.rs::identity_relu_gelu_and_flatten_match_expected_behavior", "tests/graph.rs::finish_eliminates_dead_nodes_and_propagates_flatten_linear_shapes"]
+notes = "Python dynamic argument coercion is not supported."
 
 [[api]]
-python_symbol = "torch.nn.Sequential"
-rust_symbol = "rusttorch::nn::Sequential"
-source = "torch/nn/modules/container.py"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "composite_port"
-support = "mvp"
-differences = "Builder replaces Python ordered dynamic construction; numeric child names remain stable."
-state_dict = ["0.weight", "0.bias", "<index>.<local-name>"]
-tests = ["composition, naming, train/eval, save/load"]
+id = "nn.gelu"
+python_symbols = ["torch.nn.GELU", "torch.nn.functional.gelu"]
+rust_symbols = ["rusttorch::nn::Gelu", "rusttorch::nn::GeluApproximation", "rusttorch::nn::functional::gelu", "rusttorch::nn::functional::gelu_with_approximation"]
+status = "partial"
+implementation = "libtorch"
+scope = "Exact GELU forward values for the tested default approximation."
+source = "torch/nn/modules/activation.py"
+evidence = ["tests/eager.rs::identity_relu_gelu_and_flatten_match_expected_behavior"]
+notes = "GeluApproximation::Tanh is exposed but lacks focused numerical and gradient evidence."
 
 [[api]]
-python_symbol = "torch.nn.functional.linear"
-rust_symbol = "rusttorch::nn::functional::linear"
-source = "torch/nn/functional.py"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "delegate"
-support = "mvp"
-differences = "Accepts tch tensors and returns RustTorch Result only for recoverable validation."
-tests = ["deterministic functional output"]
+id = "nn.identity"
+python_symbols = ["torch.nn.Identity"]
+rust_symbols = ["rusttorch::nn::Identity"]
+status = "supported"
+implementation = "libtorch"
+scope = "Identity forward behavior on the tested eager tensor and graph path."
+source = "torch/nn/modules/linear.py"
+evidence = ["tests/eager.rs::identity_relu_gelu_and_flatten_match_expected_behavior", "tests/graph.rs::all_public_graph_operations_execute_with_expected_values"]
+notes = "The Rust unit type does not accept arbitrary ignored Python arguments."
 
 [[api]]
-python_symbol = "torch.nn.functional.relu"
-rust_symbol = "rusttorch::nn::functional::relu"
-source = "torch/nn/functional.py"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "delegate"
-support = "mvp"
-differences = "In-place mutation is not part of the MVP public contract."
-tests = ["functional values and gradients"]
+id = "nn.linear"
+python_symbols = ["torch.nn.Linear", "torch.nn.functional.linear"]
+rust_symbols = ["rusttorch::nn::Linear", "rusttorch::nn::LinearConfig", "rusttorch::nn::linear", "rusttorch::nn::functional::linear"]
+status = "supported"
+implementation = "mixed"
+scope = "Biased and bias-free forward behavior, parameter shapes and names, gradients, deterministic values, and the tested short constructor."
+source = "torch/nn/modules/linear.py"
+evidence = ["tests/eager.rs::linear_bias_and_no_bias_have_expected_shapes_and_values", "tests/eager.rs::gradients_flow_through_linear", "tests/eager.rs::short_linear_constructor_uses_bias"]
+notes = "Rust configuration replaces Python keyword arguments; kernels delegate to LibTorch."
 
 [[api]]
-python_symbol = "torch.nn.functional.gelu"
-rust_symbol = "rusttorch::nn::functional::gelu"
-source = "torch/nn/functional.py"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "delegate"
-support = "mvp"
-differences = "Only backend-supported approximation behavior is exposed."
-tests = ["functional values and gradients"]
-
-[[api]]
-python_symbol = "torch.nn.functional.dropout"
-rust_symbol = "rusttorch::nn::functional::dropout"
-source = "torch/nn/functional.py"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "delegate"
-support = "mvp"
-differences = "Training is an explicit Rust argument."
-tests = ["training/evaluation behavior"]
-
-[[api]]
-python_symbol = "torch.flatten"
-rust_symbol = "rusttorch::nn::functional::flatten"
-source = "torch/_torch_docs.py and ATen flatten"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "delegate"
-support = "mvp"
-differences = "No Python dynamic argument coercion."
-tests = ["shape and value tests"]
-
-[[api]]
-python_symbol = "torch.nn.functional.mse_loss"
-rust_symbol = "rusttorch::nn::functional::mse_loss"
-source = "torch/nn/functional.py"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "delegate"
-support = "mvp"
-differences = "The MVP exposes PyTorch-compatible mean reduction only."
-tests = ["Rust values, Python parity"]
-
-[[api]]
-python_symbol = "torch.nn.functional.cross_entropy"
-rust_symbol = "rusttorch::nn::functional::cross_entropy"
-source = "torch/nn/functional.py"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "delegate"
-support = "mvp"
-differences = "The MVP exposes only options verified against the reference."
-tests = ["Rust values, gradients, Python parity"]
-
-[[api]]
-python_symbol = "torch.optim.Adam"
-rust_symbol = "rusttorch::optim::Adam"
-source = "torch/optim/adam.py"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "delegate"
-support = "mvp"
-differences = "Builder exposes verified tch options; unsupported options error. Cross-language optimizer checkpoints are unsupported."
-tests = ["one step, invalid option, Python parity, backend parity"]
-
-[[api]]
-python_symbol = "torch.optim.SGD"
-rust_symbol = "rusttorch::optim::Sgd"
-source = "torch/optim/sgd.py"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "delegate"
-support = "mvp"
-differences = "Builder exposes verified tch options; unsupported options error. Cross-language optimizer checkpoints are unsupported."
-tests = ["one step, invalid option, Python parity, backend parity"]
-
-[[api]]
-python_symbol = "torch.device and backend availability APIs"
-rust_symbol = "rusttorch::{DeviceSpec, DeviceCapabilities, resolve_device, available_devices}"
-source = "torch backends and tch capability APIs"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "delegate"
-support = "mvp; CUDA/MPS conditional"
-differences = "Auto order is CUDA:0, MPS, CPU; explicit requests never silently fall back."
-tests = ["CPU, conditional CUDA/MPS, device mismatch"]
-
-[[api]]
-python_symbol = "torch.nn.Module.state_dict / load_state_dict"
-rust_symbol = "rusttorch::interop::{save_state_dict, load_state_dict, LoadOptions, LoadReport}"
+id = "nn.module"
+python_symbols = ["torch.nn.Module"]
+rust_symbols = ["rusttorch::nn::Module"]
+status = "partial"
+implementation = "rusttorch"
+scope = "Send-safe fallible forward and forward_t dispatch, with tested train/eval state on Sequential and GraphModule."
 source = "torch/nn/modules/module.py"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "interop"
-support = "mvp"
-differences = "SafeTensors is preferred; strict is default; reports are typed Rust values."
-tests = ["round trip, missing/unexpected/shape/dtype reports, Python parity"]
+evidence = ["tests/eager.rs::sequential_uses_numeric_parameter_names_and_tracks_mode", "tests/graph.rs::dropout_follows_train_and_eval_mode_without_rng_assumptions"]
+notes = "Python attributes, hooks, buffers, traversal, mutation, and class reconstruction are not present."
 
 [[api]]
-python_symbol = "explicit state_dict key adaptation"
-rust_symbol = "rusttorch::interop::StateDictMapping"
-source = "RustTorch interoperability policy"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "interop"
-support = "mvp"
-differences = "Exact and safe prefix mapping only; no fuzzy matching or implicit tensor transforms."
-tests = ["mapping, duplicate destination, dry run"]
+id = "nn.mse_loss"
+python_symbols = ["torch.nn.functional.mse_loss"]
+rust_symbols = ["rusttorch::nn::functional::mse_loss"]
+status = "supported"
+implementation = "libtorch"
+scope = "Mean-reduced mean-squared error with a deterministic value on the tested shape."
+source = "torch/nn/functional.py"
+evidence = ["tests/eager.rs::mse_and_cross_entropy_have_deterministic_values"]
+notes = "Alternative reductions and the wider PyTorch broadcasting surface are not exposed."
 
 [[api]]
-python_symbol = "safetensors.torch.save_file / load_file"
-rust_symbol = "model.save_weights / model.load_weights"
-source = "SafeTensors API and tch VarStore serialization"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "interop"
-support = "mvp"
-differences = "Architecture is supplied separately; state loads to the model's current device."
-tests = ["Rust round trip, Python to Rust, Rust to Python"]
+id = "nn.normalization"
+python_symbols = ["torch.nn.BatchNorm1d", "torch.nn.LayerNorm", "torch.nn.GroupNorm"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Normalization modules, functional forms, running statistics, and distributed variants are not exposed."
+source = "torch/nn/modules/batchnorm.py"
+evidence = []
+notes = "Future rows will separate batch, layer, group, and instance normalization."
 
 [[api]]
-python_symbol = "torch.fx.Graph (conceptual connectivity reference)"
-rust_symbol = "rusttorch::graph::{Graph, GraphBuilder, Node, NodeId, ValueId, TensorSpec}"
-source = "RustTorch Graph IR"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "composite_port"
-support = "mvp"
-differences = "Purpose-built typed Rust DAG; not an FX or ExportedProgram compatibility claim."
-tests = ["construction, branching, validation, topology, specs"]
+id = "nn.recurrent"
+python_symbols = ["torch.nn.RNN", "torch.nn.LSTM", "torch.nn.GRU"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Recurrent modules, packed sequences, state layouts, and projections are not exposed."
+source = "torch/nn/modules/rnn.py"
+evidence = []
+notes = "Each family needs batch-first, direction, layer, dtype, and backend evidence."
 
 [[api]]
-python_symbol = "torch.fx.GraphModule (conceptual module reference)"
-rust_symbol = "rusttorch::graph::{GraphModule, GraphInputs, GraphOutputs, EagerExecutor}"
-source = "RustTorch Graph IR"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "composite_port"
-support = "mvp"
-differences = "Executes tch eagerly and remains independent of Python FX runtime."
-tests = ["linear chain, branch, residual, autograd, named outputs"]
+id = "nn.relu"
+python_symbols = ["torch.nn.ReLU", "torch.nn.functional.relu"]
+rust_symbols = ["rusttorch::nn::ReLU", "rusttorch::nn::functional::relu"]
+status = "supported"
+implementation = "libtorch"
+scope = "Out-of-place ReLU values on the tested eager and graph paths, including gradients in a composed residual graph."
+source = "torch/nn/modules/activation.py"
+evidence = ["tests/eager.rs::identity_relu_gelu_and_flatten_match_expected_behavior", "tests/graph.rs::residual_branch_accumulates_input_and_all_linear_parameter_gradients"]
+notes = "In-place mutation is not exposed."
 
 [[api]]
-python_symbol = "ATen identity/linear/relu/gelu/dropout/flatten/add/sub/mul/cat/loss operators"
-rust_symbol = "rusttorch::graph::GraphOp"
-source = "torch operations and torch/nn/functional.py"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "delegate"
-support = "mvp subset"
-differences = "Only the enumerated Graph IR operations are supported; arbitrary ATen dispatch is absent."
-tests = ["per-operation graph execution, shape propagation, autograd"]
+id = "nn.sequential"
+python_symbols = ["torch.nn.Sequential"]
+rust_symbols = ["rusttorch::nn::Sequential", "rusttorch::nn::SequentialBuilder"]
+status = "partial"
+implementation = "rusttorch"
+scope = "Ordered construction from current layer specs, numeric parameter names, eager forward, mode tracking, device movement, and SafeTensors methods."
+source = "torch/nn/modules/container.py"
+evidence = ["tests/eager.rs::sequential_uses_numeric_parameter_names_and_tracks_mode", "tests/backend_parity.rs::accelerator_safetensors_and_cpu_movement_preserve_model_state"]
+notes = "Accelerator branches skip when unavailable; arbitrary dynamic module insertion is not supported."
 
 [[api]]
-python_symbol = "graph inspection"
-rust_symbol = "Graph::summary / Graph::to_dot"
-source = "RustTorch Graph IR"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "composite_port"
-support = "mvp"
-differences = "DOT text generation does not invoke Graphviz."
-tests = ["summary contents, valid DOT text"]
+id = "nn.transformer"
+python_symbols = ["torch.nn.Transformer", "torch.nn.TransformerEncoder", "torch.nn.TransformerDecoder"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Transformer containers, masks, nested-tensor fast paths, and encoder and decoder layers are not exposed."
+source = "torch/nn/modules/transformer.py"
+evidence = []
+notes = "Attention kernels and normalization are separate prerequisites."
 
 [[api]]
-python_symbol = "torch.jit.load / torch.jit.ScriptModule"
-rust_symbol = "rusttorch::interop::torchscript"
-source = "tch::CModule and PyTorch TorchScript APIs"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "unsupported"
-support = "optional legacy inference"
-differences = "If enabled, modules remain opaque and are not converted to eager modules or Graph IR."
-tests = ["required only if the optional wrapper is implemented"]
+id = "onnx"
+python_symbols = ["torch.onnx.export"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "ONNX export, diagnostics, shape constraints, and verification are not implemented."
+source = "torch/onnx/__init__.py"
+evidence = []
+notes = "Future support must identify the opset and runtime verification matrix."
 
 [[api]]
-python_symbol = "torch.export.save / torch.export.load"
-rust_symbol = "native PT2 import/export"
-source = "torch/export and PT2 archive specification"
-reference = "PyTorch v2.13.0 (cf30153)"
-implementation = "unsupported"
-support = "roadmap"
-differences = "No native .pt2 compatibility claim in the MVP."
-tests = []
+id = "optim.adam"
+python_symbols = ["torch.optim.Adam"]
+rust_symbols = ["rusttorch::optim::Adam", "rusttorch::optim::Optimizer"]
+status = "partial"
+implementation = "mixed"
+scope = "The exposed validated builder options plus zero_grad, step, and backward_step, including one deterministic update."
+source = "torch/optim/adam.py"
+evidence = ["tests/eager.rs::sgd_and_adam_each_update_a_parameter_once", "tests/eager.rs::invalid_layer_dropout_and_optimizer_configs_are_rejected", "tests/python_parity.rs::bidirectional_python_parity"]
+notes = "The Python parity test is ignored by ordinary Cargo test and runs only through scripts/run-python-parity.sh; optimizer checkpoints and unexposed options remain unsupported."
+
+[[api]]
+id = "optim.schedulers"
+python_symbols = ["torch.optim.lr_scheduler.LRScheduler"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Learning-rate schedulers, metric-driven scheduling, and scheduler checkpoint state are not exposed."
+source = "torch/optim/lr_scheduler.py"
+evidence = []
+notes = "Future rows must state exact step ordering and state behavior."
+
+[[api]]
+id = "optim.sgd"
+python_symbols = ["torch.optim.SGD"]
+rust_symbols = ["rusttorch::optim::Sgd", "rusttorch::optim::Optimizer"]
+status = "partial"
+implementation = "mixed"
+scope = "The exposed validated builder options plus zero_grad, step, and backward_step, including one deterministic update."
+source = "torch/optim/sgd.py"
+evidence = ["tests/eager.rs::sgd_and_adam_each_update_a_parameter_once", "tests/eager.rs::invalid_layer_dropout_and_optimizer_configs_are_rejected", "tests/python_parity.rs::bidirectional_python_parity"]
+notes = "The Python parity test is ignored by ordinary Cargo test and runs only through scripts/run-python-parity.sh; optimizer checkpoints and unexposed options remain unsupported."
+
+[[api]]
+id = "profiler"
+python_symbols = ["torch.profiler.profile"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Operator tracing, schedules, memory profiling, stack capture, and trace export are not exposed."
+source = "torch/profiler/profiler.py"
+evidence = []
+notes = "Future support must keep profiling overhead and backend availability explicit."
+
+[[api]]
+id = "quantization"
+python_symbols = ["torch.ao.quantization"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Eager and graph quantization, observers, calibration, fake quantization, and quantized modules are not exposed."
+source = "torch/ao/quantization/__init__.py"
+evidence = []
+notes = "Coverage will distinguish training, post-training, export, dtype, operator, and backend support."
+
+[[api]]
+id = "runtime.setup"
+python_symbols = ["PyTorch binary backend selection"]
+rust_symbols = ["rusttorch setup --backend auto", "rusttorch setup --backend cpu", "rusttorch setup --backend cuda-12.6"]
+status = "supported"
+implementation = "rusttorch"
+scope = "Project-local LibTorch selection for automatic, CPU or MPS, and CUDA 12.6 distributions with conflict and driver validation."
+source = "torch/__init__.py"
+evidence = ["crates/rusttorch-cli/src/main.rs::configuration_preserves_unrelated_toml_and_writes_cuda_selection", "crates/rusttorch-cli/src/main.rs::managed_setup_rejects_target_overrides_before_configuration_write"]
+notes = "Setup invokes Cargo and the upstream downloader; it never installs or modifies system drivers."
+
+[[api]]
+id = "serialization.mapping"
+python_symbols = ["torch.nn.Module.load_state_dict key adaptation"]
+rust_symbols = ["rusttorch::interop::StateDictMapping", "rusttorch::interop::load_state_dict_with_mapping"]
+status = "partial"
+implementation = "rusttorch"
+scope = "Explicit exact-key mapping and tested dry-run validation without fuzzy matching or implicit tensor transforms."
+source = "torch/nn/modules/module.py"
+evidence = ["tests/interop.rs::exact_mapping_loads_the_named_destination", "tests/interop.rs::dry_run_reports_a_load_without_mutating_values"]
+notes = "Prefix mapping is exposed but does not yet have focused executable evidence."
+
+[[api]]
+id = "serialization.pickle"
+python_symbols = ["torch.save", "torch.load"]
+rust_symbols = []
+status = "not_supported"
+implementation = "none"
+scope = "Arbitrary Python pickle objects, whole-model class reconstruction, and CPython object graphs are intentionally unavailable."
+source = "torch/serialization.py"
+evidence = []
+notes = "RustTorch uses typed model construction and SafeTensors instead of executing pickle payloads."
+
+[[api]]
+id = "serialization.safetensors"
+python_symbols = ["safetensors.torch.save_file", "safetensors.torch.load_file"]
+rust_symbols = ["rusttorch::interop::save_state_dict", "rusttorch::interop::load_state_dict", "rusttorch::nn::Sequential::save_weights", "rusttorch::nn::Sequential::load_weights", "rusttorch::graph::GraphModule::save_weights", "rusttorch::graph::GraphModule::load_weights"]
+status = "partial"
+implementation = "mixed"
+scope = "Tested CPU SafeTensors state round trips plus manually gated Python-to-Rust and Rust-to-Python exchange with architecture supplied separately."
+source = "torch/nn/modules/module.py"
+evidence = ["tests/interop.rs::strict_safetensors_round_trip_restores_all_variables", "tests/python_parity.rs::bidirectional_python_parity"]
+notes = "The Python evidence requires scripts/run-python-parity.sh and is ignored by ordinary Cargo test; state loads to the target device."
+
+[[api]]
+id = "serialization.state_dict"
+python_symbols = ["torch.nn.Module.state_dict", "torch.nn.Module.load_state_dict"]
+rust_symbols = ["rusttorch::interop::save_state_dict", "rusttorch::interop::load_state_dict", "rusttorch::interop::LoadOptions", "rusttorch::interop::LoadReport"]
+status = "partial"
+implementation = "mixed"
+scope = "Strict and non-strict SafeTensors loads with sorted reports and tested pre-mutation shape validation."
+source = "torch/nn/modules/module.py"
+evidence = ["tests/interop.rs::non_strict_load_returns_a_sorted_complete_report", "tests/interop.rs::shape_validation_happens_before_any_variable_is_mutated"]
+notes = "Optimizer state, arbitrary buffers, aliases, Python objects, and non-SafeTensors formats are not covered."
+
+[[api]]
+id = "serialization.torchscript"
+python_symbols = ["torch.jit.load", "torch.jit.ScriptModule"]
+rust_symbols = []
+status = "not_supported"
+implementation = "none"
+scope = "RustTorch does not expose TorchScript modules or convert TorchScript into eager modules or its graph IR."
+source = "torch/jit/__init__.py"
+evidence = []
+notes = "Applications may use tch::CModule directly outside the RustTorch contract."
+
+[[api]]
+id = "sparse"
+python_symbols = ["torch.sparse"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Sparse layouts, constructors, operators, autograd, validation, and conversion are not exposed."
+source = "torch/sparse/__init__.py"
+evidence = []
+notes = "Future rows will distinguish COO, CSR, CSC, BSR, and BSC."
+
+[[api]]
+id = "special"
+python_symbols = ["torch.special"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "The torch.special namespace is not wrapped or compatibility-tested."
+source = "torch/special/__init__.py"
+evidence = []
+notes = "Future groups require numerical, gradient, dtype, and backend evidence."
+
+[[api]]
+id = "tabular"
+python_symbols = ["torch.utils.data.Dataset for tabular records"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "CSV, columnar, database, missing-value, categorical, and numerical preprocessing integrations are not included."
+source = "torch/utils/data/dataset.py"
+evidence = []
+notes = "Optional packages will map records into typed samples consumed by the shared loader."
+
+[[api]]
+id = "testing"
+python_symbols = ["torch.testing.assert_close"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Public tensor comparison, tolerance policy, generated utilities, and OpInfo-style coverage are not exposed."
+source = "torch/testing/__init__.py"
+evidence = []
+notes = "Internal tests are not a public torch.testing surface."
+
+[[api]]
+id = "text"
+python_symbols = ["torch.utils.data.Dataset for text samples"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Text decoding, tokenization, vocabulary management, packing, and augmentation are not included."
+source = "torch/utils/data/dataset.py"
+evidence = []
+notes = "Optional text packages will produce typed samples for the shared loader."
+
+[[api]]
+id = "utils.checkpoint"
+python_symbols = ["torch.utils.checkpoint.checkpoint"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Activation checkpointing, recomputation policy, RNG-state handling, and selective contexts are not exposed."
+source = "torch/utils/checkpoint.py"
+evidence = []
+notes = "Future support must prove gradients and memory behavior."
+
+[[api]]
+id = "video"
+python_symbols = ["torch.utils.data.Dataset for video samples"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Video decoding, frame sampling, temporal transforms, audio alignment, and batching are not included."
+source = "torch/utils/data/dataset.py"
+evidence = []
+notes = "Optional media packages will decode typed samples for the shared loader."
+
+[[api]]
+id = "vision"
+python_symbols = ["torch.utils.data.Dataset for image samples"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Image decoding, transforms, augmentation, detection targets, and vision datasets are not included."
+source = "torch/utils/data/dataset.py"
+evidence = []
+notes = "Optional vision packages will produce typed samples; torchvision is a separate upstream project."
