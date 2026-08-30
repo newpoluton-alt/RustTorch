@@ -3,6 +3,15 @@
 All notable changes are recorded here. The 0.x series does not yet promise API
 or graph-format stability.
 
+## Unreleased
+
+- Add default acquisition of the pinned official LibTorch runtime through
+  `torch-sys` and keep docs.rs builds network-free.
+- Add the `rusttorch setup` project bootstrap with automatic, CPU, and CUDA
+  12.6 backend selection and isolated managed target directories.
+- Document Python, system LibTorch, offline, CUDA-driver, and contributor
+  workflows.
+
 ## 0.1.0 - 2026-08-30
 
 - Establish the `rusttorch` MVP package and `rusttorch` library crate.
