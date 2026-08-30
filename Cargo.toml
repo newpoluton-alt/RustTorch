@@ -14,6 +14,8 @@ publish = ["crates-io"]
 exclude = [
     "/rustorch_codex_project_prompt.md",
     "/crates/rusttorch-cli",
+    "/pyproject.toml",
+    "/uv.lock",
     "**/__pycache__/**",
     "**/*.pyc",
 ]

@@ -69,9 +69,20 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: Create project Python environment
+      - name: Set up UV
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.3"
+          enable-cache: false
+
+      - name: Validate Python dependency lock
+        run: uv lock --check --offline --no-cache
+
+      - name: Synchronize locked Python environment
+        run: uv sync --frozen --no-cache
+
+      - name: Export project Python environment
         run: |
-          python3 -m venv .venv
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
           echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
 
@@ -82,14 +93,6 @@ jobs:
           cache: false
           components: rustfmt, clippy
 
-      - name: Install PyTorch CPU runtime
-        run: >-
-          .venv/bin/python -m pip install 'torch==2.13.0'
-          --index-url https://download.pytorch.org/whl/cpu
-
-      - name: Install parity dependencies
-        run: .venv/bin/python -m pip install 'safetensors==0.8.0' 'numpy==2.5.2'
-
       - name: Export LibTorch library path
         run: |
           torch_lib="$(.venv/bin/python -c 'from pathlib import Path; import torch; print(Path(torch.__file__).resolve().parent / "lib")')"
@@ -99,7 +102,7 @@ jobs:
         run: .venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
 
       - name: Validate compatibility ledger
-        run: python3 scripts/check-compatibility.py --check
+        run: .venv/bin/python scripts/check-compatibility.py --check
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -146,10 +149,10 @@ jobs:
 
       - name: Reject unsafe package contents
         run: |
-          if grep -E '(^|/)(\.venv|target|__pycache__|libtorch)(/|$)|\.(pyc|pyo|so|dylib|dll)$' \
+          if grep -E '(^|/)(\.venv|target|__pycache__|libtorch)(/|$)|(^|/)(pyproject\.toml|uv\.lock)$|\.(pyc|pyo|so|dylib|dll)$' \
             "$RUNNER_TEMP/rusttorch-package-files.txt" \
             "$RUNNER_TEMP/rusttorch-cli-package-files.txt"; then
-            echo "error: package contains a generated or native environment artifact" >&2
+            echo "error: package contains Python tooling or a generated/native environment artifact" >&2
             exit 1
           fi
 
