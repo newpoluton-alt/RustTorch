@@ -40,6 +40,7 @@ cargo fmt --all -- --check
 cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
+scripts/run-python-parity.sh
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 cargo check -p rusttorch --all-targets --no-default-features --features tch/doc-only
 RUSTDOCFLAGS="-D warnings" cargo doc -p rusttorch --no-deps --no-default-features --features tch/doc-only
@@ -52,10 +53,9 @@ Before either package is published, a release tag `vX.Y.Z` must match the
 versions in `Cargo.toml` and `crates/rusttorch-cli/Cargo.toml`, and that version
 must have a release entry in `CHANGELOG.md`.
 
-Run `scripts/run-python-parity.sh` for changes to PyTorch-visible defaults,
-initialization, gradients, optimizers, state naming, or serialization. Run
-`scripts/check-backends.sh` for backend claims and report unavailable hardware
-as skipped, never passed.
+The parity gate exercises PyTorch-visible defaults, initialization, gradients,
+optimizers, state naming, and serialization. Run `scripts/check-backends.sh`
+for backend claims and report unavailable hardware as skipped, never passed.
 
 ## Compatibility and public API
 

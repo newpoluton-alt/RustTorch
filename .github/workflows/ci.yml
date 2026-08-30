@@ -29,6 +29,12 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Create project Python environment
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
         with:
@@ -37,15 +43,15 @@ jobs:
 
       - name: Install PyTorch CPU runtime
         run: >-
-          python3 -m pip install 'torch==2.13.0'
+          .venv/bin/python -m pip install 'torch==2.13.0'
           --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install parity dependencies
-        run: python3 -m pip install 'safetensors==0.8.0' 'numpy==2.5.2'
+        run: .venv/bin/python -m pip install 'safetensors==0.8.0' 'numpy==2.5.2'
 
       - name: Export LibTorch library path
         run: |
-          torch_lib="$(python3 -c 'from pathlib import Path; import torch; print(Path(torch.__file__).resolve().parent / "lib")')"
+          torch_lib="$(.venv/bin/python -c 'from pathlib import Path; import torch; print(Path(torch.__file__).resolve().parent / "lib")')"
           echo "LD_LIBRARY_PATH=${torch_lib}" >> "$GITHUB_ENV"
 
       - name: Validate compatibility ledger
@@ -62,6 +68,9 @@ jobs:
 
       - name: Test workspace
         run: cargo test --workspace --all-targets
+
+      - name: Enforce Python parity
+        run: scripts/run-python-parity.sh
 
       - name: Build workspace documentation
         env:
