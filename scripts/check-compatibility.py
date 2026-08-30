@@ -111,19 +111,31 @@ def _safe_relative_path(value: Any) -> bool:
 
 
 def _declaration_exists(path: Path, test_name: str) -> bool:
-    if path.suffix not in {".rs", ".py"}:
-        return True
     contents = path.read_text(encoding="utf-8")
     if path.suffix == ".rs":
         declaration = re.compile(
-            rf"^\s*(?:(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?)fn\s+{re.escape(test_name)}\s*(?:<[^>]*>\s*)?\(",
+            rf"(?P<attributes>(?:^[ \t]*#\[[^\n]*\][ \t]*\n)+)"
+            rf"^[ \t]*(?:(?:pub(?:\([^)]*\))?[ \t]+)?(?:async[ \t]+)?)"
+            rf"fn[ \t]+{re.escape(test_name)}[ \t]*(?:<[^>]*>[ \t]*)?\(",
             re.MULTILINE,
         )
-    else:
-        declaration = re.compile(
-            rf"^\s*(?:async\s+)?def\s+{re.escape(test_name)}\s*\(", re.MULTILINE
+        return any(
+            re.search(
+                r"^[ \t]*#\[[ \t]*test[ \t]*\][ \t]*$",
+                match.group("attributes"),
+                re.MULTILINE,
+            )
+            for match in declaration.finditer(contents)
         )
-    return declaration.search(contents) is not None
+
+    if path.suffix == ".py" and test_name.startswith("test_"):
+        declaration = re.compile(
+            rf"^[ \t]*(?:async[ \t]+)?def[ \t]+{re.escape(test_name)}[ \t]*\(",
+            re.MULTILINE,
+        )
+        return declaration.search(contents) is not None
+
+    return False
 
 
 def _validate_evidence(root: Path, row_id: str, entries: list[str]) -> list[str]:
@@ -142,9 +154,16 @@ def _validate_evidence(root: Path, row_id: str, entries: list[str]) -> list[str]
         if not evidence_path.is_file():
             errors.append(f"{row_id}.evidence: file '{relative_path}' does not exist")
             continue
+        if evidence_path.suffix not in {".rs", ".py"}:
+            errors.append(
+                f"{row_id}.evidence: unsupported evidence file type "
+                f"'{evidence_path.suffix or '<none>'}' in '{relative_path}'"
+            )
+            continue
         if not _declaration_exists(evidence_path, test_name):
             errors.append(
-                f"{row_id}.evidence: declaration '{test_name}' does not exist in '{relative_path}'"
+                f"{row_id}.evidence: test declaration '{test_name}' does not exist "
+                f"in '{relative_path}'"
             )
     return errors
 

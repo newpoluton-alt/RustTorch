@@ -151,6 +151,31 @@ class CompatibilityScriptTests(unittest.TestCase):
         malformed["api"][0]["evidence"] = ["tests/eager.rs"]
         self.assert_error_contains(malformed, "nn.linear", "evidence")
 
+    def test_rust_evidence_rejects_a_helper_function_without_test_attribute(self) -> None:
+        (self.root / "tests" / "eager.rs").write_text(
+            "fn linear_helper() {}\n",
+            encoding="utf-8",
+        )
+        ledger = self.ledger()
+        ledger["api"][0]["evidence"] = ["tests/eager.rs::linear_helper"]
+
+        self.assert_error_contains(ledger, "nn.linear", "linear_helper")
+
+    def test_rust_evidence_accepts_an_ignored_test_with_intervening_attributes(self) -> None:
+        (self.root / "tests" / "eager.rs").write_text(
+            '#[cfg(feature = "python-parity")]\n'
+            "#[test]\n"
+            '#[ignore = "requires the explicit parity gate"]\n'
+            "fn ignored_linear_parity() {}\n",
+            encoding="utf-8",
+        )
+        ledger = self.ledger()
+        ledger["api"][0]["evidence"] = [
+            "tests/eager.rs::ignored_linear_parity"
+        ]
+
+        self.assertEqual(self.errors(ledger), [])
+
     def test_python_evidence_accepts_an_exact_ordinary_test_declaration(self) -> None:
         (self.root / "tests" / "test_linear.py").write_text(
             "class LinearTests:\n"
@@ -163,6 +188,31 @@ class CompatibilityScriptTests(unittest.TestCase):
             "tests/test_linear.py::test_linear"
         ]
         self.assertEqual(self.errors(ledger), [])
+
+    def test_python_evidence_rejects_a_non_test_function(self) -> None:
+        (self.root / "tests" / "test_linear.py").write_text(
+            "def linear_helper() -> None:\n"
+            "    pass\n",
+            encoding="utf-8",
+        )
+        ledger = self.ledger()
+        ledger["api"][0]["evidence"] = [
+            "tests/test_linear.py::linear_helper"
+        ]
+
+        self.assert_error_contains(ledger, "nn.linear", "linear_helper")
+
+    def test_evidence_rejects_an_unsupported_file_type(self) -> None:
+        (self.root / "tests" / "check_linear.sh").write_text(
+            "test_linear() { :; }\n",
+            encoding="utf-8",
+        )
+        ledger = self.ledger()
+        ledger["api"][0]["evidence"] = [
+            "tests/check_linear.sh::test_linear"
+        ]
+
+        self.assert_error_contains(ledger, "nn.linear", "unsupported", ".sh")
 
     def test_manifest_package_library_and_tch_metadata_must_match(self) -> None:
         for field, replacement, fragment in (
