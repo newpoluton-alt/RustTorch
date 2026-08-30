@@ -38,19 +38,19 @@ from the repository root:
 python3 scripts/check-compatibility.py --check
 cargo fmt --all -- --check
 cargo check --workspace --all-targets
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 cargo check -p rusttorch --all-targets --no-default-features --features tch/doc-only
+RUSTDOCFLAGS="-D warnings" cargo doc -p rusttorch --no-deps --no-default-features --features tch/doc-only
+cargo package -p rusttorch --locked --list
+cargo package -p rusttorch-cli --locked --list
 python3 -m unittest tests/test_community_health.py -v
 ```
 
-After committing, inspect both package file lists:
-
-```sh
-cargo package -p rusttorch --locked --no-verify --list
-cargo package -p rusttorch-cli --locked --list
-```
+Before either package is published, a release tag `vX.Y.Z` must match the
+versions in `Cargo.toml` and `crates/rusttorch-cli/Cargo.toml`, and that version
+must have a release entry in `CHANGELOG.md`.
 
 Run `scripts/run-python-parity.sh` for changes to PyTorch-visible defaults,
 initialization, gradients, optimizers, state naming, or serialization. Run
