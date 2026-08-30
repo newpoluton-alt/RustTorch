@@ -35,18 +35,22 @@ from the repository root:
 
 ```sh
 . scripts/dev-env.sh
+python3 scripts/check-dco.py --base origin/main --head HEAD
 python3 scripts/check-compatibility.py --check
+python3 -m unittest discover -s tests -p 'test_*.py' -v
 cargo fmt --all -- --check
 cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
 scripts/run-python-parity.sh
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+RUSTDOCFLAGS="-D warnings" cargo doc -p rusttorch --no-deps
+RUSTDOCFLAGS="-D warnings" cargo doc -p rusttorch-cli --no-deps
 cargo check -p rusttorch --all-targets --no-default-features --features tch/doc-only
 RUSTDOCFLAGS="-D warnings" cargo doc -p rusttorch --no-deps --no-default-features --features tch/doc-only
 cargo package -p rusttorch --locked --list
 cargo package -p rusttorch-cli --locked --list
-python3 -m unittest tests/test_community_health.py -v
+cargo package -p rusttorch --locked
+cargo package -p rusttorch-cli --locked
 ```
 
 Before either package is published, a release tag `vX.Y.Z` must match the
@@ -128,10 +132,30 @@ git commit --signoff
 git commit --amend --signoff
 ```
 
-The sign-off certifies DCO 1.1, not merely authorship. The requirement applies
-to maintainers as well as contributors. It is project policy now; automated
-pull-request enforcement is added before required repository checks are
-activated.
+The sign-off certifies DCO 1.1, not merely authorship. Pull-request CI checks
+every commit introduced by `base..head`, including merge commits. It reads only
+Git's final trailer block, so a `Signed-off-by` line in the commit body does not
+count. Every valid `Co-authored-by` identity also needs its own matching
+sign-off.
+
+Identity comparison is case-insensitive after Unicode case-folding; surrounding
+space is ignored, and runs of space inside a name are collapsed. Names and
+addresses must otherwise match. Invalid revisions and malformed relevant
+trailers fail closed. The checker prints each failing short commit ID and the
+exact interactive-rebase, trailer-amendment, and force-with-lease commands
+needed to repair the branch.
+
+The requirement applies to maintainers and contributors. A maintainer applying
+material changes should use a separate signed commit or record and sign their
+co-authorship; their certification does not replace the original author's.
+Locally created merge commits must also be signed. GitHub's update-branch merge
+commits are checked and can be unsigned, so update locally with a signed merge
+or rebase when that happens.
+
+The only unsigned automation exception is an exact Dependabot commit identity
+when the workflow itself was triggered by the trusted Dependabot actor. Both
+conditions are checked, and co-authors still require sign-off. Bot-looking
+metadata, other bots, and manually updated bot branches receive no exemption.
 
 ## Pull-request review
 

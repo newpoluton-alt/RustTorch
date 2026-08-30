@@ -15,14 +15,54 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  dco:
+    name: DCO
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out complete pull-request history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check introduced commits
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          TRUSTED_DEPENDABOT_ACTOR: ${{ github.actor == 'dependabot[bot]' }}
+        run: |
+          if [ "$TRUSTED_DEPENDABOT_ACTOR" = "true" ]; then
+            python3 scripts/check-dco.py --base "$BASE_SHA" --head "$HEAD_SHA" \
+              --trusted-dependabot-actor
+          else
+            python3 scripts/check-dco.py --base "$BASE_SHA" --head "$HEAD_SHA"
+          fi
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@595b5aeba73380359d98a5e087f648dbb0edce1b # v4.7.3
+        with:
+          comment-summary-in-pr: never
+
   quality:
-    name: quality
+    name: Stable quality
     runs-on: ubuntu-latest
     env:
       LIBTORCH_USE_PYTORCH: "1"
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -35,7 +75,7 @@ jobs:
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
           echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
 
-      - name: Set up Rust
+      - name: Set up stable Rust
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
         with:
           toolchain: stable
@@ -54,6 +94,9 @@ jobs:
           torch_lib="$(.venv/bin/python -c 'from pathlib import Path; import torch; print(Path(torch.__file__).resolve().parent / "lib")')"
           echo "LD_LIBRARY_PATH=${torch_lib}" >> "$GITHUB_ENV"
 
+      - name: Run Python policy tests
+        run: .venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
+
       - name: Validate compatibility ledger
         run: python3 scripts/check-compatibility.py --check
 
@@ -61,48 +104,141 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Check workspace
-        run: cargo check --workspace --all-targets
+        run: cargo check --workspace --all-targets --locked
 
       - name: Lint workspace
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Test workspace
-        run: cargo test --workspace --all-targets
+        run: cargo test --workspace --all-targets --locked
 
       - name: Enforce Python parity
         run: scripts/run-python-parity.sh
 
-      - name: Build workspace documentation
+      - name: Build rusttorch documentation
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --workspace --no-deps
+        run: cargo doc -p rusttorch --no-deps --locked
+
+      - name: Build rusttorch-cli documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc -p rusttorch-cli --no-deps --locked
 
       - name: Check docs.rs configuration
         run: >-
-          cargo check -p rusttorch --all-targets --no-default-features
+          cargo check -p rusttorch --all-targets --locked --no-default-features
           --features tch/doc-only
 
       - name: Build docs.rs documentation
         env:
           RUSTDOCFLAGS: -D warnings
         run: >-
-          cargo doc -p rusttorch --no-deps --no-default-features
+          cargo doc -p rusttorch --no-deps --locked --no-default-features
           --features tch/doc-only
 
       - name: Inspect rusttorch package
-        run: cargo package -p rusttorch --locked --list
+        run: cargo package -p rusttorch --locked --list | tee "$RUNNER_TEMP/rusttorch-package-files.txt"
 
       - name: Inspect rusttorch-cli package
-        run: cargo package -p rusttorch-cli --locked --list
+        run: cargo package -p rusttorch-cli --locked --list | tee "$RUNNER_TEMP/rusttorch-cli-package-files.txt"
+
+      - name: Reject unsafe package contents
+        run: |
+          if grep -E '(^|/)(\.venv|target|__pycache__|libtorch)(/|$)|\.(pyc|pyo|so|dylib|dll)$' \
+            "$RUNNER_TEMP/rusttorch-package-files.txt" \
+            "$RUNNER_TEMP/rusttorch-cli-package-files.txt"; then
+            echo "error: package contains a generated or native environment artifact" >&2
+            exit 1
+          fi
+
+      - name: Verify rusttorch archive
+        run: cargo package -p rusttorch --locked
+
+      - name: Verify rusttorch-cli archive
+        run: cargo package -p rusttorch-cli --locked
+
+  msrv:
+    name: MSRV / ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - rusttorch
+          - rusttorch-cli
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust 1.88
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
+        with:
+          toolchain: "1.88"
+
+      - name: Check rusttorch on the MSRV
+        if: matrix.package == 'rusttorch'
+        run: >-
+          cargo check -p rusttorch --all-targets --locked --no-default-features
+          --features tch/doc-only
+
+      - name: Check rusttorch-cli on the MSRV
+        if: matrix.package == 'rusttorch-cli'
+        run: cargo check -p rusttorch-cli --all-targets --locked
+
+  cli:
+    name: CLI / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up stable Rust
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
+        with:
+          toolchain: stable
+
+      - name: Test the setup CLI
+        run: cargo test -p rusttorch-cli --all-targets --locked
 
   required:
     name: required
     if: always()
     needs:
+      - dco
+      - dependency-review
       - quality
+      - msrv
+      - cli
     runs-on: ubuntu-latest
     steps:
-      - name: Require successful checks
+      - name: Require every applicable check
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          DCO_RESULT: ${{ needs.dco.result }}
+          DEPENDENCY_REVIEW_RESULT: ${{ needs.dependency-review.result }}
           QUALITY_RESULT: ${{ needs.quality.result }}
-        run: test "$QUALITY_RESULT" = "success"
+          MSRV_RESULT: ${{ needs.msrv.result }}
+          CLI_RESULT: ${{ needs.cli.result }}
+        run: |
+          test "$QUALITY_RESULT" = "success"
+          test "$MSRV_RESULT" = "success"
+          test "$CLI_RESULT" = "success"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            test "$DCO_RESULT" = "success"
+            test "$DEPENDENCY_REVIEW_RESULT" = "success"
+          else
+            test "$DCO_RESULT" = "skipped"
+            test "$DEPENDENCY_REVIEW_RESULT" = "skipped"
+          fi

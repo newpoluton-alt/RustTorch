@@ -10,6 +10,7 @@ An unofficial, eager-first Rust frontend over LibTorch.
 [![docs.rs](https://img.shields.io/docsrs/rusttorch)](https://docs.rs/rusttorch)
 [![license](https://img.shields.io/crates/l/rusttorch.svg)](#license)
 [![MSRV](https://img.shields.io/crates/msrv/rusttorch.svg)](Cargo.toml)
+[![CI](https://github.com/newpoluton-alt/RustTorch/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/newpoluton-alt/RustTorch/actions/workflows/ci.yml)
 
 [Quick start](#quick-start) · [Capabilities](#current-capabilities) ·
 [Runtime setup](#runtime-setup) · [Documentation](#documentation) ·
