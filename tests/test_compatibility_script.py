@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -240,9 +241,29 @@ class CompatibilityScriptTests(unittest.TestCase):
         path.write_text(VALID_LEDGER_TOML, encoding="utf-8")
         self.assertEqual(CHECKER.load_ledger(path), VALID_LEDGER)
 
-    def test_minimal_rendering_is_deterministic_and_never_claims_a_percentage(self) -> None:
-        first = CHECKER.render_markdown(self.ledger())
-        second = CHECKER.render_markdown(self.ledger())
+    def test_render_markdown(self) -> None:
+        ledger = self.ledger()
+        supported = ledger["api"][0]
+        supported["implementation"] = "libtorch"
+        rows = [supported]
+        for row_id, status, implementation in (
+            ("core.tensor", "partial", "mixed"),
+            ("data.loader", "planned", "none"),
+            ("compiler.compile", "python_only", "none"),
+            ("serialization.pickle", "not_supported", "none"),
+        ):
+            row = copy.deepcopy(VALID_ROW)
+            row["id"] = row_id
+            row["status"] = status
+            row["implementation"] = implementation
+            if implementation == "none":
+                row["rust_symbols"] = []
+                row["evidence"] = []
+            rows.append(row)
+        ledger["api"] = list(reversed(rows))
+
+        first = CHECKER.render_markdown(ledger)
+        second = CHECKER.render_markdown(ledger)
         self.assertEqual(first, second)
         self.assertTrue(
             first.startswith(
@@ -250,8 +271,65 @@ class CompatibilityScriptTests(unittest.TestCase):
                 "# API coverage\n"
             )
         )
+        section_positions = [
+            first.index(f"## {heading}")
+            for heading in (
+                "Supported",
+                "Partial",
+                "Planned",
+                "Python-only",
+                "Not supported",
+            )
+        ]
+        self.assertEqual(section_positions, sorted(section_positions))
         self.assertIn("`nn.linear`", first)
+        self.assertIn("**PyTorch:** `torch.nn.Linear`", first)
+        self.assertIn("**RustTorch:** `rusttorch::nn::Linear`", first)
+        self.assertIn("**Implementation:** Delegated to LibTorch", first)
+        self.assertIn(
+            "**Scope:** Forward, parameters, gradients, and documented defaults.",
+            first,
+        )
+        self.assertIn(
+            "[`torch/nn/modules/linear.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/linear.py)",
+            first,
+        )
+        self.assertIn(
+            "[`tests/eager.rs::linear_bias_and_no_bias_have_expected_shapes_and_values`](../tests/eager.rs)",
+            first,
+        )
+        self.assertIn(
+            "**Notes:** Rust configuration replaces Python keyword arguments.",
+            first,
+        )
+        self.assertIn("PyTorch `v2.13.0` at commit `cf30153`", first)
+        self.assertIn("`tch` `0.26.0`", first)
+        self.assertIn("**RustTorch:** —", first)
+        self.assertIn("**Evidence:** —", first)
         self.assertNotIn("%", first)
+        self.assertNotIn("100%", first)
+
+    def test_render_markdown_escapes_ledger_text_and_link_destinations(self) -> None:
+        ledger = self.ledger()
+        row = ledger["api"][0]
+        row["python_symbols"] = ["torch.fn`name|[link]"]
+        row["rust_symbols"] = ["rusttorch::fn`name"]
+        row["scope"] = "A *scope* with [link](bad), <tag>, & pipe | and slash \\."
+        row["source"] = "torch/odd folder/(linear).py"
+        row["evidence"] = ["tests/odd file.rs::linear_test"]
+        row["notes"] = "Line_one\nLine *two*."
+
+        rendered = CHECKER.render_markdown(ledger)
+
+        self.assertIn("``torch.fn`name|[link]``", rendered)
+        self.assertIn("``rusttorch::fn`name``", rendered)
+        self.assertIn(
+            r"A \*scope\* with \[link\](bad), &lt;tag&gt;, &amp; pipe \| and slash \\.",
+            rendered,
+        )
+        self.assertIn("torch/odd%20folder/%28linear%29.py", rendered)
+        self.assertIn("../tests/odd%20file.rs", rendered)
+        self.assertIn(r"Line\_one<br>Line \*two\*.", rendered)
 
     def test_real_ledger_validates(self) -> None:
         ledger = CHECKER.load_ledger(ROOT / "compat" / "pytorch_api.toml")
@@ -294,14 +372,34 @@ class CompatibilityScriptTests(unittest.TestCase):
         self.assertIn("python3 scripts/check-compatibility.py --write", result.stderr)
         self.assertEqual(coverage.read_text(encoding="utf-8"), "stale\n")
 
-    def test_cli_write_is_reserved_for_the_full_renderer_and_changes_nothing(self) -> None:
+    def test_atomic_write_failure_preserves_existing_bytes_and_cleans_temp_file(self) -> None:
+        docs = self.root / "docs"
+        docs.mkdir()
+        coverage = docs / "api-coverage.md"
+        coverage.write_bytes(b"preserve me\r\n")
+
+        with mock.patch.object(CHECKER.os, "fsync", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                CHECKER._atomic_write(coverage, "replacement\n")
+
+        self.assertEqual(coverage.read_bytes(), b"preserve me\r\n")
+        self.assertEqual(list(docs.iterdir()), [coverage])
+
+    def test_cli_write_atomically_generates_then_check_accepts_exact_bytes(self) -> None:
         self.cli_root()
         coverage = self.root / "docs" / "api-coverage.md"
         coverage.write_text("preserve me\n", encoding="utf-8")
-        result = self.run_cli("--write")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Task 2", result.stderr)
-        self.assertEqual(coverage.read_text(encoding="utf-8"), "preserve me\n")
+        first_write = self.run_cli("--write")
+        self.assertEqual(first_write.returncode, 0, first_write.stderr)
+        first_bytes = coverage.read_bytes()
+        self.assertEqual(first_bytes, CHECKER.render_markdown(self.ledger()).encode())
+
+        check = self.run_cli("--check")
+        self.assertEqual(check.returncode, 0, check.stderr)
+
+        second_write = self.run_cli("--write")
+        self.assertEqual(second_write.returncode, 0, second_write.stderr)
+        self.assertEqual(coverage.read_bytes(), first_bytes)
 
     def test_cli_rejects_missing_conflicting_and_unknown_arguments(self) -> None:
         self.cli_root()
