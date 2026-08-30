@@ -2,7 +2,7 @@ use std::{cell::Cell, convert::Infallible};
 
 use rusttorch::{
     RustTorchError,
-    data::{DataLoader, Dataset, RandomSampler, SequentialSampler},
+    data::{DataLoader, Dataset, RandomSampler, SequentialSampler, batches, batches_with_collate},
 };
 
 struct CountingDataset {
@@ -283,6 +283,127 @@ fn loader_yields_a_collation_failure_once_then_exhausts() {
         .expect("a positive batch size must be valid");
 
     assert_eq!(loader.next(), Some(Err(LoaderFailure::Collate)));
+    assert_eq!(loader.next(), None);
+    assert_eq!(collations.get(), 1);
+}
+
+#[test]
+fn stream_batches_keep_a_short_tail() {
+    let source = (0..5).map(Ok::<_, Infallible>);
+
+    let batches = batches(source, 2, false)
+        .expect("a positive batch size must be valid")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("the source is infallible");
+
+    assert_eq!(batches, vec![vec![0, 1], vec![2, 3], vec![4]]);
+}
+
+#[test]
+fn stream_batches_drop_a_short_tail() {
+    let source = (0..5).map(Ok::<_, Infallible>);
+
+    let batches = batches(source, 2, true)
+        .expect("a positive batch size must be valid")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("the source is infallible");
+
+    assert_eq!(batches, vec![vec![0, 1], vec![2, 3]]);
+}
+
+#[test]
+fn stream_batches_reject_zero_batch_size_with_a_structured_error() {
+    let source = std::iter::empty::<Result<i32, Infallible>>();
+
+    assert!(matches!(
+        batches(source, 0, false),
+        Err(RustTorchError::InvalidConfiguration {
+            field: "batch_size",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn stream_batches_apply_fallible_collation() {
+    let source = (1..=4).map(Ok::<_, Infallible>);
+
+    let batches = batches_with_collate(source, 2, false, |samples| {
+        Ok::<_, Infallible>(samples.into_iter().sum::<i32>())
+    })
+    .expect("a positive batch size must be valid")
+    .collect::<Result<Vec<_>, _>>()
+    .expect("the source and collation are infallible");
+
+    assert_eq!(batches, vec![3, 7]);
+}
+
+#[test]
+fn stream_batches_move_non_clone_samples() {
+    let source = [1, 2, 3]
+        .into_iter()
+        .map(|value| Ok::<_, Infallible>(NonCloneSample(value)));
+
+    let batches = batches(source, 2, false)
+        .expect("a positive batch size must be valid")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("the source is infallible");
+
+    assert_eq!(
+        batches,
+        vec![
+            vec![NonCloneSample(1), NonCloneSample(2)],
+            vec![NonCloneSample(3)]
+        ]
+    );
+}
+
+#[test]
+fn stream_batches_do_not_collate_an_empty_source() {
+    let source_polls = Cell::new(0);
+    let collations = Cell::new(0);
+    let source = std::iter::from_fn(|| {
+        source_polls.set(source_polls.get() + 1);
+        None::<Result<i32, Infallible>>
+    });
+    let mut loader = batches_with_collate(source, 2, false, |samples| {
+        collations.set(collations.get() + 1);
+        Ok::<_, Infallible>(samples)
+    })
+    .expect("a positive batch size must be valid");
+
+    assert_eq!(loader.next(), None);
+    assert_eq!(loader.next(), None);
+    assert_eq!(source_polls.get(), 1);
+    assert_eq!(collations.get(), 0);
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum StreamFailure {
+    Source,
+    Collate,
+}
+
+#[test]
+fn stream_batches_report_a_partial_drop_last_failure_once_then_exhaust() {
+    let source = [Ok(0), Err(StreamFailure::Source), Ok(2)].into_iter();
+    let mut loader = batches(source, 2, true).expect("a positive batch size must be valid");
+
+    assert_eq!(loader.next(), Some(Err(StreamFailure::Source)));
+    assert_eq!(loader.next(), None);
+}
+
+#[test]
+fn stream_batches_report_a_collation_failure_once_then_exhaust() {
+    let source = (0..4).map(Ok::<_, StreamFailure>);
+    let collations = Cell::new(0);
+    let mut loader = batches_with_collate(source, 2, false, |_| {
+        collations.set(collations.get() + 1);
+        Err::<Vec<i32>, _>(StreamFailure::Collate)
+    })
+    .expect("a positive batch size must be valid");
+
+    assert_eq!(loader.next(), Some(Err(StreamFailure::Collate)));
     assert_eq!(loader.next(), None);
     assert_eq!(collations.get(), 1);
 }
