@@ -167,4 +167,3 @@ Clippy with warnings denied, all tests, rustdoc with warnings denied, package
 inspection, and Python/backend parity where applicable. Releases are versioned
 milestones; GitHub and crates.io descriptions state exactly what is supported
 and what remains planned.
-

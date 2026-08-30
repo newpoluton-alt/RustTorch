@@ -203,4 +203,3 @@ Expected: crates.io accepts `rusttorch` 0.2.0.
 Verify the version through the crates.io API and confirm docs.rs has queued or
 built `rusttorch` 0.2.0. Confirm GitHub, crates.io, and docs.rs all link to the
 public `newpoluton-alt/RustTorch` repository.
-
