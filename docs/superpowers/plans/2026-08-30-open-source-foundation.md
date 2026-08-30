@@ -68,6 +68,7 @@ git commit -m "docs: redesign the RustTorch project page"
 
 **Files:**
 - Replace: `CONTRIBUTING.md`
+- Modify: `README.md`
 - Create: `CODE_OF_CONDUCT.md`
 - Create: `DCO.md`
 - Create: `SECURITY.md`
@@ -116,7 +117,8 @@ weekly Dependabot updates for Cargo and GitHub Actions.
 Document issue-first changes, fork/branch/commit/sign-off flow, local gates,
 public API/ledger rules, dependency and unsafe-code review, third-party
 provenance, AI-assisted contribution responsibility, review states, release
-authority, conflict resolution, and maintainer succession.
+authority, conflict resolution, and maintainer succession. Replace the
+README's interim GitHub security-page link with the committed security policy.
 
 - [ ] **Step 5: Validate and commit**
 
@@ -124,7 +126,7 @@ Run the community-health test, inspect YAML with Python's available parser if
 present or GitHub's own validation after push, check every relative link, then:
 
 ```sh
-git add CONTRIBUTING.md CODE_OF_CONDUCT.md DCO.md SECURITY.md SUPPORT.md \
+git add README.md CONTRIBUTING.md CODE_OF_CONDUCT.md DCO.md SECURITY.md SUPPORT.md \
   GOVERNANCE.md docs/maintainer-guide.md .github tests/test_community_health.py
 git commit -m "docs: establish the RustTorch contributor contract"
 ```
