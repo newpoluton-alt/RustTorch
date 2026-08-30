@@ -1,0 +1,55 @@
+name: PyTorch compatibility
+description: Report a scoped PyTorch compatibility gap
+title: "[Compatibility]: "
+labels: ["compatibility", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Compatibility is assessed per symbol and written scope, never as an unsupported percentage.
+  - type: textarea
+    id: pytorch_symbols
+    attributes:
+      label: PyTorch symbols and version
+      description: Name the exact Python symbols and the pinned or observed PyTorch version.
+    validations:
+      required: true
+  - type: textarea
+    id: pytorch_source
+    attributes:
+      label: PyTorch source and behavior
+      description: Link documentation and source paths or commits, and state the expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: rusttorch_scope
+    attributes:
+      label: RustTorch scope
+      description: Identify current RustTorch APIs, compatibility IDs, and the precise gap or difference.
+    validations:
+      required: true
+  - type: textarea
+    id: backend
+    attributes:
+      label: Backend and environment
+      description: Include CPU, MPS, or CUDA plus Rust, OS, hardware, driver, and LibTorch details.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Reproduction and evidence
+      description: Provide minimal Rust and Python examples, outputs, tolerances, and artifacts that are safe to share.
+    validations:
+      required: true
+  - type: checkboxes
+    id: acknowledgements
+    attributes:
+      label: Acknowledgements
+      options:
+        - label: I checked the compatibility ledger and existing issues.
+          required: true
+        - label: I have read and will follow the Code of Conduct.
+          required: true
+        - label: This report contains no security vulnerability or sensitive data.
+          required: true

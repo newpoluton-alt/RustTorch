@@ -123,6 +123,9 @@ isolation, retry behavior, and dynamic-loader requirements.
 | [Graph system](docs/graph-system.md) | Optional graph construction, validation, and execution |
 | [Model interoperability](docs/model-interoperability.md) | SafeTensors exchange with PyTorch |
 | [Porting policy](docs/porting-policy.md) | Source attribution and compatibility rules |
+| [Governance](GOVERNANCE.md) | Roles, decisions, security, and release authority |
+| [Support](SUPPORT.md) | Usage questions and issue routing |
+| [Security](SECURITY.md) | Supported versions and private vulnerability reporting |
 
 ## Limitations
 
@@ -136,9 +139,8 @@ cross-language optimizer checkpoint resume are not exposed by the current API.
 
 Contributions are welcome. Start with the
 [contribution guide](CONTRIBUTING.md), keep claims within tested scope, and add
-the narrowest evidence that proves a change. For vulnerabilities, use the
-repository's live [Security page](https://github.com/newpoluton-alt/RustTorch/security)
-for current reporting options instead of opening a public issue.
+the narrowest evidence that proves a change. Report vulnerabilities through
+the project's [security policy](SECURITY.md), never a public issue.
 
 ## License
 

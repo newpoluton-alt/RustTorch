@@ -1,0 +1,55 @@
+name: Performance report
+description: Report a reproducible RustTorch performance issue
+title: "[Performance]: "
+labels: ["performance", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Performance claims require equivalent work, named baselines, and raw reproducible measurements.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Performance problem
+      description: Describe the affected workload and why the difference matters.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include commits, Rust, profile and flags, OS, CPU/GPU, driver, backend, LibTorch/PyTorch, and thread settings.
+    validations:
+      required: true
+  - type: textarea
+    id: benchmark
+    attributes:
+      label: Minimal benchmark
+      description: Provide complete Rust and baseline code with input shapes, dtypes, devices, and synchronization.
+    validations:
+      required: true
+  - type: textarea
+    id: methodology
+    attributes:
+      label: Methodology
+      description: State warm-up, repetitions, sampling, synchronization, build profile, and how equivalent work was verified.
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: Raw results
+      description: Include all timings, variance or distribution, units, and the exact named comparison.
+    validations:
+      required: true
+  - type: checkboxes
+    id: acknowledgements
+    attributes:
+      label: Acknowledgements
+      options:
+        - label: I searched existing issues and can reproduce these results.
+          required: true
+        - label: I have read and will follow the Code of Conduct.
+          required: true
+        - label: This report contains no security vulnerability or sensitive data.
+          required: true
