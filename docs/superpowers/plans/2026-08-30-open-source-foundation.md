@@ -1,0 +1,288 @@
+# RustTorch Open-Source Foundation Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Turn RustTorch into a professional, understandable, policy-driven
+public project with hardened CI and verifiable release provenance.
+
+**Architecture:** Markdown and GitHub-native community files define the human
+contract. A least-privilege Rust CI workflow enforces objective contribution
+rules. A tag-only workflow packages final Cargo archives once and delegates
+provenance signing to OpenSSF's SLSA Generic generator.
+
+**Tech Stack:** Markdown, Cargo, Python standard library, GitHub Actions,
+GitHub CLI, OpenSSF SLSA Generic generator.
+
+**Spec:** `docs/superpowers/specs/2026-08-30-open-source-foundation.md`
+
+## Global Constraints
+
+- Keep every public claim within implemented scope; never advertise full
+  PyTorch parity or unmeasured performance.
+- Use the repository owner `@newpoluton-alt`; do not invent an email address.
+- Accept contributions under `MIT OR Apache-2.0` with DCO 1.1 sign-off.
+- Ordinary actions use verified immutable SHAs. The SLSA reusable workflow's
+  required `@v2.1.0` tag is the sole documented exception.
+- Workflows grant the minimum permissions per job and never expose secrets to
+  pull-request code.
+- Never reuse the previously exposed crates.io credential.
+
+---
+
+### Task 1: Redesign the public README
+
+**Files:**
+- Replace: `README.md`
+
+**Interfaces:**
+- Produces: the GitHub and crates.io landing page for the current source tree.
+
+- [ ] **Step 1: Inventory every public claim and link**
+
+Confirm install commands against the workspace manifests, compile the eager
+example against the public API, and list only capabilities present in code and
+tests. Treat the current unpublished CLI as a source install.
+
+- [ ] **Step 2: Write the professional landing page**
+
+Use a centered project heading, credo, factual crates.io/docs/license/MSRV
+badges, compact navigation, a prominent early-stage notice, a source quick
+start, a short eager example, scoped capability table, three setup modes,
+documentation map, concise limitations, contribution/security links, and
+dual-license footer. Keep detailed backend evidence in its existing docs.
+
+- [ ] **Step 3: Validate content**
+
+Run rustdoc doctests with the network-free `tch/doc-only` feature, assert every
+relative Markdown link points to a tracked path, and manually inspect rendered
+heading order, code fences, badge destinations, and line length.
+
+- [ ] **Step 4: Commit**
+
+```sh
+git add README.md
+git commit -m "docs: redesign the RustTorch project page"
+```
+
+### Task 2: Define community, legal, security, and governance policy
+
+**Files:**
+- Replace: `CONTRIBUTING.md`
+- Create: `CODE_OF_CONDUCT.md`
+- Create: `DCO.md`
+- Create: `SECURITY.md`
+- Create: `SUPPORT.md`
+- Create: `GOVERNANCE.md`
+- Create: `docs/maintainer-guide.md`
+- Create: `.github/CODEOWNERS`
+- Create: `.github/ISSUE_TEMPLATE/bug.yml`
+- Create: `.github/ISSUE_TEMPLATE/feature.yml`
+- Create: `.github/ISSUE_TEMPLATE/compatibility.yml`
+- Create: `.github/ISSUE_TEMPLATE/performance.yml`
+- Create: `.github/ISSUE_TEMPLATE/config.yml`
+- Create: `.github/pull_request_template.md`
+- Create: `.github/dependabot.yml`
+
+**Interfaces:**
+- Produces: the complete contributor contract and structured intake surface.
+
+- [ ] **Step 1: Write policy fixtures before policy files**
+
+Create `tests/test_community_health.py` using only Python's standard library.
+Assert every required file exists; template YAML has the expected `name`,
+`description`, and required acknowledgements; CODEOWNERS protects `.github/`
+and itself; contribution docs link DCO, security, conduct, governance, and
+support; and no placeholder such as `INSERT`, `TODO`, or invented contact
+address remains.
+
+- [ ] **Step 2: Run the test and verify it fails**
+
+```sh
+python3 -m unittest tests/test_community_health.py -v
+```
+
+Expected: FAIL because the community files do not yet exist.
+
+- [ ] **Step 3: Add the minimum complete community files**
+
+Adopt Contributor Covenant 2.1 and DCO 1.1 verbatim where their licenses
+require it. Route confidential reports to GitHub private vulnerability
+reporting. Define scopes, labels, reproduction fields, PyTorch reference and
+backend fields, benchmark methodology, PR checklist, code ownership, and
+weekly Dependabot updates for Cargo and GitHub Actions.
+
+- [ ] **Step 4: Expand contributor and maintainer workflows**
+
+Document issue-first changes, fork/branch/commit/sign-off flow, local gates,
+public API/ledger rules, dependency and unsafe-code review, third-party
+provenance, AI-assisted contribution responsibility, review states, release
+authority, conflict resolution, and maintainer succession.
+
+- [ ] **Step 5: Validate and commit**
+
+Run the community-health test, inspect YAML with Python's available parser if
+present or GitHub's own validation after push, check every relative link, then:
+
+```sh
+git add CONTRIBUTING.md CODE_OF_CONDUCT.md DCO.md SECURITY.md SUPPORT.md \
+  GOVERNANCE.md docs/maintainer-guide.md .github tests/test_community_health.py
+git commit -m "docs: establish the RustTorch contributor contract"
+```
+
+### Task 3: Harden the Rust contribution workflow
+
+**Prerequisite:** Compatibility-ledger Task 4 has created the base CI workflow.
+
+**Files:**
+- Modify: `.github/workflows/ci.yml`
+- Create: `scripts/check-dco.py`
+- Create: `tests/test_check_dco.py`
+- Modify: `CONTRIBUTING.md`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: GitHub pull-request base/head SHAs and the compatibility checker.
+- Produces: `CI / required`, the stable repository-rules status check.
+
+- [ ] **Step 1: Test the DCO checker**
+
+Use temporary Git repositories to prove that an unsigned commit fails, a
+matching `Signed-off-by` trailer passes, a mismatched signatory fails, multiple
+commits are all checked, and commits reachable from the base are excluded.
+
+- [ ] **Step 2: Implement the standard-library DCO checker**
+
+Accept `--base` and `--head`, enumerate `base..head`, and require at least one
+case-insensitive sign-off matching each commit author's name and email. Print
+the short commit IDs and the exact `git commit --amend --signoff` recovery.
+
+- [ ] **Step 3: Restructure CI with least privilege**
+
+Use these exact action pins:
+
+```text
+actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+actions/dependency-review-action@595b5aeba73380359d98a5e087f648dbb0edce1b # v4.7.3
+actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
+```
+
+Run DCO and dependency review only for pull requests. Run the library quality
+suite on Ubuntu stable, compile the library on Rust 1.88, and test the CLI on
+Ubuntu, macOS, and Windows. Install the pinned CPU PyTorch wheel from its CPU
+index separately from SafeTensors and NumPy. Add concurrency cancellation,
+read-only default permissions, package/archive checks, and an `if: always()`
+aggregator named `required` that rejects failed or cancelled prerequisites.
+
+- [ ] **Step 4: Document and validate**
+
+Add the CI badge only after the workflow exists. Run DCO unit tests, workflow
+structure tests in `test_community_health.py`, all local network-free gates,
+and `git diff --check`.
+
+- [ ] **Step 5: Commit**
+
+```sh
+git add .github/workflows/ci.yml scripts/check-dco.py tests/test_check_dco.py \
+  tests/test_community_health.py CONTRIBUTING.md README.md
+git commit -m "ci: enforce the RustTorch contribution gates"
+```
+
+### Task 4: Generate SLSA3 provenance for release artifacts
+
+**Files:**
+- Create: `.github/workflows/release.yml`
+- Create: `scripts/check-release.py`
+- Create: `tests/test_release_workflow.py`
+- Create: `docs/releasing.md`
+- Modify: `docs/maintainer-guide.md`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: tag `vX.Y.Z`, both Cargo manifests, lockfile, changelog, ledger.
+- Produces: exact `.crate` archives, SHA-256 subjects, an in-toto provenance
+  file, and a GitHub release containing those same bytes.
+
+- [ ] **Step 1: Test release invariants and workflow structure**
+
+Test matching and mismatched tags/versions/changelog, deterministic subject
+formatting, tag-only triggers, job permission maps, immutable ordinary action
+pins, the single SLSA tag exception, absence of pull-request and secret access,
+and proof that release jobs download rather than rebuild artifacts.
+
+- [ ] **Step 2: Implement the release preflight**
+
+Use Python's standard library to validate the tag, both package versions,
+lockfile, changelog, and compatibility ledger before packaging.
+
+- [ ] **Step 3: Build exact release subjects once**
+
+In a read-only build job, run Cargo package verification, copy both generated
+`.crate` files into `dist/`, hash those exact files, base64-encode the subjects,
+and upload the directory once using:
+
+```text
+actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+```
+
+- [ ] **Step 4: Add isolated provenance and release jobs**
+
+Call the reusable generator exactly as:
+
+```yaml
+uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+```
+
+Pass `base64-subjects`, set a versioned `provenance-name`, and enable
+`upload-assets`. Give only that job `actions: read`, `id-token: write`, and
+`contents: write`. Download final package artifacts with:
+
+```text
+actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+```
+
+Use preinstalled `gh release create`/`gh release upload` with the job token;
+never rebuild and never publish to crates.io from this workflow.
+
+- [ ] **Step 5: Document verification and commit**
+
+Document installing `slsa-verifier` v2.7.1 and verifying all subjects with
+`--source-uri github.com/newpoluton-alt/RustTorch --source-tag vX.Y.Z`. Run
+release tests and package dry runs, then commit.
+
+### Task 5: Apply and verify public repository settings
+
+**Prerequisite:** The final workflows and community files are pushed and CI
+has reported its stable check name.
+
+**Files:**
+- Modify: `docs/maintainer-guide.md`
+
+**Interfaces:**
+- Produces: GitHub-native protections whose read-back matches documented policy.
+
+- [ ] **Step 1: Inspect current settings and authentication**
+
+Read repository settings, existing rulesets/branch protection, Actions
+permissions, vulnerability-reporting status, and authenticated account scopes.
+Do not replace an existing stricter rule without explicit review.
+
+- [ ] **Step 2: Enable collaboration and safe defaults**
+
+Enable Discussions, private vulnerability reporting, automatic deletion of
+merged branches, squash merging, web commit sign-off, and read-only workflow
+token defaults where supported.
+
+- [ ] **Step 3: Protect main and release tags**
+
+Create rulesets for `main` and `v*` that prevent deletion and force pushes.
+Require pull requests, one approval, code-owner review, resolved conversations,
+and `CI / required` for `main`. Preserve an explicit sole-maintainer emergency
+bypass until governance records a second active maintainer.
+
+- [ ] **Step 4: Read back, document, and commit**
+
+Fetch every changed setting/ruleset, compare it with the intended policy,
+record its name and recovery procedure in the maintainer guide, and commit the
+documentation update. If GitHub plan or authentication prevents a setting,
+record the exact unavailable control and the closest safe alternative.
