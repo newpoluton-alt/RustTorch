@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / "scripts/check-dco.py"
 AUTHOR = "Alice Example <alice@example.test>"
 COAUTHOR = "Bob Example <bob@example.test>"
+SECOND_AUTHOR = "Carol Example <carol@example.test>"
 DEPENDABOT = (
     "dependabot[bot] "
     "<49699333+dependabot[bot]@users.noreply.github.com>"
@@ -137,6 +138,47 @@ class DcoCheckerTests(unittest.TestCase):
         self.assertNotIn(signed[:12], result.stderr)
         self.assertIn(unsigned[:12], result.stderr)
 
+    def test_recovery_sequence_stops_and_continues_for_each_failing_commit(self) -> None:
+        repository = self.repository()
+        first = repository.commit("first unsigned change")
+        second = repository.commit(
+            trailers("Signed-off-by: Carol Example", subject="malformed sign-off"),
+            author=SECOND_AUTHOR,
+        )
+
+        result = repository.check_dco()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"While stopped at {first[:12]}:", result.stderr)
+        self.assertIn(f"While stopped at {second[:12]}:", result.stderr)
+        first_stop = result.stderr.index(f"While stopped at {first[:12]}:")
+        first_amend = result.stderr.index(
+            "git commit --amend --no-edit --trailer "
+            "'Signed-off-by: Alice Example <alice@example.test>'",
+            first_stop,
+        )
+        first_continue = result.stderr.index("git rebase --continue", first_amend)
+        second_stop = result.stderr.index(f"While stopped at {second[:12]}:")
+        second_amend = result.stderr.index(
+            "git commit --amend --no-edit --trailer "
+            "'Signed-off-by: Carol Example <carol@example.test>'",
+            second_stop,
+        )
+        malformed_repair = result.stderr.index(
+            "git commit --amend  # remove or correct malformed trailers",
+            second_amend,
+        )
+        second_continue = result.stderr.index("git rebase --continue", malformed_repair)
+        push = result.stderr.index("git push --force-with-lease", second_continue)
+        self.assertLess(first_stop, first_amend)
+        self.assertLess(first_amend, first_continue)
+        self.assertLess(first_continue, second_stop)
+        self.assertLess(second_stop, second_amend)
+        self.assertLess(second_amend, malformed_repair)
+        self.assertLess(malformed_repair, second_continue)
+        self.assertLess(second_continue, push)
+        self.assertEqual(result.stderr.count("git rebase --continue"), 2)
+
     def test_body_line_cannot_spoof_a_trailer(self) -> None:
         repository = self.repository()
         repository.commit(
@@ -212,7 +254,7 @@ class DcoCheckerTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(merge[:12], result.stderr)
         self.assertIn(f"missing Signed-off-by: {AUTHOR}", result.stderr)
-        self.assertIn("add an exec line after a merge command", result.stderr)
+        self.assertIn("add a break line after a listed merge command", result.stderr)
 
     def test_invalid_revisions_fail_closed(self) -> None:
         repository = self.repository()

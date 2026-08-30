@@ -178,17 +178,18 @@ def _print_failures(base: str, failures: list[CommitFailure]) -> None:
         file=sys.stderr,
     )
     print(
-        "Mark a listed pick as edit, or add an exec line after a merge command; "
-        "then add each exact missing trailer:",
+        "Mark each listed pick as edit, or add a break line after a listed merge "
+        "command. At each stop, run only that commit's commands:",
         file=sys.stderr,
     )
     for failure in failures:
+        print(f"\nWhile stopped at {failure.commit[:12]}:", file=sys.stderr)
         for identity in failure.missing:
             trailer = shlex.quote(f"Signed-off-by: {identity.display}")
             print(f"  git commit --amend --no-edit --trailer {trailer}", file=sys.stderr)
         if failure.errors:
             print("  git commit --amend  # remove or correct malformed trailers", file=sys.stderr)
-    print("  git rebase --continue", file=sys.stderr)
+        print("  git rebase --continue", file=sys.stderr)
     print("  git push --force-with-lease", file=sys.stderr)
 
 
