@@ -1,9 +1,14 @@
 use std::{
     env,
     ffi::OsString,
-    fmt,
+    fmt, fs,
+    io::Write,
+    path::{Path, PathBuf},
     process::{self, Command},
 };
+
+use tempfile::NamedTempFile;
+use toml_edit::{DocumentMut, Item, value};
 
 const HELP: &str = "RustTorch managed LibTorch setup
 
@@ -144,6 +149,15 @@ fn is_libtorch_preconfigured(mut is_set: impl FnMut(&str) -> bool) -> bool {
     .any(&mut is_set)
 }
 
+fn is_setup_preconfigured(
+    platform: Platform,
+    is_set: impl FnMut(&str) -> bool,
+    mut path_exists: impl FnMut(&Path) -> bool,
+) -> bool {
+    is_libtorch_preconfigured(is_set)
+        || (platform == Platform::Linux && path_exists(Path::new("/usr/lib/libtorch.so")))
+}
+
 fn parse_driver_output(output: &str) -> Result<DriverVersion, CliError> {
     let version = output
         .lines()
@@ -190,7 +204,7 @@ fn resolve_backend(
         return match request {
             BackendRequest::Auto => Ok(ResolvedBackend::Preconfigured),
             BackendRequest::Cpu | BackendRequest::Cuda126 => Err(CliError::new(
-                "explicit backends conflict with active LibTorch environment variables",
+                "explicit backends conflict with an active LibTorch installation or environment",
             )),
         };
     }
@@ -215,6 +229,23 @@ fn resolve_backend(
     }
 }
 
+fn resolve_setup_backend(
+    request: BackendRequest,
+    platform: Platform,
+    configured: bool,
+    detect: impl FnOnce() -> Option<DriverVersion>,
+) -> Result<ResolvedBackend, CliError> {
+    let needs_driver = !configured
+        && matches!(platform, Platform::Linux | Platform::Windows)
+        && matches!(request, BackendRequest::Auto | BackendRequest::Cuda126);
+    resolve_backend(
+        request,
+        platform,
+        configured,
+        needs_driver.then(detect).flatten(),
+    )
+}
+
 fn detect_driver() -> Option<DriverVersion> {
     let output = Command::new("nvidia-smi")
         .args(["--query-gpu=driver_version", "--format=csv,noheader"])
@@ -226,15 +257,218 @@ fn detect_driver() -> Option<DriverVersion> {
     parse_driver_output(std::str::from_utf8(&output.stdout).ok()?).ok()
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum TorchCudaEnvironment {
+    Inherit,
+    Remove,
+    Set(OsString),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CargoCheckSpec {
+    program: OsString,
+    args: Vec<OsString>,
+    current_dir: PathBuf,
+    torch_cuda_environment: TorchCudaEnvironment,
+}
+
+fn backend_name(backend: ResolvedBackend) -> Option<&'static str> {
+    match backend {
+        ResolvedBackend::Preconfigured => None,
+        ResolvedBackend::Cpu => Some("cpu"),
+        ResolvedBackend::Cuda126 => Some("cuda-12.6"),
+    }
+}
+
+fn target_directory(backend: ResolvedBackend) -> Option<&'static str> {
+    match backend {
+        ResolvedBackend::Preconfigured => None,
+        ResolvedBackend::Cpu => Some("target/rusttorch/cpu"),
+        ResolvedBackend::Cuda126 => Some("target/rusttorch/cuda-12.6"),
+    }
+}
+
+fn nested_item<'a>(document: &'a DocumentMut, table: &str, key: &str) -> Option<&'a Item> {
+    document.get(table)?.get(key)
+}
+
+fn ensure_project_root(root: &Path) -> Result<(), CliError> {
+    if !root.join("Cargo.toml").is_file() {
+        return Err(CliError::new(format!(
+            "no Cargo.toml found in {}",
+            root.display()
+        )));
+    }
+    Ok(())
+}
+
+fn configure_project(root: &Path, backend: ResolvedBackend) -> Result<PathBuf, CliError> {
+    ensure_project_root(root)?;
+    let config_directory = root.join(".cargo");
+    let config_path = config_directory.join("config.toml");
+    if backend == ResolvedBackend::Preconfigured {
+        return Ok(config_path);
+    }
+
+    let original = match fs::read_to_string(&config_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(CliError::new(format!(
+                "could not read {}: {error}",
+                config_path.display()
+            )));
+        }
+    };
+    let mut document = if original.is_empty() {
+        DocumentMut::new()
+    } else {
+        original.parse::<DocumentMut>().map_err(|error| {
+            CliError::new(format!(
+                "could not parse {}: {error}",
+                config_path.display()
+            ))
+        })?
+    };
+
+    for table in ["build", "env"] {
+        if document
+            .get(table)
+            .is_some_and(|item| item.as_table_like().is_none())
+        {
+            return Err(CliError::new(format!(
+                "cannot update {table}: it is not a TOML table"
+            )));
+        }
+    }
+
+    let marker = nested_item(&document, "env", "RUSTTORCH_BACKEND")
+        .and_then(Item::as_str)
+        .and_then(|value| match value {
+            "cpu" => Some(ResolvedBackend::Cpu),
+            "cuda-12.6" => Some(ResolvedBackend::Cuda126),
+            _ => None,
+        });
+    let configured_target = nested_item(&document, "build", "target-dir");
+    let owns_configuration = marker.is_some_and(|old_backend| {
+        configured_target.and_then(Item::as_str) == target_directory(old_backend)
+    });
+
+    if configured_target.is_some() && !owns_configuration {
+        return Err(CliError::new(
+            "build.target-dir is user-owned; remove it or choose the RustTorch-managed value manually",
+        ));
+    }
+    if nested_item(&document, "env", "RUSTTORCH_BACKEND").is_some() && !owns_configuration {
+        return Err(CliError::new(
+            "RUSTTORCH_BACKEND is not paired with a RustTorch-managed target directory",
+        ));
+    }
+    if nested_item(&document, "env", "TORCH_CUDA_VERSION").is_some() && !owns_configuration {
+        return Err(CliError::new(
+            "TORCH_CUDA_VERSION is user-owned; remove it before RustTorch setup changes backends",
+        ));
+    }
+
+    document["build"]["target-dir"] = value(target_directory(backend).unwrap());
+    document["env"]["RUSTTORCH_BACKEND"] = value(backend_name(backend).unwrap());
+    match backend {
+        ResolvedBackend::Cuda126 => {
+            document["env"]["TORCH_CUDA_VERSION"] = value("cu126");
+        }
+        ResolvedBackend::Cpu => {
+            document["env"]
+                .as_table_like_mut()
+                .unwrap()
+                .remove("TORCH_CUDA_VERSION");
+        }
+        ResolvedBackend::Preconfigured => unreachable!(),
+    }
+
+    fs::create_dir_all(&config_directory).map_err(|error| {
+        CliError::new(format!(
+            "could not create {}: {error}",
+            config_directory.display()
+        ))
+    })?;
+    let mut temporary = NamedTempFile::new_in(&config_directory).map_err(|error| {
+        CliError::new(format!(
+            "could not create a temporary Cargo configuration: {error}"
+        ))
+    })?;
+    temporary
+        .write_all(document.to_string().as_bytes())
+        .and_then(|()| temporary.flush())
+        .and_then(|()| temporary.as_file().sync_all())
+        .map_err(|error| CliError::new(format!("could not write Cargo configuration: {error}")))?;
+    temporary.persist(&config_path).map_err(|error| {
+        CliError::new(format!(
+            "could not replace {} atomically: {}",
+            config_path.display(),
+            error.error
+        ))
+    })?;
+    Ok(config_path)
+}
+
+fn cargo_check_spec(root: &Path, backend: ResolvedBackend) -> CargoCheckSpec {
+    CargoCheckSpec {
+        program: OsString::from("cargo"),
+        args: vec![OsString::from("check")],
+        current_dir: root.to_path_buf(),
+        torch_cuda_environment: match backend {
+            ResolvedBackend::Preconfigured => TorchCudaEnvironment::Inherit,
+            ResolvedBackend::Cpu => TorchCudaEnvironment::Remove,
+            ResolvedBackend::Cuda126 => TorchCudaEnvironment::Set(OsString::from("cu126")),
+        },
+    }
+}
+
+fn execute_cargo_check(spec: &CargoCheckSpec) -> Result<(), CliError> {
+    let mut command = Command::new(&spec.program);
+    command.args(&spec.args).current_dir(&spec.current_dir);
+    match &spec.torch_cuda_environment {
+        TorchCudaEnvironment::Inherit => {}
+        TorchCudaEnvironment::Remove => {
+            command.env_remove("TORCH_CUDA_VERSION");
+        }
+        TorchCudaEnvironment::Set(value) => {
+            command.env("TORCH_CUDA_VERSION", value);
+        }
+    }
+    let status = command
+        .status()
+        .map_err(|error| CliError::new(format!("could not start Cargo check: {error}")))?;
+    if !status.success() {
+        return Err(CliError::new(
+            "Cargo check failed; fix the reported error and rerun rusttorch setup",
+        ));
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), CliError> {
     match parse_args(env::args_os().skip(1))? {
         CliAction::Help => println!("{HELP}"),
         CliAction::Version => println!("rusttorch {}", env!("CARGO_PKG_VERSION")),
         CliAction::Setup(request) => {
-            let configured = is_libtorch_preconfigured(|name| env::var_os(name).is_some());
-            let backend =
-                resolve_backend(request, Platform::current(), configured, detect_driver())?;
+            let platform = Platform::current();
+            let configured =
+                is_setup_preconfigured(platform, |name| env::var_os(name).is_some(), Path::exists);
+            let backend = resolve_setup_backend(request, platform, configured, detect_driver)?;
+            let project_root = env::current_dir().map_err(|error| {
+                CliError::new(format!("could not read current directory: {error}"))
+            })?;
+            ensure_project_root(&project_root)?;
             println!("Resolved backend: {backend}");
+            if backend == ResolvedBackend::Preconfigured {
+                println!("Using the existing LibTorch environment and Cargo configuration.");
+            } else {
+                let config_path = configure_project(&project_root, backend)?;
+                println!("Project configuration: {}", config_path.display());
+            }
+            println!("Running Cargo check; the first LibTorch acquisition can be large.");
+            execute_cargo_check(&cargo_check_spec(&project_root, backend))?;
         }
     }
     Ok(())
@@ -250,7 +484,22 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
+    use std::{ffi::OsString, fs};
+
+    fn cargo_project() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        directory
+    }
+
+    fn write_config(root: &std::path::Path, contents: &str) {
+        fs::create_dir(root.join(".cargo")).unwrap();
+        fs::write(root.join(".cargo/config.toml"), contents).unwrap();
+    }
 
     #[test]
     fn backend_parser_accepts_only_the_approved_names() {
@@ -307,6 +556,48 @@ mod tests {
             assert!(is_libtorch_preconfigured(|name| name == configured_name));
         }
         assert!(!is_libtorch_preconfigured(|_| false));
+    }
+
+    #[test]
+    fn setup_preconfiguration_includes_only_the_upstream_linux_system_path() {
+        let libtorch = std::path::Path::new("/usr/lib/libtorch.so");
+
+        assert!(is_setup_preconfigured(
+            Platform::Linux,
+            |_| false,
+            |path| path == libtorch
+        ));
+        assert!(!is_setup_preconfigured(
+            Platform::Macos,
+            |_| false,
+            |path| path == libtorch
+        ));
+        assert!(!is_setup_preconfigured(
+            Platform::Linux,
+            |_| false,
+            |_| false
+        ));
+    }
+
+    #[test]
+    fn backend_resolution_probes_driver_only_when_the_platform_and_request_need_it() {
+        use std::cell::Cell;
+
+        for (request, platform, configured, expected_calls) in [
+            (BackendRequest::Cpu, Platform::Linux, false, 0),
+            (BackendRequest::Auto, Platform::Linux, true, 0),
+            (BackendRequest::Auto, Platform::Macos, false, 0),
+            (BackendRequest::Cuda126, Platform::Other, false, 0),
+            (BackendRequest::Auto, Platform::Linux, false, 1),
+            (BackendRequest::Cuda126, Platform::Windows, false, 1),
+        ] {
+            let calls = Cell::new(0);
+            let _ = resolve_setup_backend(request, platform, configured, || {
+                calls.set(calls.get() + 1);
+                None
+            });
+            assert_eq!(calls.get(), expected_calls, "{request:?} on {platform:?}");
+        }
     }
 
     #[test]
@@ -413,5 +704,175 @@ mod tests {
             .unwrap(),
             ResolvedBackend::Cpu
         );
+    }
+
+    #[test]
+    fn configuration_preserves_unrelated_toml_and_writes_cuda_selection() {
+        let project = cargo_project();
+        write_config(project.path(), "[alias]\nfast = \"check\"\n");
+
+        let path = configure_project(project.path(), ResolvedBackend::Cuda126).unwrap();
+        let document = fs::read_to_string(&path).unwrap();
+
+        assert!(document.contains("fast = \"check\""));
+        assert!(document.contains("target-dir = \"target/rusttorch/cuda-12.6\""));
+        assert!(document.contains("RUSTTORCH_BACKEND = \"cuda-12.6\""));
+        assert!(document.contains("TORCH_CUDA_VERSION = \"cu126\""));
+    }
+
+    #[test]
+    fn configuration_switches_owned_cuda_selection_to_cpu() {
+        let project = cargo_project();
+        write_config(
+            project.path(),
+            "[build]\ntarget-dir = \"target/rusttorch/cuda-12.6\"\n\
+             [env]\nRUSTTORCH_BACKEND = \"cuda-12.6\"\n\
+             TORCH_CUDA_VERSION = \"cu126\"\nKEEP = \"yes\"\n",
+        );
+
+        let path = configure_project(project.path(), ResolvedBackend::Cpu).unwrap();
+        let document = fs::read_to_string(path).unwrap();
+
+        assert!(document.contains("target-dir = \"target/rusttorch/cpu\""));
+        assert!(document.contains("RUSTTORCH_BACKEND = \"cpu\""));
+        assert!(!document.contains("TORCH_CUDA_VERSION"));
+        assert!(document.contains("KEEP = \"yes\""));
+    }
+
+    #[test]
+    fn configuration_rejects_missing_manifest_before_writing() {
+        let project = tempfile::tempdir().unwrap();
+
+        let error = configure_project(project.path(), ResolvedBackend::Cpu).unwrap_err();
+
+        assert!(error.to_string().contains("Cargo.toml"));
+        assert!(!project.path().join(".cargo").exists());
+    }
+
+    #[test]
+    fn configuration_preserves_invalid_toml_on_parse_failure() {
+        let project = cargo_project();
+        let original = b"[build\ntarget-dir = \"broken\"\n";
+        write_config(project.path(), std::str::from_utf8(original).unwrap());
+
+        assert!(configure_project(project.path(), ResolvedBackend::Cpu).is_err());
+
+        assert_eq!(
+            fs::read(project.path().join(".cargo/config.toml")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn configuration_refuses_an_unowned_target_directory() {
+        let project = cargo_project();
+        let original = "[build]\ntarget-dir = \"target/custom\"\n";
+        write_config(project.path(), original);
+
+        let error = configure_project(project.path(), ResolvedBackend::Cpu).unwrap_err();
+
+        assert!(error.to_string().contains("build.target-dir"));
+        assert_eq!(
+            fs::read_to_string(project.path().join(".cargo/config.toml")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn configuration_does_not_adopt_an_unowned_same_value_marker() {
+        let project = cargo_project();
+        let original = "[env]\nRUSTTORCH_BACKEND = \"cuda-12.6\"\n";
+        write_config(project.path(), original);
+
+        let error = configure_project(project.path(), ResolvedBackend::Cuda126).unwrap_err();
+
+        assert!(error.to_string().contains("RUSTTORCH_BACKEND"));
+        assert_eq!(
+            fs::read_to_string(project.path().join(".cargo/config.toml")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn configuration_refuses_an_unowned_cuda_environment_key() {
+        let project = cargo_project();
+        let original = "[env]\nTORCH_CUDA_VERSION = \"cu126\"\n";
+        write_config(project.path(), original);
+
+        let error = configure_project(project.path(), ResolvedBackend::Cpu).unwrap_err();
+
+        assert!(error.to_string().contains("TORCH_CUDA_VERSION"));
+        assert_eq!(
+            fs::read_to_string(project.path().join(".cargo/config.toml")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn configuration_does_not_adopt_an_unowned_same_value_cuda_key() {
+        let project = cargo_project();
+        let original = "[env]\nTORCH_CUDA_VERSION = \"cu126\"\n";
+        write_config(project.path(), original);
+
+        let error = configure_project(project.path(), ResolvedBackend::Cuda126).unwrap_err();
+
+        assert!(error.to_string().contains("TORCH_CUDA_VERSION"));
+        assert_eq!(
+            fs::read_to_string(project.path().join(".cargo/config.toml")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn configuration_preconfigured_leaves_existing_config_untouched() {
+        let project = cargo_project();
+        let original = "[build\nthis need not parse\n";
+        write_config(project.path(), original);
+
+        let path = configure_project(project.path(), ResolvedBackend::Preconfigured).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            original,
+            "preconfigured setup must not parse or rewrite user configuration"
+        );
+    }
+
+    #[test]
+    fn cargo_check_specs_describe_backend_environment_without_running_cargo() {
+        let project = cargo_project();
+
+        assert_eq!(
+            cargo_check_spec(project.path(), ResolvedBackend::Cpu),
+            CargoCheckSpec {
+                program: OsString::from("cargo"),
+                args: vec![OsString::from("check")],
+                current_dir: project.path().to_path_buf(),
+                torch_cuda_environment: TorchCudaEnvironment::Remove,
+            }
+        );
+        assert_eq!(
+            cargo_check_spec(project.path(), ResolvedBackend::Cuda126).torch_cuda_environment,
+            TorchCudaEnvironment::Set(OsString::from("cu126"))
+        );
+        assert_eq!(
+            cargo_check_spec(project.path(), ResolvedBackend::Preconfigured).torch_cuda_environment,
+            TorchCudaEnvironment::Inherit
+        );
+    }
+
+    #[test]
+    fn unsuccessful_cargo_check_is_reported_without_network_access() {
+        let project = cargo_project();
+        let spec = CargoCheckSpec {
+            program: OsString::from("rustc"),
+            args: vec![OsString::from("--definitely-invalid-rusttorch-option")],
+            current_dir: project.path().to_path_buf(),
+            torch_cuda_environment: TorchCudaEnvironment::Inherit,
+        };
+
+        let error = execute_cargo_check(&spec).unwrap_err();
+
+        assert!(error.to_string().contains("Cargo check failed"));
     }
 }
