@@ -4,7 +4,11 @@
 
 **Goal:** Integrate, verify, publish, and announce the managed-runtime, compatibility-ledger, and DataLoader foundation as RustTorch 0.2.0.
 
-**Architecture:** The release is cut only after all three first-milestone plans pass together. GitHub receives one signed-off commit and tag; crates.io receives the bootstrap CLI before the library; docs.rs builds from the published library metadata.
+**Architecture:** The release is cut only after the runtime, compatibility,
+data, and open-source foundation plans pass together. One exact release commit
+is fast-forwarded to `main`; crates.io receives the bootstrap CLI before the
+library; only then does a tag trigger the SLSA-backed GitHub release. docs.rs
+builds from the published library metadata.
 
 **Tech Stack:** Cargo packaging/publishing, Git, GitHub CLI, crates.io, docs.rs.
 
@@ -18,6 +22,8 @@
 - The previously exposed crates.io token is never reused; Cargo must obtain authorization from a newly configured secure credential.
 - GitHub repository remains public and named `RustTorch`.
 - A failed verification or package dry run stops the release before any publication.
+- Open-Source Foundation Task 4's tag-only release/provenance workflow is
+  merged and structurally validated before the release begins.
 
 ---
 
@@ -76,6 +82,12 @@ git add Cargo.toml crates/rusttorch-cli/Cargo.toml Cargo.lock CHANGELOG.md READM
 git commit -m "chore: prepare RustTorch 0.2.0"
 ```
 
+- [ ] **Step 6: Record the immutable release candidate**
+
+Record `RELEASE_SHA=$(git rev-parse HEAD)` without abbreviating it. Every later
+gate, local-main integration, push, package publication, tag, and provenance
+check must refer to this exact commit. Stop if the worktree changes.
+
 ### Task 2: Run the complete release gate
 
 **Files:**
@@ -96,6 +108,8 @@ cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+RUSTDOCFLAGS="-D warnings" cargo doc -p rusttorch --no-deps \
+  --no-default-features --features tch/doc-only
 ```
 
 - [ ] **Step 2: Run parity and backend gates**
@@ -117,9 +131,13 @@ Run:
 cargo bench -p rusttorch --bench data_loader
 cargo publish -p rusttorch-cli --dry-run
 cargo publish -p rusttorch --dry-run
+cargo package -p rusttorch-cli --locked --list
+cargo package -p rusttorch --locked --list
 ```
 
-Inspect package file lists and sizes; neither package may contain native runtime archives.
+Inspect package file lists, built `.crate` archives, and sizes; neither package
+may contain a credential, virtual environment, native runtime, target artifact,
+model artifact, or internal SDD ledger.
 
 - [ ] **Step 4: Confirm the tree is unchanged**
 
@@ -132,73 +150,95 @@ git diff --check
 
 Expected: clean working tree.
 
-### Task 3: Push GitHub release state
+### Task 3: Publish the verified packages from exact public main
 
 **Files:**
 - Git refs only.
 
 **Interfaces:**
-- Produces: public `main`, tag `v0.2.0`, and GitHub release notes.
+- Produces: public `main` at `RELEASE_SHA`, then crates.io packages
+  `rusttorch-cli` 0.2.0 and `rusttorch` 0.2.0.
 
-- [ ] **Step 1: Push the verified commit**
+- [ ] **Step 1: Fast-forward local and public main to the verified SHA**
 
-```sh
-git push origin main
-```
+Fetch `origin/main` and verify it is an ancestor of `RELEASE_SHA`. Find the
+worktree that has local `main`, require it to be clean, and fast-forward it to
+the foundation branch with a reviewed `--ff-only` merge. Verify both
+`refs/heads/main` and the release worktree `HEAD` equal `RELEASE_SHA`, then push
+the explicit refspec `RELEASE_SHA:refs/heads/main`. Never run a bare
+`git push origin main` while local `main` and the verified worktree differ.
 
-- [ ] **Step 2: Create and push the annotated tag**
+- [ ] **Step 2: Require a newly configured Cargo credential**
 
-```sh
-git tag -a v0.2.0 -m "RustTorch 0.2.0"
-git push origin v0.2.0
-```
+Do not inspect, print, or reuse any existing credential. Ask the user to create
+and configure a new least-privilege crates.io credential through Cargo's
+credential mechanism, then verify authorization with a read-only owner query.
+If authorization fails, stop here: public `main` may remain updated, but do not
+publish either crate or create/push the release tag.
 
-- [ ] **Step 3: Create the public GitHub release**
-
-```sh
-gh release create v0.2.0 --repo newpoluton-alt/RustTorch --title "RustTorch 0.2.0" --generate-notes --verify-tag
-```
-
-Expected: the release points at the verified tagged commit.
-
-### Task 4: Publish both Cargo packages
-
-**Files:**
-- External package indexes only.
-
-**Interfaces:**
-- Consumes: a new secure Cargo credential and the GitHub tag.
-- Produces: crates.io packages `rusttorch-cli` 0.2.0 and `rusttorch` 0.2.0; docs.rs build for the library.
-
-- [ ] **Step 1: Verify Cargo has a non-exposed credential without printing it**
-
-Run:
-
-```sh
-cargo owner --list rusttorch
-```
-
-If authorization fails, stop before publishing and request that the user
-configure a newly issued token through Cargo's credential mechanism. Never put
-the token in a command, file diff, log, or chat response.
-
-- [ ] **Step 2: Publish the bootstrap CLI first**
+- [ ] **Step 3: Publish the bootstrap CLI first**
 
 ```sh
 cargo publish -p rusttorch-cli
 ```
 
-Expected: crates.io accepts `rusttorch-cli` 0.2.0.
+Expected: crates.io accepts `rusttorch-cli` 0.2.0. Verify the public package
+version before proceeding.
 
-- [ ] **Step 3: Publish the library**
+- [ ] **Step 4: Publish the library**
 
 ```sh
 cargo publish -p rusttorch
 ```
 
-Expected: crates.io accepts `rusttorch` 0.2.0.
+Expected: crates.io accepts `rusttorch` 0.2.0 and docs.rs queues the build.
 
-- [ ] **Step 4: Verify public package pages**
+### Task 4: Tag, attest, and verify the GitHub release
+
+**Files:**
+- External package indexes only.
+
+**Interfaces:**
+- Consumes: `RELEASE_SHA`, both public crates, and the tag-only SLSA workflow.
+- Produces: tag `v0.2.0`, a GitHub release containing exact `.crate` assets,
+  and SLSA provenance for those assets.
+
+- [ ] **Step 1: Create and push the tag only after both packages are public**
+
+```sh
+git tag -a v0.2.0 "$RELEASE_SHA" -m "RustTorch 0.2.0"
+git push origin v0.2.0
+```
+
+Verify the tag peels to `RELEASE_SHA`. The push triggers the OpenSSF Generic
+Generator; do not call `gh release create` separately because
+`upload-assets: true` creates the tag release and uploads provenance.
+
+- [ ] **Step 2: Verify the tag workflow and release assets**
+
+Wait for the tag workflow. Require successful build, provenance, and release
+jobs. Verify the GitHub release targets `v0.2.0`/`RELEASE_SHA` and contains both
+versioned `.crate` assets plus the configured `.intoto.jsonl` provenance. The
+release job must have used only:
+
+```sh
+GH_TOKEN="${GITHUB_TOKEN}" gh release upload "$GITHUB_REF_NAME" dist/*.crate --clobber
+```
+
+- [ ] **Step 3: Verify provenance and crates.io byte identity**
+
+Run `slsa-verifier` v2.7.1 over both release assets with:
+
+```text
+--source-uri github.com/newpoluton-alt/RustTorch --source-tag v0.2.0
+```
+
+SLSA directly attests the GitHub release `.crate` bytes. Download each
+published crates.io archive and compare its SHA-256 with the corresponding
+attested release asset before claiming that the crates.io artifact is
+byte-identical to the provenance subject.
+
+- [ ] **Step 4: Verify all public package pages**
 
 Verify the version through the crates.io API and confirm docs.rs has queued or
 built `rusttorch` 0.2.0. Confirm GitHub, crates.io, and docs.rs all link to the
