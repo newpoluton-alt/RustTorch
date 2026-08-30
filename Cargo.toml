@@ -21,6 +21,11 @@ exclude = [
 [lib]
 name = "rusttorch"
 
+[workspace]
+members = ["crates/rusttorch-cli"]
+default-members = ["."]
+resolver = "2"
+
 [features]
 default = ["download-libtorch"]
 download-libtorch = ["tch/download-libtorch"]

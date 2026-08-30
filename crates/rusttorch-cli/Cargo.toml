@@ -1,0 +1,17 @@
+[package]
+name = "rusttorch-cli"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Managed LibTorch setup for RustTorch projects"
+repository = "https://github.com/newpoluton-alt/RustTorch"
+license = "MIT OR Apache-2.0"
+publish = ["crates-io"]
+
+[[bin]]
+name = "rusttorch"
+path = "src/main.rs"
+
+[dependencies]
+toml_edit = "0.22"
+tempfile = "3"
