@@ -215,6 +215,54 @@ git add .github/workflows/ci.yml scripts/check-dco.py tests/test_check_dco.py \
 git commit -m "ci: enforce the RustTorch contribution gates"
 ```
 
+### Task 3a: Lock the Python policy and parity environment
+
+**Files:**
+- Create: `pyproject.toml`
+- Create: `uv.lock`
+- Modify: `.github/workflows/ci.yml`
+- Modify: `tests/test_community_health.py`
+- Modify: `CONTRIBUTING.md`
+- Modify: `Cargo.toml`
+
+**Interfaces:**
+- Consumes: CPython 3.14 and the official CPU PyTorch index.
+- Produces: a project-local `.venv` synchronized from one committed transitive
+  dependency lock for policy tests, compatibility checks, and Python parity.
+
+- [ ] **Step 1: Test the Python environment contract**
+
+Use `tomllib` plus workflow mutation tests to require CPython `>=3.14,<3.15`,
+exact top-level pins for PyTorch 2.13.0, SafeTensors 0.8.0, and NumPy 2.5.2,
+an explicit CPU-only PyTorch index, a current `uv.lock`, one exact immutable
+`setup-uv` action pin, disabled persistent caching, frozen synchronization, and
+the existing `.venv`/LibTorch/parity path. Reject inline `pip install`, a
+missing lock, unlocked sync, alternate PyTorch indexes, and dependency drift.
+
+- [ ] **Step 2: Add the locked UV tool project**
+
+Declare a non-package Python tooling project and pin `torch` to an
+`explicit = true` CPU index so unrelated packages continue to resolve only
+from PyPI. Generate and commit the transitive lock with UV 0.12.3. Keep the
+Rust crate archives clean by excluding the Python tooling manifest and lock.
+
+- [ ] **Step 3: Create and use the isolated environment**
+
+Pin
+`astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0`,
+request UV 0.12.3 with its cache disabled, and run
+`uv sync --frozen --no-cache` after Python 3.14 setup. Export
+the resulting project `.venv` through `PATH` and `VIRTUAL_ENV`; run all Python
+tests, compatibility checks, parity, and LibTorch discovery from it. Do not
+install Python packages directly in workflow YAML.
+
+- [ ] **Step 4: Document, validate, and commit**
+
+Document the same frozen local command in `CONTRIBUTING.md`. Validate the lock
+without modifying it, run the full Python policy suite and parity under the
+locked environment, parse the workflow, inspect both Cargo packages, and
+commit with a DCO sign-off.
+
 ### Task 4: Generate SLSA3 provenance for release artifacts
 
 **Files:**
