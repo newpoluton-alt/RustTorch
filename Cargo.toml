@@ -13,12 +13,17 @@ license = "MIT OR Apache-2.0"
 publish = ["crates-io"]
 exclude = [
     "/rustorch_codex_project_prompt.md",
+    "/crates/rusttorch-cli",
     "**/__pycache__/**",
     "**/*.pyc",
 ]
 
 [lib]
 name = "rusttorch"
+
+[features]
+default = ["download-libtorch"]
+download-libtorch = ["tch/download-libtorch"]
 
 [dependencies]
 tch = "0.26.0"
@@ -28,4 +33,5 @@ thiserror = "2.0"
 serde_json = "1.0"
 
 [package.metadata.docs.rs]
+no-default-features = true
 features = ["tch/doc-only"]
