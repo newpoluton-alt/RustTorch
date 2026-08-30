@@ -138,15 +138,103 @@ evidence = ["tests/eager.rs::tensor_core_types_are_reexported"]
 notes = "Reexporting tch::Tensor is not evidence that every torch.Tensor method matches PyTorch."
 
 [[api]]
+id = "data.batches"
+python_symbols = ["torch.utils.data.IterableDataset", "torch.utils.data.DataLoader"]
+rust_symbols = ["rusttorch::data::batches", "rusttorch::data::batches_with_collate"]
+status = "supported"
+implementation = "rusttorch"
+scope = "Single-threaded batching of ordinary fallible Rust iterators, with explicit nonzero batch size, drop-last behavior, identity Vec collation or fallible custom collation, and one-error-then-exhaust semantics."
+source = "torch/utils/data/_utils/fetch.py"
+evidence = ["tests/data.rs::stream_batches_keep_a_short_tail", "tests/data.rs::stream_batches_drop_a_short_tail", "tests/data.rs::stream_batches_apply_fallible_collation", "tests/data.rs::stream_batches_report_a_partial_drop_last_failure_once_then_exhaust"]
+notes = "An ordinary Rust iterator is the streaming surface; RustTorch does not require an IterableDataset wrapper or claim Python multiprocessing behavior."
+
+[[api]]
+id = "data.dataset"
+python_symbols = ["torch.utils.data.Dataset"]
+rust_symbols = ["rusttorch::data::Dataset", "rusttorch::data::DatasetSamples"]
+status = "supported"
+implementation = "rusttorch"
+scope = "Finite map-style datasets with owned samples, fallible indexed access, length and empty queries, and a lazy borrowing iterator over samples in index order."
+source = "torch/utils/data/dataset.py"
+evidence = ["tests/data.rs::dataset_default_is_empty_follows_len", "tests/data.rs::dataset_samples_borrow_and_fetch_lazily_in_order"]
+notes = "DatasetSamples performs no dataset clone or precollection; format-specific decoding belongs in optional packages."
+
+[[api]]
 id = "data.loader"
-python_symbols = ["torch.utils.data.Dataset", "torch.utils.data.DataLoader", "torch.utils.data.Sampler"]
+python_symbols = ["torch.utils.data.DataLoader"]
+rust_symbols = ["rusttorch::data::DataLoader"]
+status = "supported"
+implementation = "rusttorch"
+scope = "Single-threaded map-dataset batching with a caller-provided index sampler, explicit nonzero batch size and drop-last behavior, owned Vec batches or fallible custom collation, and one-error-then-exhaust semantics."
+source = "torch/utils/data/dataloader.py"
+evidence = ["tests/data.rs::loader_keeps_a_short_tail", "tests/data.rs::loader_drops_a_short_tail", "tests/data.rs::loader_applies_fallible_collation", "tests/data.rs::loader_moves_non_clone_samples_into_batches", "tests/data.rs::loader_discards_a_partial_batch_on_dataset_failure_then_exhausts"]
+notes = "This claim is limited to the written Rust surface; worker processes, prefetch, memory pinning, and iterator checkpointing have separate planned rows."
+
+[[api]]
+id = "data.loader.checkpoint"
+python_symbols = ["torch.utils.data.DataLoader iterator state"]
 rust_symbols = []
 status = "planned"
 implementation = "none"
-scope = "Fallible datasets, deterministic sampling, batching, collation, and streaming iteration are planned."
+scope = "Exact DataLoader checkpoint and resume, including source, sampler, partial-batch, and RNG state, are not implemented."
 source = "torch/utils/data/dataloader.py"
 evidence = []
-notes = "Workers, pinned memory, sharding, and checkpointable iteration are later milestones."
+notes = "A future format requires versioning plus exact-resume tests across successful and failing iteration."
+
+[[api]]
+id = "data.loader.pinning"
+python_symbols = ["torch.utils.data.DataLoader(pin_memory=...)"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Pinned-host-memory transfer policy and device-aware recursive batch pinning are not implemented."
+source = "torch/utils/data/dataloader.py"
+evidence = []
+notes = "Future support requires explicit backend scope and transfer benchmarks."
+
+[[api]]
+id = "data.loader.prefetch"
+python_symbols = ["torch.utils.data.DataLoader(prefetch_factor=...)"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Bounded background prefetch, ordering policy, backpressure, cancellation, and failure propagation are not implemented."
+source = "torch/utils/data/dataloader.py"
+evidence = []
+notes = "A future implementation must remain bounded and prove clean shutdown on early drop and errors."
+
+[[api]]
+id = "data.loader.workers"
+python_symbols = ["torch.utils.data.DataLoader(num_workers=...)", "torch.utils.data.get_worker_info"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Thread or process workers, persistent workers, worker initialization, timeout handling, and per-worker dataset sharding are not implemented."
+source = "torch/utils/data/dataloader.py"
+evidence = []
+notes = "Phase one is deliberately single-threaded and has no worker lifecycle to manage."
+
+[[api]]
+id = "data.sampler"
+python_symbols = ["torch.utils.data.SequentialSampler", "torch.utils.data.RandomSampler"]
+rust_symbols = ["rusttorch::data::SequentialSampler", "rusttorch::data::RandomSampler"]
+status = "supported"
+implementation = "rusttorch"
+scope = "Allocation-free sequential indices and a reproducible random permutation from a sampler-local ChaCha12 RNG that does not mutate LibTorch's global RNG; random sampling rejects an empty length."
+source = "torch/utils/data/sampler.py"
+evidence = ["tests/data.rs::sequential_sampler_yields_every_index_in_order", "tests/data.rs::random_sampler_is_seeded_and_yields_a_permutation", "tests/data.rs::random_sampler_rejects_zero_length_with_a_structured_error", "tests/data_libtorch.rs::random_sampler_does_not_change_libtorch_global_rng"]
+notes = "Seed equality is guaranteed only within this RustTorch sampler implementation; index order and empty-input behavior are not claimed to match PyTorch's RNG contract."
+
+[[api]]
+id = "data.sampler.distributed"
+python_symbols = ["torch.utils.data.DistributedSampler"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Rank-aware sharding, replica padding or dropping, epoch-dependent shuffle, and distributed sampler checkpointing are not implemented."
+source = "torch/utils/data/distributed.py"
+evidence = []
+notes = "This requires the process-group foundation and multi-rank parity evidence."
 
 [[api]]
 id = "distributed.c10d"

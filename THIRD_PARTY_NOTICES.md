@@ -98,8 +98,15 @@ POSSIBILITY OF SUCH DAMAGE.
 ```
 
 Relevant behavioral source areas include `torch/nn/modules`,
-`torch/nn/functional.py`, `torch/nn/init.py`, and `torch/optim`. Files that
-substantially translate logic should carry a concise source-path attribution.
+`torch/nn/functional.py`, `torch/nn/init.py`, and `torch/optim`. The data
+foundation adapts selected map/iterable dataset, sampling, batching,
+drop-last, and collation behavior from
+`torch/utils/data/dataset.py`, `torch/utils/data/sampler.py`,
+`torch/utils/data/dataloader.py`, and `torch/utils/data/_utils/fetch.py` at the
+version and commit above. RustTorch's fallible iterators and sampler-local
+ChaCha12 RNG are Rust-specific designs; they do not claim PyTorch RNG ordering
+or worker semantics. Files that substantially translate logic should carry a
+concise source-path attribution.
 
 ## Runtime acquisition and external components
 
