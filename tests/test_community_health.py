@@ -92,11 +92,23 @@ class CommunityHealthTests(unittest.TestCase):
         actions = re.findall(r"(?m)^\s+uses:\s+([^\s#]+)", text)
         self.assertTrue(actions)
         self.assertEqual(set(actions), APPROVED_CI_ACTIONS)
+        self.assertEqual(
+            len(re.findall(r"(?i)(?<![a-z0-9_-])uses\s*:", text)),
+            len(actions),
+        )
         self.assertNotRegex(text, r"\bsecrets(?:\.|\[)")
-        self.assertNotRegex(text, r"(?mi)^\s+cache(?:-dependency-path)?:")
+        self.assertNotRegex(
+            text,
+            r"(?i)(?<![a-z0-9_-])cache(?:-[a-z0-9_-]+)?\s*:",
+        )
         self.assertNotRegex(text, r"(?i)(?:^|/)cache@")
         self.assertNotRegex(text, r"(?m)^\s*[^#\n]*:\s*write(?:-all)?\s*$")
         self.assertNotRegex(text, r"(?m)^\s*permissions:.*\bwrite\b")
+        self.assertNotRegex(
+            text,
+            r'''(?i)(?<![a-z0-9_-])[a-z][a-z0-9_-]*\s*:\s*["']?'''
+            r'''write(?:-all)?["']?(?=[\s,}#]|$)''',
+        )
 
         self.assertEqual(text.count("permissions:"), 3)
         self.assertRegex(
@@ -241,6 +253,11 @@ class CommunityHealthTests(unittest.TestCase):
         text = self.read(".github/workflows/ci.yml")
         mutations = {
             "floating action": text.replace(CHECKOUT, "actions/checkout@v7", 1),
+            "flow action": text.replace(
+                "    steps:\n",
+                "    steps:\n      - { name: Unapproved, uses: evil/example@main }\n",
+                1,
+            ),
             "secret context": text.replace(
                 "name: CI", "name: CI\n# ${{ secrets.CARGO_TOKEN }}", 1
             ),
@@ -249,7 +266,17 @@ class CommunityHealthTests(unittest.TestCase):
                 "          toolchain: stable\n          cache: cargo",
                 1,
             ),
+            "flow cache config": text.replace(
+                "        with:\n          python-version: \"3.14\"",
+                '        with: { python-version: "3.14", cache: pip }',
+                1,
+            ),
             "write permission": text.replace("contents: read", "contents: write", 1),
+            "flow write permission": text.replace(
+                "    permissions:\n      contents: read\n    steps:",
+                "    permissions: { contents: write }\n    steps:",
+                1,
+            ),
             "extra read permission": text.replace(
                 "    permissions:\n      contents: read\n    steps:",
                 "    permissions:\n      contents: read\n      issues: read\n    steps:",
