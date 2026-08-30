@@ -1,6 +1,6 @@
 //! Fallible datasets and deterministic sampling utilities.
 
-use std::{ops::Range, vec::IntoIter};
+use std::{marker::PhantomData, ops::Range, vec::IntoIter};
 
 use rand::{SeedableRng, seq::SliceRandom};
 use rand_chacha::ChaCha12Rng;
@@ -120,5 +120,159 @@ impl Iterator for RandomSampler {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.indices.next()
+    }
+}
+
+type IdentityCollate<T, E> = fn(Vec<T>) -> std::result::Result<Vec<T>, E>;
+
+fn identity_batch<T, E>(samples: Vec<T>) -> std::result::Result<Vec<T>, E> {
+    Ok(samples)
+}
+
+/// A single-threaded iterator over batches from a map-style [`Dataset`].
+///
+/// The loader borrows its dataset and owns both its sampler and collation
+/// closure. Samples are moved into one pre-sized vector per batch without a
+/// `Clone` requirement. Dataset and collation errors are yielded once and
+/// then terminate the iterator.
+pub struct DataLoader<'a, D, S, C, B, E>
+where
+    D: Dataset,
+{
+    dataset: &'a D,
+    sampler: S,
+    batch_size: usize,
+    drop_last: bool,
+    collate: C,
+    exhausted: bool,
+    output: PhantomData<fn() -> (B, E)>,
+}
+
+impl<'a, D, S> DataLoader<'a, D, S, IdentityCollate<D::Sample, D::Error>, Vec<D::Sample>, D::Error>
+where
+    D: Dataset,
+    S: Iterator<Item = usize>,
+{
+    /// Creates a loader whose batches are vectors of owned samples.
+    ///
+    /// `dataset` is borrowed, while `sampler` is consumed by the loader.
+    /// A short final batch is omitted when `drop_last` is `true`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RustTorchError::InvalidConfiguration`] when `batch_size` is
+    /// zero.
+    pub fn new(dataset: &'a D, sampler: S, batch_size: usize, drop_last: bool) -> Result<Self> {
+        Self::with_collate(
+            dataset,
+            sampler,
+            batch_size,
+            drop_last,
+            identity_batch::<D::Sample, D::Error>,
+        )
+    }
+}
+
+impl<'a, D, S, C, B, E> DataLoader<'a, D, S, C, B, E>
+where
+    D: Dataset,
+    S: Iterator<Item = usize>,
+    C: FnMut(Vec<D::Sample>) -> std::result::Result<B, E>,
+    E: From<D::Error>,
+{
+    /// Creates a loader with fallible custom collation.
+    ///
+    /// The closure receives ownership of exactly one vector of samples and
+    /// may return any batch type. Dataset failures are converted into the
+    /// closure's error type through [`From`]. A short final batch is omitted
+    /// when `drop_last` is `true`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RustTorchError::InvalidConfiguration`] when `batch_size` is
+    /// zero. Dataset and collation failures are returned by iteration.
+    pub fn with_collate(
+        dataset: &'a D,
+        sampler: S,
+        batch_size: usize,
+        drop_last: bool,
+        collate: C,
+    ) -> Result<Self> {
+        if batch_size == 0 {
+            return Err(RustTorchError::InvalidConfiguration {
+                field: "batch_size",
+                reason: "must be greater than zero".to_owned(),
+            });
+        }
+
+        Ok(Self {
+            dataset,
+            sampler,
+            batch_size,
+            drop_last,
+            collate,
+            exhausted: false,
+            output: PhantomData,
+        })
+    }
+}
+
+impl<D, S, C, B, E> Iterator for DataLoader<'_, D, S, C, B, E>
+where
+    D: Dataset,
+    S: Iterator<Item = usize>,
+    C: FnMut(Vec<D::Sample>) -> std::result::Result<B, E>,
+    E: From<D::Error>,
+{
+    type Item = std::result::Result<B, E>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.exhausted {
+            return None;
+        }
+
+        let first_index = match self.sampler.next() {
+            Some(index) => index,
+            None => {
+                self.exhausted = true;
+                return None;
+            }
+        };
+        let first = match self.dataset.get(first_index) {
+            Ok(sample) => sample,
+            Err(error) => {
+                self.exhausted = true;
+                return Some(Err(E::from(error)));
+            }
+        };
+
+        let mut samples = Vec::with_capacity(self.batch_size);
+        samples.push(first);
+        while samples.len() < self.batch_size {
+            let index = match self.sampler.next() {
+                Some(index) => index,
+                None => {
+                    self.exhausted = true;
+                    if self.drop_last {
+                        return None;
+                    }
+                    break;
+                }
+            };
+
+            match self.dataset.get(index) {
+                Ok(sample) => samples.push(sample),
+                Err(error) => {
+                    self.exhausted = true;
+                    return Some(Err(E::from(error)));
+                }
+            }
+        }
+
+        let batch = (self.collate)(samples);
+        if batch.is_err() {
+            self.exhausted = true;
+        }
+        Some(batch)
     }
 }
