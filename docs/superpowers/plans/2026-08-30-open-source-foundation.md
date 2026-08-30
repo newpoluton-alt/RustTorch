@@ -107,10 +107,13 @@ Expected: FAIL because the community files do not yet exist.
 - [ ] **Step 3: Add the minimum complete community files**
 
 Adopt Contributor Covenant 2.1 and DCO 1.1 verbatim where their licenses
-require it. Route confidential reports to GitHub private vulnerability
-reporting. Define scopes, labels, reproduction fields, PyTorch reference and
-backend fields, benchmark methodology, PR checklist, code ownership, and
-weekly Dependabot updates for Cargo and GitHub Actions.
+require it. Route vulnerabilities to GitHub private vulnerability reporting.
+For conduct reports, point to the maintainer's published profile contact and
+warn reporters not to disclose sensitive details publicly; do not promise a
+confidential channel until one is separately configured. Define scopes,
+labels, reproduction fields, PyTorch reference and backend fields, benchmark
+methodology, PR checklist, code ownership, and weekly Dependabot updates for
+Cargo and GitHub Actions.
 
 - [ ] **Step 4: Expand contributor and maintainer workflows**
 
@@ -122,8 +125,10 @@ README's interim GitHub security-page link with the committed security policy.
 
 - [ ] **Step 5: Validate and commit**
 
-Run the community-health test, inspect YAML with Python's available parser if
-present or GitHub's own validation after push, check every relative link, then:
+Run the standard-library community-health test for required files and textual
+form fields, validate issue-form YAML through GitHub after push, and check every
+relative link. Do not claim local YAML syntax validation without a declared
+parser. Then:
 
 ```sh
 git add README.md CONTRIBUTING.md CODE_OF_CONDUCT.md DCO.md SECURITY.md SUPPORT.md \
@@ -154,9 +159,12 @@ commits are all checked, and commits reachable from the base are excluded.
 
 - [ ] **Step 2: Implement the standard-library DCO checker**
 
-Accept `--base` and `--head`, enumerate `base..head`, and require at least one
-case-insensitive sign-off matching each commit author's name and email. Print
-the short commit IDs and the exact `git commit --amend --signoff` recovery.
+Accept `--base` and `--head`, enumerate `base..head`, and require a
+`Signed-off-by: Name <email>` trailer matching each commit author's identity
+under a documented case-insensitive normalization rule. Document explicit
+policy for maintainer-applied patches and verified automation; Dependabot's
+verified bot identity is allowed only through that narrow rule. Print the
+short commit IDs and exact sign-off recovery commands.
 
 - [ ] **Step 3: Restructure CI with least privilege**
 
@@ -169,12 +177,18 @@ actions/dependency-review-action@595b5aeba73380359d98a5e087f648dbb0edce1b # v4.7
 actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
 ```
 
-Run DCO and dependency review only for pull requests. Run the library quality
-suite on Ubuntu stable, compile the library on Rust 1.88, and test the CLI on
-Ubuntu, macOS, and Windows. Install the pinned CPU PyTorch wheel from its CPU
-index separately from SafeTensors and NumPy. Add concurrency cancellation,
-read-only default permissions, package/archive checks, and an `if: always()`
-aggregator named `required` that rejects failed or cancelled prerequisites.
+Set workflow `name: CI` and name the aggregator job exactly `required`, yielding
+the stable `CI / required` status. Run DCO and dependency review only for pull
+requests. DCO checkout uses `fetch-depth: 0` and checks
+`${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}`.
+Dependency Review uses only `contents: read` and leaves pull-request comments
+disabled. Run the library quality suite on Ubuntu stable, compile the library
+on Rust 1.88, and test the CLI on Ubuntu, macOS, and Windows. Install the pinned
+CPU PyTorch wheel from its CPU index separately from SafeTensors and NumPy. Add
+concurrency cancellation, read-only default permissions, package/archive
+checks, and `if: always()` logic that requires the PR-only jobs on pull requests,
+accepts their intentional skip on push/manual runs, and rejects any failed or
+cancelled applicable prerequisite.
 
 - [ ] **Step 4: Document and validate**
 
@@ -219,9 +233,12 @@ lockfile, changelog, and compatibility ledger before packaging.
 
 - [ ] **Step 3: Build exact release subjects once**
 
-In a read-only build job, run Cargo package verification, copy both generated
-`.crate` files into `dist/`, hash those exact files, base64-encode the subjects,
-and upload the directory once using:
+In a read-only build job, install pinned CPU PyTorch, set
+`LIBTORCH_USE_PYTORCH=1` and its native-library path, then run locked Cargo
+package verification. Copy only both generated `.crate` files into `dist/`.
+From that directory run `sha256sum *.crate > subjects.txt` and base64-encode
+`subjects.txt` unchanged so subject names exactly match release asset names.
+Upload the directory once using:
 
 ```text
 actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -243,14 +260,19 @@ Pass `base64-subjects`, set a versioned `provenance-name`, and enable
 actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
 ```
 
-Use preinstalled `gh release create`/`gh release upload` with the job token;
-never rebuild and never publish to crates.io from this workflow.
+With `GH_TOKEN: ${{ github.token }}`, use
+`gh release upload "$GITHUB_REF_NAME" dist/*.crate --clobber`. Do not create a
+second release: the generator's `upload-assets: true` path creates the tag
+release and adds provenance. Never rebuild and never publish to crates.io from
+this workflow.
 
 - [ ] **Step 5: Document verification and commit**
 
 Document installing `slsa-verifier` v2.7.1 and verifying all subjects with
-`--source-uri github.com/newpoluton-alt/RustTorch --source-tag vX.Y.Z`. Run
-release tests and package dry runs, then commit.
+`--source-uri github.com/newpoluton-alt/RustTorch --source-tag vX.Y.Z`. State
+that the requested Generic Generator is no longer actively maintained and
+record GitHub artifact attestations as the migration path. Run release tests
+and package dry runs, then commit.
 
 ### Task 5: Apply and verify public repository settings
 
@@ -271,16 +293,21 @@ Do not replace an existing stricter rule without explicit review.
 
 - [ ] **Step 2: Enable collaboration and safe defaults**
 
-Enable Discussions, private vulnerability reporting, automatic deletion of
-merged branches, squash merging, web commit sign-off, and read-only workflow
-token defaults where supported.
+Enable Discussions, private vulnerability reporting, Dependabot alerts and
+security updates, secret scanning and push protection where available,
+automatic deletion of merged branches, squash merging, web commit sign-off,
+and read-only workflow token defaults. Web sign-off covers only GitHub web
+commits; CLI commits remain enforced by DCO CI. Record unavailable controls.
 
 - [ ] **Step 3: Protect main and release tags**
 
 Create rulesets for `main` and `v*` that prevent deletion and force pushes.
-Require pull requests, one approval, code-owner review, resolved conversations,
-and `CI / required` for `main`. Preserve an explicit sole-maintainer emergency
-bypass until governance records a second active maintainer.
+While there is one maintainer, require pull requests, resolved conversations,
+and `CI / required` for `main`, but keep required approvals at zero and record
+an owner user bypass in `pull_request` mode. After governance records a second
+active maintainer, raise approvals to one and require code-owner review. Give
+the owner a documented tag-creation bypass for `v*`; do not use team-required-
+reviewer rules in this user-owned repository.
 
 - [ ] **Step 4: Read back, document, and commit**
 
