@@ -13,28 +13,72 @@ with or endorsed by the PyTorch Foundation.
 
 ## Installation
 
-Add the package to your application:
+Install the lightweight bootstrap command, add RustTorch to your Cargo project,
+configure the project, and run it:
+
+```sh
+cargo install rusttorch-cli
+cargo add rusttorch
+rusttorch setup --backend auto
+cargo run
+```
+
+Choose a managed backend explicitly when automatic selection is not wanted:
+
+```sh
+rusttorch setup --backend cpu
+rusttorch setup --backend cuda-12.6
+```
+
+The setup command locates the Cargo workspace root, updates its active
+project-local Cargo configuration, and invokes `cargo check`. It is a project
+bootstrap command, not a global LibTorch installer. The default RustTorch
+feature lets upstream `torch-sys` acquire the official PyTorch/LibTorch 2.13.0
+artifact into Cargo build storage. A failed check leaves the safe project
+configuration in place so the same setup command can be retried.
+
+`auto` preserves an active `LIBTORCH_USE_PYTORCH`, `LIBTORCH`,
+`LIBTORCH_INCLUDE`, `LIBTORCH_LIB`, or nonempty `TORCH_CUDA_VERSION` selector;
+on Linux it also preserves `/usr/lib/libtorch.so`. Otherwise it selects CUDA
+12.6 only on Linux or Windows when the NVIDIA driver is compatible, and CPU on
+the remaining supported hosts. macOS acquires CPU LibTorch, whose supported
+builds can use MPS. Explicit managed CPU or CUDA setup refuses conflicting
+active selectors.
+
+Managed CPU and CUDA builds use `target/rusttorch/cpu` and
+`target/rusttorch/cuda-12.6`. CPU builds must keep `TORCH_CUDA_VERSION` unset;
+managed CUDA forces `TORCH_CUDA_VERSION=cu126`. Setup rejects
+`CARGO_TARGET_DIR` and `CARGO_BUILD_TARGET_DIR` in managed modes. Later raw
+Cargo `--target-dir` or environment overrides can bypass that isolation.
+Existing unrelated Cargo settings are preserved, including use of an active
+legacy `.cargo/config`; running setup in a workspace member still configures
+the workspace root. Preconfigured mode writes no Cargo configuration.
+
+For an existing Python, system, or offline LibTorch installation, disable
+automatic acquisition:
 
 ```toml
 [dependencies]
-rusttorch = "0.1"
+rusttorch = { version = "0.2", default-features = false }
 ```
 
-RustTorch links dynamically to PyTorch/LibTorch 2.13.0. Adding the Cargo
-dependency does not install LibTorch. Before building an application, choose
-one of the setups supported by `tch`:
+Then build with one supported selector, for example:
 
-- Install Python PyTorch 2.13.0 in an activated environment and set
-  `LIBTORCH_USE_PYTORCH=1` while building the application.
-- Install the matching standalone LibTorch 2.13.0 distribution and set
-  `LIBTORCH` to its absolute installation path.
+```sh
+LIBTORCH_USE_PYTORCH=1 cargo run
+LIBTORCH=/absolute/path/to/libtorch cargo run
+```
+
+With the dependency and selected LibTorch already available locally, Cargo's
+ordinary `--offline` mode can be used. The selector must identify a compatible
+PyTorch/LibTorch 2.13.0 installation.
 
 When running the application, the operating-system loader must be able to find
 LibTorch. If needed, add its `lib` directory (or the Python package's
 `torch/lib` directory) to
 `LD_LIBRARY_PATH` on Linux or `DYLD_LIBRARY_PATH` on macOS. CUDA applications
 must use a CUDA-enabled LibTorch build compatible with the installed NVIDIA
-driver. RustTorch does not install LibTorch, CUDA, or a driver.
+driver. RustTorch never installs or modifies NVIDIA drivers or CUDA toolkits.
 
 The public API is documented on
 [docs.rs](https://docs.rs/rusttorch). Design, compatibility, backend,
@@ -87,10 +131,10 @@ and the repository's Linux CPU and CUDA helpers.
 
 ```sh
 cargo fmt --all -- --check
-cargo check --all-targets
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets
-cargo doc --no-deps
+cargo check --workspace --all-targets
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets
+cargo doc --workspace --no-deps
 scripts/check-backends.sh
 scripts/run-python-parity.sh
 ```

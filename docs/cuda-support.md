@@ -1,7 +1,21 @@
 # CUDA support
 
 RustTorch CUDA execution is LibTorch CUDA execution. The crate contains no CUDA
-kernels and does not pin or install a CUDA toolkit.
+kernels. Setup never installs or modifies an NVIDIA driver or CUDA toolkit.
+
+The managed command is:
+
+```sh
+rusttorch setup --backend cuda-12.6
+```
+
+This exact backend maps to the official `cu126` LibTorch artifact and forces
+`TORCH_CUDA_VERSION=cu126` in project configuration. The minimum detected
+driver is 525.60.13 on Linux and 528.33.0 on Windows. `auto` chooses this
+backend only when `nvidia-smi` reports a compatible driver; an older, missing,
+or unparseable driver makes `auto` choose CPU. Explicit CUDA setup returns an
+error instead. The probe is selection only: the Rust hardware tests are the
+evidence that CUDA execution actually works.
 
 Requirements:
 
@@ -14,6 +28,14 @@ Requirements:
 `DeviceSpec::Auto` chooses CUDA:0 only after availability is verified. Model
 parameters, inputs, outputs, losses, and gradients stay on CUDA; implicit CPU
 fallback is not enabled.
+
+Managed CUDA artifacts use `target/rusttorch/cuda-12.6`, separate from the
+managed CPU target. Setup rejects `CARGO_TARGET_DIR` and
+`CARGO_BUILD_TARGET_DIR`; later raw Cargo target-directory overrides can still
+bypass this isolation. An already active LibTorch/Python/TORCH selector is
+preserved by `auto` and rejected by explicit CUDA setup. RustTorch does not
+promise that acquisition occurs exactly once, and the operating-system loader
+must be able to find the selected LibTorch shared libraries at runtime.
 
 The CUDA validation matrix conditionally covers tensor creation, eager and
 Graph IR forward/backward, Adam, SGD, device mismatch, output/gradient device,

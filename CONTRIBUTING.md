@@ -9,10 +9,11 @@ by `tch` or the standard library.
 ```sh
 . scripts/dev-env.sh
 cargo fmt --all -- --check
-cargo check --all-targets
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets
-cargo doc --no-deps
+cargo check --workspace --all-targets
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets
+cargo doc --workspace --no-deps
+cargo check -p rusttorch --all-targets --no-default-features --features tch/doc-only
 ```
 
 Run `scripts/run-python-parity.sh` for changes affecting PyTorch defaults,
