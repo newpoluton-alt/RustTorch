@@ -374,6 +374,16 @@ fn configure_project(root: &Path, backend: ResolvedBackend) -> Result<PathBuf, C
     let owns_configuration = marker.is_some_and(|old_backend| {
         configured_target.and_then(Item::as_str) == target_directory(old_backend)
     });
+    let configured_cuda = nested_item(&document, "env", "TORCH_CUDA_VERSION");
+    let owns_cuda_selector = owns_configuration
+        && marker == Some(ResolvedBackend::Cuda126)
+        && configured_cuda.is_some_and(|item| {
+            item.as_inline_table().is_some_and(|table| {
+                table.len() == 2
+                    && table.get("value").and_then(Value::as_str) == Some("cu126")
+                    && table.get("force").and_then(Value::as_bool) == Some(true)
+            })
+        });
 
     if configured_target.is_some() && !owns_configuration {
         return Err(CliError::new(
@@ -385,7 +395,7 @@ fn configure_project(root: &Path, backend: ResolvedBackend) -> Result<PathBuf, C
             "RUSTTORCH_BACKEND is not paired with a RustTorch-managed target directory",
         ));
     }
-    if nested_item(&document, "env", "TORCH_CUDA_VERSION").is_some() && !owns_configuration {
+    if configured_cuda.is_some() && !owns_cuda_selector {
         return Err(CliError::new(
             "TORCH_CUDA_VERSION is user-owned; remove it before RustTorch setup changes backends",
         ));
@@ -917,6 +927,50 @@ mod tests {
         assert!(document.contains("RUSTTORCH_BACKEND = \"cpu\""));
         assert!(!document.contains("TORCH_CUDA_VERSION"));
         assert!(document.contains("KEEP = \"yes\""));
+    }
+
+    #[test]
+    fn configuration_refuses_cuda_selector_added_to_owned_cpu_config() {
+        let project = cargo_project();
+        let original = "[build]\ntarget-dir = \"target/rusttorch/cpu\"\n\
+                        [env]\nRUSTTORCH_BACKEND = \"cpu\"\n\
+                        TORCH_CUDA_VERSION = { value = \"cu126\", force = true }\n";
+        write_config(project.path(), original);
+
+        let error = configure_project(project.path(), ResolvedBackend::Cuda126).unwrap_err();
+
+        assert!(error.to_string().contains("TORCH_CUDA_VERSION"));
+        assert_eq!(
+            fs::read_to_string(project.path().join(".cargo/config.toml")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn configuration_refuses_noncanonical_selector_in_owned_cuda_config() {
+        for selector in [
+            "\"cu126\"",
+            "{ value = \"cu126\" }",
+            "{ value = \"cu126\", force = false }",
+            "{ value = \"cu126\", force = true, user = true }",
+        ] {
+            let project = cargo_project();
+            let original = format!(
+                "[build]\ntarget-dir = \"target/rusttorch/cuda-12.6\"\n\
+                 [env]\nRUSTTORCH_BACKEND = \"cuda-12.6\"\n\
+                 TORCH_CUDA_VERSION = {selector}\n"
+            );
+            write_config(project.path(), &original);
+
+            let error = configure_project(project.path(), ResolvedBackend::Cpu).unwrap_err();
+
+            assert!(error.to_string().contains("TORCH_CUDA_VERSION"));
+            assert_eq!(
+                fs::read_to_string(project.path().join(".cargo/config.toml")).unwrap(),
+                original,
+                "selector {selector} must remain user-owned"
+            );
+        }
     }
 
     #[test]
