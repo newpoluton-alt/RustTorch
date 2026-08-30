@@ -145,7 +145,7 @@ status = "supported"
 implementation = "rusttorch"
 scope = "Single-threaded batching of ordinary fallible Rust iterators, with explicit nonzero batch size, drop-last behavior, identity Vec collation or fallible custom collation, and one-error-then-exhaust semantics."
 source = "torch/utils/data/_utils/fetch.py"
-evidence = ["tests/data.rs::stream_batches_keep_a_short_tail", "tests/data.rs::stream_batches_drop_a_short_tail", "tests/data.rs::stream_batches_apply_fallible_collation", "tests/data.rs::stream_batches_report_a_partial_drop_last_failure_once_then_exhaust"]
+evidence = ["tests/data.rs::stream_batches_keep_a_short_tail", "tests/data.rs::stream_batches_drop_a_short_tail", "tests/data.rs::stream_batches_reject_zero_batch_size_with_a_structured_error", "tests/data.rs::stream_batches_apply_fallible_collation", "tests/data.rs::stream_batches_report_a_partial_drop_last_failure_once_then_exhaust", "tests/data.rs::stream_batches_report_a_collation_failure_once_then_exhaust"]
 notes = "An ordinary Rust iterator is the streaming surface; RustTorch does not require an IterableDataset wrapper or claim Python multiprocessing behavior."
 
 [[api]]
@@ -167,7 +167,7 @@ status = "supported"
 implementation = "rusttorch"
 scope = "Single-threaded map-dataset batching with a caller-provided index sampler, explicit nonzero batch size and drop-last behavior, owned Vec batches or fallible custom collation, and one-error-then-exhaust semantics."
 source = "torch/utils/data/dataloader.py"
-evidence = ["tests/data.rs::loader_keeps_a_short_tail", "tests/data.rs::loader_drops_a_short_tail", "tests/data.rs::loader_applies_fallible_collation", "tests/data.rs::loader_moves_non_clone_samples_into_batches", "tests/data.rs::loader_discards_a_partial_batch_on_dataset_failure_then_exhausts"]
+evidence = ["tests/data.rs::loader_keeps_a_short_tail", "tests/data.rs::loader_drops_a_short_tail", "tests/data.rs::loader_rejects_zero_batch_size_with_a_structured_error", "tests/data.rs::loader_applies_fallible_collation", "tests/data.rs::loader_moves_non_clone_samples_into_batches", "tests/data.rs::loader_discards_a_partial_batch_on_dataset_failure_then_exhausts", "tests/data.rs::loader_yields_a_collation_failure_once_then_exhausts"]
 notes = "This claim is limited to the written Rust surface; worker processes, prefetch, memory pinning, and iterator checkpointing have separate planned rows."
 
 [[api]]
