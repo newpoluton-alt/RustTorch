@@ -1,0 +1,12 @@
+# Default owner and explicit sensitive-path review routing.
+* @newpoluton-alt
+
+/.github/** @newpoluton-alt
+/.github/workflows/** @newpoluton-alt
+/.github/CODEOWNERS @newpoluton-alt
+/SECURITY.md @newpoluton-alt
+/GOVERNANCE.md @newpoluton-alt
+/docs/releasing.md @newpoluton-alt
+/LICENSE-MIT @newpoluton-alt
+/LICENSE-APACHE @newpoluton-alt
+/compat/pytorch_api.toml @newpoluton-alt
