@@ -42,3 +42,7 @@ serde_json = "1.0"
 [package.metadata.docs.rs]
 no-default-features = true
 features = ["tch/doc-only"]
+
+[[bench]]
+name = "data_loader"
+harness = false

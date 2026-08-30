@@ -239,6 +239,22 @@ where
 /// # Errors
 ///
 /// Returns [`RustTorchError::InvalidConfiguration`] when `batch_size` is zero.
+///
+/// # Examples
+///
+/// An ordinary fallible iterator is enough for streaming data:
+///
+/// ```
+/// use rusttorch::data::batches;
+///
+/// let records = ["10", "20", "30"].into_iter().map(str::parse::<i64>);
+/// let loader = batches(records, 2, false).expect("batch size is nonzero");
+/// let batches = loader
+///     .collect::<Result<Vec<_>, _>>()
+///     .expect("every record is an integer");
+///
+/// assert_eq!(batches, vec![vec![10, 20], vec![30]]);
+/// ```
 pub fn batches<I, T, E>(
     source: I,
     batch_size: usize,
@@ -279,6 +295,52 @@ where
 /// closure. Samples are moved into one pre-sized vector per batch without a
 /// `Clone` requirement. Dataset and collation errors are yielded once and
 /// then terminate the iterator.
+///
+/// # Examples
+///
+/// A seeded sampler and a collation closure can produce tensor batches:
+///
+/// ```no_run
+/// use std::convert::Infallible;
+///
+/// use rusttorch::{
+///     Result, Tensor,
+///     data::{DataLoader, Dataset, RandomSampler},
+/// };
+///
+/// struct Rows(usize);
+///
+/// impl Dataset for Rows {
+///     type Sample = Tensor;
+///     type Error = Infallible;
+///
+///     fn len(&self) -> usize {
+///         self.0
+///     }
+///
+///     fn get(&self, index: usize) -> std::result::Result<Tensor, Infallible> {
+///         Ok(Tensor::from_slice(&[index as f32]))
+///     }
+/// }
+///
+/// fn main() -> Result<()> {
+///     let dataset = Rows(8);
+///     let sampler = RandomSampler::new(dataset.len(), 42)?;
+///     let loader = DataLoader::with_collate(
+///         &dataset,
+///         sampler,
+///         4,
+///         false,
+///         |samples| Ok::<_, Infallible>(Tensor::stack(&samples, 0)),
+///     )?;
+///
+///     for batch in loader {
+///         let tensor = batch.expect("dataset and collation are infallible");
+///         assert_eq!(tensor.size(), [4, 1]);
+///     }
+///     Ok(())
+/// }
+/// ```
 pub struct DataLoader<'a, D, S, C, B, E>
 where
     D: Dataset,

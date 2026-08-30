@@ -16,6 +16,46 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **Evidence:** [`tests/device.rs::cpu_resolves_explicitly`](../tests/device.rs), [`tests/device.rs::reported_capabilities_match_resolved_devices`](../tests/device.rs), [`tests/device.rs::unavailable_or_out_of_range_cuda_is_an_error`](../tests/device.rs), [`tests/device.rs::explicit_mps_is_resolved_or_rejected_without_fallback`](../tests/device.rs)
 - **Notes:** Accelerator branches are conditional on the linked runtime; this row does not claim a CUDA or MPS pass on every host.
 
+### `data.batches`
+
+- **PyTorch:** `torch.utils.data.IterableDataset`, `torch.utils.data.DataLoader`
+- **RustTorch:** `rusttorch::data::batches`, `rusttorch::data::batches_with_collate`
+- **Implementation:** Implemented by RustTorch
+- **Scope:** Single-threaded batching of ordinary fallible Rust iterators, with explicit nonzero batch size, drop-last behavior, identity Vec collation or fallible custom collation, and one-error-then-exhaust semantics.
+- **Pinned source:** [`torch/utils/data/_utils/fetch.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/_utils/fetch.py)
+- **Evidence:** [`tests/data.rs::stream_batches_keep_a_short_tail`](../tests/data.rs), [`tests/data.rs::stream_batches_drop_a_short_tail`](../tests/data.rs), [`tests/data.rs::stream_batches_apply_fallible_collation`](../tests/data.rs), [`tests/data.rs::stream_batches_report_a_partial_drop_last_failure_once_then_exhaust`](../tests/data.rs)
+- **Notes:** An ordinary Rust iterator is the streaming surface; RustTorch does not require an IterableDataset wrapper or claim Python multiprocessing behavior.
+
+### `data.dataset`
+
+- **PyTorch:** `torch.utils.data.Dataset`
+- **RustTorch:** `rusttorch::data::Dataset`, `rusttorch::data::DatasetSamples`
+- **Implementation:** Implemented by RustTorch
+- **Scope:** Finite map-style datasets with owned samples, fallible indexed access, length and empty queries, and a lazy borrowing iterator over samples in index order.
+- **Pinned source:** [`torch/utils/data/dataset.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataset.py)
+- **Evidence:** [`tests/data.rs::dataset_default_is_empty_follows_len`](../tests/data.rs), [`tests/data.rs::dataset_samples_borrow_and_fetch_lazily_in_order`](../tests/data.rs)
+- **Notes:** DatasetSamples performs no dataset clone or precollection; format-specific decoding belongs in optional packages.
+
+### `data.loader`
+
+- **PyTorch:** `torch.utils.data.DataLoader`
+- **RustTorch:** `rusttorch::data::DataLoader`
+- **Implementation:** Implemented by RustTorch
+- **Scope:** Single-threaded map-dataset batching with a caller-provided index sampler, explicit nonzero batch size and drop-last behavior, owned Vec batches or fallible custom collation, and one-error-then-exhaust semantics.
+- **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
+- **Evidence:** [`tests/data.rs::loader_keeps_a_short_tail`](../tests/data.rs), [`tests/data.rs::loader_drops_a_short_tail`](../tests/data.rs), [`tests/data.rs::loader_applies_fallible_collation`](../tests/data.rs), [`tests/data.rs::loader_moves_non_clone_samples_into_batches`](../tests/data.rs), [`tests/data.rs::loader_discards_a_partial_batch_on_dataset_failure_then_exhausts`](../tests/data.rs)
+- **Notes:** This claim is limited to the written Rust surface; worker processes, prefetch, memory pinning, and iterator checkpointing have separate planned rows.
+
+### `data.sampler`
+
+- **PyTorch:** `torch.utils.data.SequentialSampler`, `torch.utils.data.RandomSampler`
+- **RustTorch:** `rusttorch::data::SequentialSampler`, `rusttorch::data::RandomSampler`
+- **Implementation:** Implemented by RustTorch
+- **Scope:** Allocation-free sequential indices and a reproducible random permutation from a sampler-local ChaCha12 RNG that does not mutate LibTorch's global RNG; random sampling rejects an empty length.
+- **Pinned source:** [`torch/utils/data/sampler.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/sampler.py)
+- **Evidence:** [`tests/data.rs::sequential_sampler_yields_every_index_in_order`](../tests/data.rs), [`tests/data.rs::random_sampler_is_seeded_and_yields_a_permutation`](../tests/data.rs), [`tests/data.rs::random_sampler_rejects_zero_length_with_a_structured_error`](../tests/data.rs), [`tests/data_libtorch.rs::random_sampler_does_not_change_libtorch_global_rng`](../tests/data_libtorch.rs)
+- **Notes:** Seed equality is guaranteed only within this RustTorch sampler implementation; index order and empty-input behavior are not claimed to match PyTorch's RNG contract.
+
 ### `graph.executor`
 
 - **PyTorch:** `torch.fx.Interpreter`
@@ -310,15 +350,55 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **Evidence:** —
 - **Notes:** Artifact support must pin the archive version and supported operator set.
 
-### `data.loader`
+### `data.loader.checkpoint`
 
-- **PyTorch:** `torch.utils.data.Dataset`, `torch.utils.data.DataLoader`, `torch.utils.data.Sampler`
+- **PyTorch:** `torch.utils.data.DataLoader iterator state`
 - **RustTorch:** —
 - **Implementation:** Not implemented
-- **Scope:** Fallible datasets, deterministic sampling, batching, collation, and streaming iteration are planned.
+- **Scope:** Exact DataLoader checkpoint and resume, including source, sampler, partial-batch, and RNG state, are not implemented.
 - **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
 - **Evidence:** —
-- **Notes:** Workers, pinned memory, sharding, and checkpointable iteration are later milestones.
+- **Notes:** A future format requires versioning plus exact-resume tests across successful and failing iteration.
+
+### `data.loader.pinning`
+
+- **PyTorch:** `torch.utils.data.DataLoader(pin_memory=...)`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Scope:** Pinned-host-memory transfer policy and device-aware recursive batch pinning are not implemented.
+- **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
+- **Evidence:** —
+- **Notes:** Future support requires explicit backend scope and transfer benchmarks.
+
+### `data.loader.prefetch`
+
+- **PyTorch:** `torch.utils.data.DataLoader(prefetch_factor=...)`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Scope:** Bounded background prefetch, ordering policy, backpressure, cancellation, and failure propagation are not implemented.
+- **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
+- **Evidence:** —
+- **Notes:** A future implementation must remain bounded and prove clean shutdown on early drop and errors.
+
+### `data.loader.workers`
+
+- **PyTorch:** `torch.utils.data.DataLoader(num_workers=...)`, `torch.utils.data.get_worker_info`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Scope:** Thread or process workers, persistent workers, worker initialization, timeout handling, and per-worker dataset sharding are not implemented.
+- **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
+- **Evidence:** —
+- **Notes:** Phase one is deliberately single-threaded and has no worker lifecycle to manage.
+
+### `data.sampler.distributed`
+
+- **PyTorch:** `torch.utils.data.DistributedSampler`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Scope:** Rank-aware sharding, replica padding or dropping, epoch-dependent shuffle, and distributed sampler checkpointing are not implemented.
+- **Pinned source:** [`torch/utils/data/distributed.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/distributed.py)
+- **Evidence:** —
+- **Notes:** This requires the process-group foundation and multi-rank parity evidence.
 
 ### `distributed.c10d`
 

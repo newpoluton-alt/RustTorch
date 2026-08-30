@@ -9,6 +9,25 @@ eager modules ───────────────┐
 Graph IR -> EagerExecutor ───┘                    └──────> autograd
 ```
 
+## Data path
+
+Map-style data flows from a borrowed `Dataset` through a caller-selected
+sampler and `DataLoader`. Streaming data stays an ordinary fallible Rust
+iterator and enters through `batches`. Both routes share the same
+single-threaded batching core:
+
+```text
+Dataset + sampler -> DataLoader ─┐
+fallible iterator -> batches ────┴─> Vec<Sample> -> optional collation -> model
+```
+
+Samples are moved into one pre-sized vector per batch. Custom collation owns
+that vector and can stack tensors, pad sequences, or build structured batches
+without an implicit tensor copy in the loader. A sampler-local RNG makes
+seeded shuffling reproducible without consuming LibTorch's global random
+state. Workers, prefetch, pinned memory, distributed sharding, and loader
+checkpoint/resume are later milestones.
+
 ## Eager path
 
 Eager execution is the primary API. Modules perform ordinary `tch::Tensor`
@@ -35,6 +54,7 @@ LibTorch autograd.
 - `nn`: eager modules, composition, initialization, and functional operations.
 - `optim`: ergonomic configuration over backend optimizers.
 - `graph`: IR, validation, passes, inspection, and eager execution.
+- `data`: fallible map and stream batching plus deterministic local sampling.
 - `interop`: state naming, explicit mappings, SafeTensors, and format policy.
 - `error`: structured failures at recoverable boundaries.
 
