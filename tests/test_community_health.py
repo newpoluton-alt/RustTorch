@@ -19,6 +19,10 @@ DEPENDENCY_REVIEW = (
     "actions/dependency-review-action@"
     "595b5aeba73380359d98a5e087f648dbb0edce1b # v4.7.3"
 )
+APPROVED_CI_ACTIONS = {
+    action.split(" #", 1)[0]
+    for action in (CHECKOUT, SETUP_PYTHON, SETUP_RUST, DEPENDENCY_REVIEW)
+}
 
 REQUIRED_FILES = (
     "CODE_OF_CONDUCT.md",
@@ -64,6 +68,50 @@ ISSUE_FORMS = {
 class CommunityHealthTests(unittest.TestCase):
     def read(self, relative: str) -> str:
         return (ROOT / relative).read_text(encoding="utf-8")
+
+    def assert_ci_security_contract(self, text: str) -> None:
+        self.assertRegex(text, r"(?m)^name: CI$")
+        jobs_text = text.split("\njobs:\n", 1)[1]
+        job_matches = list(re.finditer(r"(?m)^  ([a-z0-9_-]+):$", jobs_text))
+        jobs = {
+            match.group(1): jobs_text[
+                match.start() : (
+                    job_matches[index + 1].start()
+                    if index + 1 < len(job_matches)
+                    else len(jobs_text)
+                )
+            ]
+            for index, match in enumerate(job_matches)
+        }
+        self.assertEqual(
+            set(jobs),
+            {"dco", "dependency-review", "quality", "msrv", "cli", "required"},
+        )
+        self.assertRegex(jobs["required"], r"(?m)^    name: required$")
+
+        actions = re.findall(r"(?m)^\s+uses:\s+([^\s#]+)", text)
+        self.assertTrue(actions)
+        self.assertEqual(set(actions), APPROVED_CI_ACTIONS)
+        self.assertNotRegex(text, r"\bsecrets(?:\.|\[)")
+        self.assertNotRegex(text, r"(?mi)^\s+cache(?:-dependency-path)?:")
+        self.assertNotRegex(text, r"(?i)(?:^|/)cache@")
+        self.assertNotRegex(text, r"(?m)^\s*[^#\n]*:\s*write(?:-all)?\s*$")
+        self.assertNotRegex(text, r"(?m)^\s*permissions:.*\bwrite\b")
+
+        self.assertEqual(text.count("permissions:"), 3)
+        self.assertRegex(
+            text,
+            r"(?m)^permissions:\n  contents: read\n\nconcurrency:\n",
+        )
+        for job_name, section in jobs.items():
+            if job_name in {"dco", "dependency-review"}:
+                self.assertIn(
+                    "    permissions:\n      contents: read\n    steps:\n",
+                    section,
+                )
+                self.assertEqual(section.count("permissions:"), 1)
+            else:
+                self.assertNotIn("permissions:", section)
 
     def test_required_files_exist(self) -> None:
         for relative in REQUIRED_FILES:
@@ -176,6 +224,7 @@ class CommunityHealthTests(unittest.TestCase):
 
     def test_ci_uses_least_privilege_and_immutable_actions(self) -> None:
         text = self.read(".github/workflows/ci.yml")
+        self.assert_ci_security_contract(text)
         self.assertRegex(text, r"(?m)^permissions:\n  contents: read$")
         for action in (CHECKOUT, SETUP_PYTHON, SETUP_RUST, DEPENDENCY_REVIEW):
             with self.subTest(action=action):
@@ -187,6 +236,32 @@ class CommunityHealthTests(unittest.TestCase):
         dependency_job = text.split("  dependency-review:\n", 1)[1].split("\n  quality:", 1)[0]
         self.assertRegex(dependency_job, r"(?m)^    permissions:\n      contents: read$")
         self.assertNotIn("pull-requests: write", dependency_job)
+
+    def test_ci_security_contract_rejects_privilege_and_identity_drift(self) -> None:
+        text = self.read(".github/workflows/ci.yml")
+        mutations = {
+            "floating action": text.replace(CHECKOUT, "actions/checkout@v7", 1),
+            "secret context": text.replace(
+                "name: CI", "name: CI\n# ${{ secrets.CARGO_TOKEN }}", 1
+            ),
+            "cache config": text.replace(
+                "          toolchain: stable",
+                "          toolchain: stable\n          cache: cargo",
+                1,
+            ),
+            "write permission": text.replace("contents: read", "contents: write", 1),
+            "extra read permission": text.replace(
+                "    permissions:\n      contents: read\n    steps:",
+                "    permissions:\n      contents: read\n      issues: read\n    steps:",
+                1,
+            ),
+            "workflow rename": text.replace("name: CI", "name: Build", 1),
+            "required rename": text.replace("    name: required", "    name: optional", 1),
+        }
+        for name, mutation in mutations.items():
+            with self.subTest(mutation=name):
+                with self.assertRaises(AssertionError):
+                    self.assert_ci_security_contract(mutation)
 
     def test_ci_checks_dco_dependency_changes_msrv_and_cli_platforms(self) -> None:
         text = self.read(".github/workflows/ci.yml")
