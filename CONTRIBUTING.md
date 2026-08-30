@@ -35,6 +35,7 @@ from the repository root:
 
 ```sh
 . scripts/dev-env.sh
+python3 scripts/check-compatibility.py --check
 cargo fmt --all -- --check
 cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -59,9 +60,22 @@ as skipped, never passed.
 ## Compatibility and public API
 
 RustTorch does not claim full PyTorch parity. A compatibility entry is valid
-only within its written scope and evidence. Changes to public behavior must:
+only within its written scope and evidence. Edit the canonical
+[`compat/pytorch_api.toml`](compat/pytorch_api.toml), then regenerate and
+verify the public view; do not edit generated coverage by hand:
 
-- update `compat/pytorch_api.toml` and generated `docs/api-coverage.md` together;
+```sh
+python3 scripts/check-compatibility.py --write
+python3 scripts/check-compatibility.py --check
+```
+
+Changes to public behavior must:
+
+- update the compatibility row's stable ID, status, implementation, symbols,
+  exact scope, pinned source, evidence, and notes as applicable;
+- provide complete rustdoc and an ergonomic example for every new public item;
+- add a narrow Rust test and record it as
+  `repo-relative-test-file::exact_test_name` evidence;
 - cite the pinned PyTorch symbol, source path, tag, and commit when adapting
   upstream behavior;
 - add Rust tests and, where Python-visible behavior is matched, parity evidence;

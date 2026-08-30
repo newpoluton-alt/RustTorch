@@ -28,7 +28,8 @@
 //! only when selecting the best available backend is desired. Model weights
 //! are exchanged through `.safetensors` files rather than Python pickle files.
 
-#![warn(missing_docs)]
+#![deny(missing_docs)]
+#![doc = include_str!("../docs/api-coverage.md")]
 
 pub mod device;
 pub mod error;
