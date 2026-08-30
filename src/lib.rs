@@ -31,6 +31,7 @@
 #![deny(missing_docs)]
 #![doc = include_str!("../docs/api-coverage.md")]
 
+pub mod data;
 pub mod device;
 pub mod error;
 pub mod graph;

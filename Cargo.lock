@@ -741,6 +741,8 @@ dependencies = [
 name = "rusttorch"
 version = "0.1.0"
 dependencies = [
+ "rand",
+ "rand_chacha",
  "serde_json",
  "tch",
  "thiserror 2.0.20",
