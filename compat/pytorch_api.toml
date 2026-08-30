@@ -222,7 +222,7 @@ status = "supported"
 implementation = "mixed"
 scope = "Fallible eager execution of RustTorch typed graphs with named inputs and outputs, mode tracking, autograd, and runtime tensor-spec validation."
 source = "torch/fx/interpreter.py"
-evidence = ["tests/graph.rs::all_public_graph_operations_execute_with_expected_values", "tests/graph.rs::residual_branch_accumulates_input_and_all_linear_parameter_gradients", "tests/graph.rs::runtime_rejects_dtype_rank_and_known_dimension_mismatches"]
+evidence = ["tests/graph.rs::all_public_graph_operations_execute_with_expected_values", "tests/graph.rs::residual_branch_accumulates_input_and_all_linear_parameter_gradients", "tests/graph.rs::runtime_rejects_dtype_rank_and_known_dimension_mismatches", "tests/graph.rs::dropout_follows_train_and_eval_mode_without_rng_assumptions"]
 notes = "Execution delegates kernels to LibTorch and does not consume Python FX graphs."
 
 [[api]]
@@ -530,7 +530,7 @@ status = "supported"
 implementation = "rusttorch"
 scope = "Project-local LibTorch selection for automatic, CPU or MPS, and CUDA 12.6 distributions with conflict and driver validation."
 source = "torch/__init__.py"
-evidence = ["crates/rusttorch-cli/src/main.rs::configuration_preserves_unrelated_toml_and_writes_cuda_selection", "crates/rusttorch-cli/src/main.rs::managed_setup_rejects_target_overrides_before_configuration_write"]
+evidence = ["crates/rusttorch-cli/src/main.rs::backend_parser_accepts_only_the_approved_names", "crates/rusttorch-cli/src/main.rs::preconfiguration_detects_every_supported_environment_variable", "crates/rusttorch-cli/src/main.rs::driver_parser_uses_the_first_output_line", "crates/rusttorch-cli/src/main.rs::auto_reuses_preconfiguration_and_selects_supported_acceleration", "crates/rusttorch-cli/src/main.rs::explicit_backend_refuses_active_preconfiguration", "crates/rusttorch-cli/src/main.rs::explicit_cuda_requires_a_supported_platform_and_driver", "crates/rusttorch-cli/src/main.rs::auto_falls_back_to_cpu_for_incompatible_drivers", "crates/rusttorch-cli/src/main.rs::configuration_preserves_unrelated_toml_and_writes_cuda_selection", "crates/rusttorch-cli/src/main.rs::configuration_switches_owned_cuda_selection_to_cpu", "crates/rusttorch-cli/src/main.rs::managed_setup_rejects_target_overrides_before_configuration_write"]
 notes = "Setup invokes Cargo and the upstream downloader; it never installs or modifies system drivers."
 
 [[api]]
