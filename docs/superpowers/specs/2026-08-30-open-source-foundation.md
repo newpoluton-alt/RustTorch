@@ -54,9 +54,12 @@ The contribution guide defines:
 - how maintainers may request changes, close stale work, or reject unsafe or
   out-of-scope contributions.
 
-The project adopts Contributor Covenant 2.1. Conduct reports and vulnerability
-reports use GitHub private vulnerability reporting so no private email address
-is invented or published.
+The project adopts Contributor Covenant 2.1. Vulnerability reports use GitHub
+private vulnerability reporting. Conduct reports use only a separately
+configured maintainer-controlled contact channel; until one exists, the policy
+points to the maintainer's published profile contact and explicitly warns
+reporters not to disclose sensitive details publicly. No address or promise of
+confidential handling is invented.
 
 ## Governance and support
 
@@ -118,9 +121,12 @@ with only `actions: read`, `id-token: write`, and `contents: write`.
 
 The semantic tag is a deliberate, documented exception to the full-SHA rule:
 the generator's verification contract requires a tagged reusable workflow.
-The release job downloads the same package bytes and provenance and uploads
-them with the preinstalled GitHub CLI; it never rebuilds them. Release docs
-include `slsa-verifier` instructions tied to the source repository and tag.
+The release job downloads the packaged artifact and uploads those same bytes
+with the preinstalled GitHub CLI; it never rebuilds them. The Generic Generator
+creates the tag release and uploads its separately generated provenance through
+`upload-assets: true`. Release docs include `slsa-verifier` instructions tied
+to the source repository and tag, and disclose the generator's upstream
+maintenance status and migration path to GitHub artifact attestations.
 
 Publishing to crates.io remains a separate, protected step until a new secure
 credential is configured. The previously exposed credential is never reused,
@@ -129,14 +135,19 @@ stored in GitHub, or copied into a command.
 ## Repository protections
 
 After the workflows exist and have produced their check names, GitHub settings
-enable Discussions, private vulnerability reporting, automatic branch cleanup,
-and squash merging. Repository rules protect `main` and `v*` tags from deletion
-and force-pushes, require pull requests and the stable required check on
-`main`, and require code-owner review where the hosting plan permits it.
+enable Discussions, private vulnerability reporting, Dependabot alerts and
+security updates, secret scanning and push protection where available,
+read-only Actions defaults, automatic branch cleanup, and squash merging.
+Unavailable controls are recorded instead of silently omitted. Repository rules
+protect `main` and `v*` tags from deletion and force-pushes and require pull
+requests plus the stable required check on `main`.
 
-The initial sole maintainer retains an explicit emergency bypass so the
-repository cannot be permanently locked before a second maintainer exists.
-Every applied setting is read back and recorded in the maintainer guide.
+While there is one maintainer, required approvals remain zero and an explicit
+owner-only pull-request bypass prevents permanent lockout. After governance
+records a second active maintainer, the rule moves to one approval plus
+code-owner review. Tag creation uses a separately documented owner bypass; user-
+owned repositories do not depend on nonexistent team reviewers. Every applied
+setting is read back and recorded in the maintainer guide.
 
 ## Acceptance
 
