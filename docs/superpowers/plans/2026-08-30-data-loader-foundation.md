@@ -279,6 +279,7 @@ git commit -m "feat: batch fallible data streams"
 
 **Files:**
 - Create: `benches/data_loader.rs`
+- Modify: `src/data.rs`
 - Modify: `Cargo.toml`
 - Modify: `compat/pytorch_api.toml`
 - Modify: `docs/architecture.md`
@@ -340,6 +341,6 @@ Expected: tests/docs pass and the benchmark prints separate sequential and shuff
 - [ ] **Step 5: Commit**
 
 ```sh
-git add benches/data_loader.rs Cargo.toml compat/pytorch_api.toml docs/api-coverage.md docs/architecture.md README.md THIRD_PARTY_NOTICES.md
+git add benches/data_loader.rs src/data.rs Cargo.toml compat/pytorch_api.toml docs/api-coverage.md docs/architecture.md README.md THIRD_PARTY_NOTICES.md
 git commit -m "docs: publish DataLoader coverage and benchmark"
 ```
