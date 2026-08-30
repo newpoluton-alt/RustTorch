@@ -156,15 +156,21 @@ git commit -m "docs: establish the RustTorch contributor contract"
 Use temporary Git repositories to prove that an unsigned commit fails, a
 matching `Signed-off-by` trailer passes, a mismatched signatory fails, multiple
 commits are all checked, and commits reachable from the base are excluded.
+Also cover body-line spoofing, malformed trailers, multiple sign-offs,
+co-authors, unsigned merge commits, invalid revisions, and the narrow verified
+Dependabot exception.
 
 - [ ] **Step 2: Implement the standard-library DCO checker**
 
-Accept `--base` and `--head`, enumerate `base..head`, and require a
-`Signed-off-by: Name <email>` trailer matching each commit author's identity
-under a documented case-insensitive normalization rule. Document explicit
-policy for maintainer-applied patches and verified automation; Dependabot's
-verified bot identity is allowed only through that narrow rule. Print the
-short commit IDs and exact sign-off recovery commands.
+Accept `--base` and `--head`, validate both revisions, enumerate `base..head`,
+and parse only Git's trailer block. Require a `Signed-off-by: Name <email>`
+trailer matching the commit author and every `Co-authored-by` identity under a
+documented case-insensitive normalization rule. Dependabot is exempt only when
+an explicit trusted workflow-actor flag and its exact verified identity both
+match; do not waive DCO for other bots. Include merge commits, fail closed, and
+print short commit IDs plus exact sign-off recovery commands. Document policy
+for maintainer-applied patches, verified automation, and GitHub update-branch
+merge commits.
 
 - [ ] **Step 3: Restructure CI with least privilege**
 
@@ -181,14 +187,19 @@ Set workflow `name: CI` and name the aggregator job exactly `required`, yielding
 the stable `CI / required` status. Run DCO and dependency review only for pull
 requests. DCO checkout uses `fetch-depth: 0` and checks
 `${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}`.
-Dependency Review uses only `contents: read` and leaves pull-request comments
-disabled. Run the library quality suite on Ubuntu stable, compile the library
-on Rust 1.88, and test the CLI on Ubuntu, macOS, and Windows. Install the pinned
-CPU PyTorch wheel from its CPU index separately from SafeTensors and NumPy. Add
-concurrency cancellation, read-only default permissions, package/archive
-checks, and `if: always()` logic that requires the PR-only jobs on pull requests,
-accepts their intentional skip on push/manual runs, and rejects any failed or
-cancelled applicable prerequisite.
+Every checkout preceding contributor-controlled execution sets
+`persist-credentials: false`. Dependency Review uses only `contents: read` and
+explicitly sets `comment-summary-in-pr: never`. Run the library quality suite
+on Ubuntu stable, compile both packages on Rust 1.88, and test the CLI on
+Ubuntu, macOS, and Windows. Preserve Python 3.14, the project virtual
+environment, the pinned CPU PyTorch wheel from its CPU index installed
+separately from SafeTensors and NumPy, the exported LibTorch path, and Python
+parity. Run standard-library Python test discovery, package-specific rustdoc,
+and both package-list and archive-verification checks. Add concurrency
+cancellation, read-only default permissions, and `if: always()` logic that
+needs every quality/MSRV/platform/PR-only job, requires PR-only jobs on pull
+requests, accepts only their intentional skip on push/manual runs, and rejects
+failed, cancelled, or unexpectedly skipped applicable prerequisites.
 
 - [ ] **Step 4: Document and validate**
 
@@ -221,24 +232,35 @@ git commit -m "ci: enforce the RustTorch contribution gates"
 
 - [ ] **Step 1: Test release invariants and workflow structure**
 
-Test matching and mismatched tags/versions/changelog, deterministic subject
-formatting, tag-only triggers, job permission maps, immutable ordinary action
-pins, the single SLSA tag exception, absence of pull-request and secret access,
-and proof that release jobs download rather than rebuild artifacts.
+Test matching and mismatched tags/versions/changelog, deterministic byte-exact
+subject formatting, tag-only triggers, non-cancelling per-tag concurrency, job
+permission maps, immutable ordinary action pins, the single SLSA tag exception,
+absence of pull-request and secret access, exact build/provenance/release needs,
+and proof that release jobs download rather than rebuild artifacts. Assert the
+draft release, checksum/base64 revalidation, exact asset set, and publish-last
+sequence.
 
 - [ ] **Step 2: Implement the release preflight**
 
-Use Python's standard library to validate the tag, both package versions,
-lockfile, changelog, and compatibility ledger before packaging.
+Use Python's standard library to strictly parse a `vX.Y.Z` tag, validate exact
+root and CLI package names and equal versions, require exactly one matching
+lockfile entry for each package, require an exact changelog release heading,
+and validate the compatibility ledger before packaging. Reject malformed,
+prerelease, build-metadata, and leading-zero tags under this release policy.
 
 - [ ] **Step 3: Build exact release subjects once**
 
 In a read-only build job, install pinned CPU PyTorch, set
 `LIBTORCH_USE_PYTORCH=1` and its native-library path, then run locked Cargo
 package verification. Copy only both generated `.crate` files into `dist/`.
-From that directory run `sha256sum *.crate > subjects.txt` and base64-encode
-`subjects.txt` unchanged so subject names exactly match release asset names.
-Upload the directory once using:
+Start with an empty `dist/`, require the exact versioned root and CLI archive
+names, and reject any extra archive. From that directory hash the two explicit
+filenames in deterministic order into `subjects.txt`; require the GNU
+`64hex + two spaces + basename + newline` form and base64-encode the file
+unchanged, failing closed if the job output is empty. Upload exactly both
+archives plus `subjects.txt` as one named,
+immutable, bounded-retention workflow artifact, with missing files treated as
+an error and overwrite disabled, using:
 
 ```text
 actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -253,23 +275,35 @@ uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_s
 ```
 
 Pass `base64-subjects`, set a versioned `provenance-name`, and enable
-`upload-assets`. Give only that job `actions: read`, `id-token: write`, and
-`contents: write`. Download final package artifacts with:
+`upload-assets`; also pass `draft-release: "true"` so immutable-release assets
+can be completed before publication. Set workflow permissions to `{}`, build
+to `contents: read`, provenance exactly to `actions: read`, `id-token: write`,
+and `contents: write`, and release to `contents: write`. Download the named
+package artifact without checkout using:
 
 ```text
 actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
 ```
 
-With `GH_TOKEN: ${{ github.token }}`, use
-`gh release upload "$GITHUB_REF_NAME" dist/*.crate --clobber`. Do not create a
-second release: the generator's `upload-assets: true` path creates the tag
-release and adds provenance. Never rebuild and never publish to crates.io from
-this workflow.
+Revalidate `sha256sum --check subjects.txt` and require its base64 to match the
+exact build output supplied to provenance. With narrowly scoped `GH_TOKEN` and
+`GH_REPO: ${{ github.repository }}`, require the generator-created release to
+still be a draft, use
+`gh release upload "$GITHUB_REF_NAME" dist/*.crate --clobber`, verify that the
+complete asset set is exactly both crates plus the versioned provenance, then
+run `gh release edit "$GITHUB_REF_NAME" --draft=false` as the final command.
+Do not create a second release: the generator owns the draft and provenance.
+Never rebuild or publish to crates.io from this workflow; a partial failure
+must leave a recoverable draft and a published immutable release must fail
+closed.
 
 - [ ] **Step 5: Document verification and commit**
 
-Document installing `slsa-verifier` v2.7.1 and verifying all subjects with
-`--source-uri github.com/newpoluton-alt/RustTorch --source-tag vX.Y.Z`. State
+Document installing `slsa-verifier` v2.7.1 and verifying both exact crate
+subjects in one invocation with
+`--source-uri github.com/newpoluton-alt/RustTorch` and
+`--source-tag vX.Y.Z`. State that GitHub's automatic source archives are not
+covered subjects. State
 that the requested Generic Generator is no longer actively maintained and
 record GitHub artifact attestations as the migration path. Run release tests
 and package dry runs, then commit.
