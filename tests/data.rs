@@ -2,7 +2,7 @@ use std::{cell::Cell, convert::Infallible};
 
 use rusttorch::{
     RustTorchError,
-    data::{Dataset, RandomSampler, SequentialSampler},
+    data::{DataLoader, Dataset, RandomSampler, SequentialSampler},
 };
 
 struct CountingDataset {
@@ -83,4 +83,206 @@ fn random_sampler_rejects_zero_length_with_a_structured_error() {
             ..
         })
     ));
+}
+
+#[test]
+fn loader_keeps_a_short_tail() {
+    let dataset = CountingDataset::new(vec![0, 1, 2, 3, 4]);
+
+    let batches = DataLoader::new(&dataset, SequentialSampler::new(5), 2, false)
+        .expect("a positive batch size must be valid")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("the dataset is infallible");
+
+    assert_eq!(batches, vec![vec![0, 1], vec![2, 3], vec![4]]);
+}
+
+#[test]
+fn loader_drops_a_short_tail() {
+    let dataset = CountingDataset::new(vec![0, 1, 2, 3, 4]);
+
+    let batches = DataLoader::new(&dataset, SequentialSampler::new(5), 2, true)
+        .expect("a positive batch size must be valid")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("the dataset is infallible");
+
+    assert_eq!(batches, vec![vec![0, 1], vec![2, 3]]);
+}
+
+#[test]
+fn loader_rejects_zero_batch_size_with_a_structured_error() {
+    let dataset = CountingDataset::new(vec![0]);
+
+    assert!(matches!(
+        DataLoader::new(&dataset, SequentialSampler::new(1), 0, false),
+        Err(RustTorchError::InvalidConfiguration {
+            field: "batch_size",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn loader_applies_fallible_collation() {
+    let dataset = CountingDataset::new(vec![1, 2, 3, 4]);
+
+    let batches =
+        DataLoader::with_collate(&dataset, SequentialSampler::new(4), 2, false, |samples| {
+            Ok::<_, Infallible>(samples.into_iter().sum::<i32>())
+        })
+        .expect("a positive batch size must be valid")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("the dataset and collation are infallible");
+
+    assert_eq!(batches, vec![3, 7]);
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct NonCloneSample(i32);
+
+struct NonCloneDataset(Vec<i32>);
+
+impl Dataset for NonCloneDataset {
+    type Sample = NonCloneSample;
+    type Error = Infallible;
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn get(&self, index: usize) -> Result<Self::Sample, Self::Error> {
+        Ok(NonCloneSample(self.0[index]))
+    }
+}
+
+#[test]
+fn loader_moves_non_clone_samples_into_batches() {
+    let dataset = NonCloneDataset(vec![1, 2, 3]);
+
+    let batches = DataLoader::new(&dataset, SequentialSampler::new(3), 2, false)
+        .expect("a positive batch size must be valid")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("the dataset is infallible");
+
+    assert_eq!(
+        batches,
+        vec![
+            vec![NonCloneSample(1), NonCloneSample(2)],
+            vec![NonCloneSample(3)]
+        ]
+    );
+}
+
+#[test]
+fn loader_does_not_fetch_or_collate_an_empty_dataset() {
+    let dataset = CountingDataset::new(vec![]);
+    let collations = Cell::new(0);
+
+    let mut loader =
+        DataLoader::with_collate(&dataset, SequentialSampler::new(0), 2, false, |samples| {
+            collations.set(collations.get() + 1);
+            Ok::<_, Infallible>(samples)
+        })
+        .expect("a positive batch size must be valid");
+
+    assert_eq!(loader.next(), None);
+    assert_eq!(dataset.gets.get(), 0);
+    assert_eq!(collations.get(), 0);
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct DatasetFailure(usize);
+
+struct FailingDataset {
+    length: usize,
+    fail_at: usize,
+}
+
+impl Dataset for FailingDataset {
+    type Sample = usize;
+    type Error = DatasetFailure;
+
+    fn len(&self) -> usize {
+        self.length
+    }
+
+    fn get(&self, index: usize) -> Result<Self::Sample, Self::Error> {
+        if index == self.fail_at {
+            Err(DatasetFailure(index))
+        } else {
+            Ok(index)
+        }
+    }
+}
+
+#[test]
+fn loader_yields_a_first_sample_failure_once_then_exhausts() {
+    let dataset = FailingDataset {
+        length: 3,
+        fail_at: 0,
+    };
+    let mut loader = DataLoader::new(&dataset, SequentialSampler::new(3), 2, false)
+        .expect("a positive batch size must be valid");
+
+    assert_eq!(loader.next(), Some(Err(DatasetFailure(0))));
+    assert_eq!(loader.next(), None);
+}
+
+#[test]
+fn loader_discards_a_partial_batch_on_dataset_failure_then_exhausts() {
+    let dataset = FailingDataset {
+        length: 4,
+        fail_at: 3,
+    };
+    let mut loader = DataLoader::new(&dataset, SequentialSampler::new(4), 2, false)
+        .expect("a positive batch size must be valid");
+
+    assert_eq!(loader.next(), Some(Ok(vec![0, 1])));
+    assert_eq!(loader.next(), Some(Err(DatasetFailure(3))));
+    assert_eq!(loader.next(), None);
+}
+
+#[test]
+fn loader_reports_a_partial_drop_last_failure_then_exhausts() {
+    let dataset = FailingDataset {
+        length: 4,
+        fail_at: 3,
+    };
+    let mut loader = DataLoader::new(&dataset, SequentialSampler::new(4), 2, true)
+        .expect("a positive batch size must be valid");
+
+    assert_eq!(loader.next(), Some(Ok(vec![0, 1])));
+    assert_eq!(loader.next(), Some(Err(DatasetFailure(3))));
+    assert_eq!(loader.next(), None);
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LoaderFailure {
+    Dataset(DatasetFailure),
+    Collate,
+}
+
+impl From<DatasetFailure> for LoaderFailure {
+    fn from(error: DatasetFailure) -> Self {
+        Self::Dataset(error)
+    }
+}
+
+#[test]
+fn loader_yields_a_collation_failure_once_then_exhausts() {
+    let dataset = FailingDataset {
+        length: 4,
+        fail_at: usize::MAX,
+    };
+    let collations = Cell::new(0);
+    let mut loader =
+        DataLoader::with_collate(&dataset, SequentialSampler::new(4), 2, false, |_| {
+            collations.set(collations.get() + 1);
+            Err::<Vec<usize>, _>(LoaderFailure::Collate)
+        })
+        .expect("a positive batch size must be valid");
+
+    assert_eq!(loader.next(), Some(Err(LoaderFailure::Collate)));
+    assert_eq!(loader.next(), None);
+    assert_eq!(collations.get(), 1);
 }
