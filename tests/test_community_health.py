@@ -103,10 +103,15 @@ class CommunityHealthTests(unittest.TestCase):
             len(actions),
         )
         self.assertNotRegex(text, r"(?i)\bsecrets\b")
-        self.assertNotRegex(
-            text,
-            r"(?i)(?<![a-z0-9_-])cache(?:-[a-z0-9_-]+)?\s*:",
-        )
+        cache_key_pattern = r"(?i)(?<![a-z0-9_-])cache(?:-[a-z0-9_-]+)?\s*:"
+        setup_rust_sections = text.split(f"uses: {SETUP_RUST}")
+        self.assertEqual(len(setup_rust_sections) - 1, 3)
+        for section in setup_rust_sections[1:]:
+            step = section.split("\n      - name:", 1)[0]
+            self.assertEqual(len(re.findall(cache_key_pattern, step)), 1)
+            self.assertRegex(step, r"(?m)^          cache: false$")
+        self.assertEqual(len(re.findall(cache_key_pattern, text)), 3)
+        self.assertEqual(text.count("          cache: false"), 3)
         self.assertNotRegex(text, r"(?i)(?:^|/)cache@")
         self.assertNotRegex(text, r"(?m)^\s*[^#\n]*:\s*write(?:-all)?\s*$")
         self.assertNotRegex(text, r"(?m)^\s*permissions:.*\bwrite\b")
@@ -281,6 +286,9 @@ class CommunityHealthTests(unittest.TestCase):
                 "          toolchain: stable",
                 "          toolchain: stable\n          cache: cargo",
                 1,
+            ),
+            "Rust action cache enabled": text.replace(
+                "          cache: false", "          cache: true", 1
             ),
             "flow cache config": text.replace(
                 "        with:\n          python-version: \"3.14\"",

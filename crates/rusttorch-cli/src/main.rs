@@ -1233,7 +1233,10 @@ mod tests {
 
         let root = locate_workspace_root(&cargo_locate_spec(project.path())).unwrap();
 
-        assert_eq!(root, project.path().canonicalize().unwrap());
+        assert_eq!(
+            root.canonicalize().unwrap(),
+            project.path().canonicalize().unwrap()
+        );
     }
 
     #[test]
@@ -1255,7 +1258,10 @@ mod tests {
 
         let root = locate_workspace_root(&cargo_locate_spec(&member)).unwrap();
 
-        assert_eq!(root, workspace.path().canonicalize().unwrap());
+        assert_eq!(
+            root.canonicalize().unwrap(),
+            workspace.path().canonicalize().unwrap()
+        );
     }
 
     #[test]
