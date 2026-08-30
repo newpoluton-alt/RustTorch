@@ -1,4 +1,6 @@
 import re
+import subprocess
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -15,14 +17,30 @@ SETUP_RUST = (
     "actions-rust-lang/setup-rust-toolchain@"
     "46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1"
 )
+SETUP_UV = (
+    "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0"
+)
 DEPENDENCY_REVIEW = (
     "actions/dependency-review-action@"
     "595b5aeba73380359d98a5e087f648dbb0edce1b # v4.7.3"
 )
 APPROVED_CI_ACTIONS = {
     action.split(" #", 1)[0]
-    for action in (CHECKOUT, SETUP_PYTHON, SETUP_RUST, DEPENDENCY_REVIEW)
+    for action in (
+        CHECKOUT,
+        SETUP_PYTHON,
+        SETUP_RUST,
+        SETUP_UV,
+        DEPENDENCY_REVIEW,
+    )
 }
+
+PYTHON_DEPENDENCIES = [
+    "numpy==2.5.2",
+    "safetensors==0.8.0",
+    "torch==2.13.0",
+]
+PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 
 REQUIRED_FILES = (
     "CODE_OF_CONDUCT.md",
@@ -136,6 +154,161 @@ class CommunityHealthTests(unittest.TestCase):
             else:
                 self.assertNotIn("permissions:", section)
 
+    def assert_python_tooling_contract(
+        self, pyproject_text: str, lock_text: str | None
+    ) -> None:
+        pyproject = tomllib.loads(pyproject_text)
+        self.assertEqual(set(pyproject), {"project", "tool"})
+        project = pyproject["project"]
+        self.assertEqual(
+            set(project), {"name", "version", "requires-python", "dependencies"}
+        )
+        self.assertEqual(project["name"], "rusttorch-tooling")
+        self.assertEqual(project["version"], "0.0.0")
+        self.assertEqual(project["requires-python"], ">=3.14,<3.15")
+        self.assertEqual(project["dependencies"], PYTHON_DEPENDENCIES)
+        self.assertNotIn("build-system", pyproject)
+
+        uv = pyproject["tool"]["uv"]
+        self.assertEqual(set(uv), {"package", "sources", "index"})
+        self.assertIs(uv["package"], False)
+        self.assertEqual(uv["sources"], {"torch": {"index": "pytorch-cpu"}})
+        self.assertEqual(
+            uv["index"],
+            [
+                {
+                    "name": "pytorch-cpu",
+                    "url": PYTORCH_CPU_INDEX,
+                    "explicit": True,
+                }
+            ],
+        )
+
+        self.assertIsNotNone(lock_text)
+        lock = tomllib.loads(lock_text)
+        self.assertEqual(lock["version"], 1)
+        self.assertEqual(lock["revision"], 3)
+        self.assertEqual(lock["requires-python"], "==3.14.*")
+        packages = lock["package"]
+        locked_versions: dict[str, set[str]] = {}
+        for package in packages:
+            locked_versions.setdefault(package["name"], set()).add(package["version"])
+        self.assertEqual(
+            locked_versions,
+            {
+                "filelock": {"3.32.4"},
+                "fsspec": {"2026.7.0"},
+                "jinja2": {"3.1.6"},
+                "markupsafe": {"3.0.3"},
+                "mpmath": {"1.3.0"},
+                "networkx": {"3.6.1"},
+                "numpy": {"2.5.2"},
+                "rusttorch-tooling": {"0.0.0"},
+                "safetensors": {"0.8.0"},
+                "setuptools": {"84.0.0"},
+                "sympy": {"1.14.0"},
+                "torch": {"2.13.0", "2.13.0+cpu"},
+                "typing-extensions": {"4.16.0"},
+            },
+        )
+        for name, version in (
+            ("numpy", "2.5.2"),
+            ("safetensors", "0.8.0"),
+        ):
+            with self.subTest(locked_package=name):
+                matches = [package for package in packages if package["name"] == name]
+                self.assertEqual([package["version"] for package in matches], [version])
+        torch_packages = [package for package in packages if package["name"] == "torch"]
+        self.assertEqual(
+            {package["version"] for package in torch_packages},
+            {"2.13.0", "2.13.0+cpu"},
+        )
+        for package in torch_packages:
+            self.assertEqual(package["source"], {"registry": PYTORCH_CPU_INDEX})
+        tooling = next(
+            package for package in packages if package["name"] == "rusttorch-tooling"
+        )
+        self.assertEqual(tooling["source"], {"virtual": "."})
+        locked_torch_dependencies = [
+            dependency
+            for dependency in tooling["dependencies"]
+            if dependency["name"] == "torch"
+        ]
+        self.assertEqual(len(locked_torch_dependencies), 2)
+        for dependency in locked_torch_dependencies:
+            self.assertEqual(dependency["source"], {"registry": PYTORCH_CPU_INDEX})
+        self.assertEqual(
+            {
+                (dependency["version"], dependency["marker"])
+                for dependency in locked_torch_dependencies
+            },
+            {
+                ("2.13.0", "sys_platform == 'darwin'"),
+                ("2.13.0+cpu", "sys_platform != 'darwin'"),
+            },
+        )
+        self.assertIn(
+            {
+                "name": "torch",
+                "specifier": "==2.13.0",
+                "index": PYTORCH_CPU_INDEX,
+            },
+            tooling["metadata"]["requires-dist"],
+        )
+
+    def assert_python_ci_contract(self, text: str) -> None:
+        quality = text.split("  quality:\n", 1)[1].split("\n  msrv:", 1)[0]
+        self.assertEqual(text.count(f"uses: {SETUP_UV}"), 1)
+        setup_uv = quality.split(f"uses: {SETUP_UV}", 1)[1].split(
+            "\n      - name:", 1
+        )[0]
+        self.assertIn(
+            '\n        with:\n          version: "0.12.3"\n          enable-cache: false\n',
+            setup_uv,
+        )
+        self.assertEqual(len(re.findall(r"(?i)\benable-cache\s*:", text)), 1)
+        self.assertEqual(text.count("          enable-cache: false"), 1)
+        self.assertEqual(len(re.findall(r"(?i)\buv\s+lock\b", quality)), 1)
+        self.assertRegex(
+            quality, r"(?m)^        run: uv lock --check --offline --no-cache$"
+        )
+        self.assertEqual(len(re.findall(r"(?i)\buv\s+sync\b", quality)), 1)
+        self.assertRegex(quality, r"(?m)^        run: uv sync --frozen --no-cache$")
+        self.assertNotRegex(text, r"(?i)\bpip\b")
+        self.assertNotIn("python3 -m venv", quality)
+
+        path_export = 'echo "$PWD/.venv/bin" >> "$GITHUB_PATH"'
+        environment_export = 'echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"'
+        self.assertIn(path_export, quality)
+        self.assertIn(environment_export, quality)
+        setup_python_position = quality.index(f"uses: {SETUP_PYTHON}")
+        setup_uv_position = quality.index(f"uses: {SETUP_UV}")
+        lock_position = quality.index("uv lock --check --offline --no-cache")
+        sync_position = quality.index("uv sync --frozen --no-cache")
+        self.assertLess(setup_python_position, setup_uv_position)
+        self.assertLess(setup_uv_position, lock_position)
+        self.assertLess(lock_position, sync_position)
+        self.assertLess(sync_position, quality.index(path_export))
+        self.assertIn(
+            ".venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v",
+            quality,
+        )
+        self.assertIn(
+            ".venv/bin/python scripts/check-compatibility.py --check", quality
+        )
+        self.assertIn(
+            ".venv/bin/python -c 'from pathlib import Path; import torch", quality
+        )
+        self.assertIn("scripts/run-python-parity.sh", quality)
+        self.assertIn(r"pyproject\.toml|uv\.lock", quality)
+
+    def assert_cargo_package_contract(self, text: str) -> None:
+        manifest = tomllib.loads(text)
+        package = manifest["package"]
+        self.assertNotIn("include", package)
+        self.assertIn("/pyproject.toml", package["exclude"])
+        self.assertIn("/uv.lock", package["exclude"])
+
     def test_required_files_exist(self) -> None:
         for relative in REQUIRED_FILES:
             with self.subTest(path=relative):
@@ -188,6 +361,97 @@ class CommunityHealthTests(unittest.TestCase):
         ):
             with self.subTest(link=link):
                 self.assertIn(link, text)
+
+    def test_contributing_uses_the_frozen_python_environment(self) -> None:
+        text = self.read("CONTRIBUTING.md")
+        self.assertIn("uv sync --frozen --no-cache", text)
+        for platform_scope in (
+            "Linux x86_64, AArch64, and s390x",
+            "macOS arm64",
+            "Windows x86_64",
+            "only on Ubuntu x86_64",
+            "Intel macOS or Windows ARM64",
+        ):
+            with self.subTest(platform_scope=platform_scope):
+                self.assertIn(platform_scope, text)
+
+    def test_python_tooling_project_is_non_package_and_locked(self) -> None:
+        pyproject_path = ROOT / "pyproject.toml"
+        lock_path = ROOT / "uv.lock"
+        self.assertTrue(pyproject_path.is_file())
+        self.assertTrue(lock_path.is_file())
+        self.assertFalse((ROOT / "uv.toml").exists())
+        self.assert_python_tooling_contract(
+            pyproject_path.read_text(encoding="utf-8"),
+            lock_path.read_text(encoding="utf-8"),
+        )
+
+    def test_python_tooling_contract_rejects_manifest_and_lock_drift(self) -> None:
+        self.assertTrue((ROOT / "pyproject.toml").is_file())
+        self.assertTrue((ROOT / "uv.lock").is_file())
+        pyproject = self.read("pyproject.toml")
+        lock = self.read("uv.lock")
+        pyproject_mutations = {
+            "dependency pin": pyproject.replace("numpy==2.5.2", "numpy==2.5.3", 1),
+            "Python range": pyproject.replace(">=3.14,<3.15", ">=3.13,<3.15", 1),
+            "alternate index": pyproject.replace(
+                PYTORCH_CPU_INDEX, "https://pypi.org/simple", 1
+            ),
+            "implicit index": pyproject.replace(
+                "explicit = true", "explicit = false", 1
+            ),
+            "package mode": pyproject.replace("package = false", "package = true", 1),
+            "dependency group": pyproject
+            + '\n[dependency-groups]\ndev = ["requests==2.32.5"]\n',
+            "optional dependencies": pyproject
+            + '\n[project.optional-dependencies]\ndev = ["requests==2.32.5"]\n',
+        }
+        for name, mutation in pyproject_mutations.items():
+            with self.subTest(manifest_mutation=name):
+                self.assertNotEqual(mutation, pyproject)
+                with self.assertRaises((AssertionError, KeyError, StopIteration)):
+                    self.assert_python_tooling_contract(mutation, lock)
+
+        lock_mutations = {
+            "locked dependency pin": lock.replace(
+                'version = "2.13.0"', 'version = "2.13.1"', 1
+            ),
+            "locked torch index": lock.replace(
+                f'registry = "{PYTORCH_CPU_INDEX}"',
+                'registry = "https://pypi.org/simple"',
+                1,
+            ),
+            "transitive dependency drift": lock.replace(
+                'version = "3.32.4"', 'version = "3.32.5"', 1
+            ),
+        }
+        for name, mutation in lock_mutations.items():
+            with self.subTest(lock_mutation=name):
+                self.assertNotEqual(mutation, lock)
+                with self.assertRaises((AssertionError, KeyError, StopIteration)):
+                    self.assert_python_tooling_contract(pyproject, mutation)
+        with self.assertRaises(AssertionError):
+            self.assert_python_tooling_contract(pyproject, None)
+
+    def test_uv_lock_is_current_without_network_or_cache(self) -> None:
+        result = subprocess.run(
+            ["uv", "lock", "--check", "--offline", "--no-cache"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_cargo_packages_exclude_python_tooling_metadata(self) -> None:
+        manifest = self.read("Cargo.toml")
+        self.assert_cargo_package_contract(manifest)
+        mutation = manifest.replace(
+            "\n[lib]\n", '\ninclude = ["**/*"]\n\n[lib]\n', 1
+        )
+        self.assertNotEqual(mutation, manifest)
+        with self.assertRaises(AssertionError):
+            self.assert_cargo_package_contract(mutation)
 
     def test_dependabot_checks_cargo_and_actions_weekly(self) -> None:
         text = self.read(".github/dependabot.yml")
@@ -248,8 +512,15 @@ class CommunityHealthTests(unittest.TestCase):
     def test_ci_uses_least_privilege_and_immutable_actions(self) -> None:
         text = self.read(".github/workflows/ci.yml")
         self.assert_ci_security_contract(text)
+        self.assert_python_ci_contract(text)
         self.assertRegex(text, r"(?m)^permissions:\n  contents: read$")
-        for action in (CHECKOUT, SETUP_PYTHON, SETUP_RUST, DEPENDENCY_REVIEW):
+        for action in (
+            CHECKOUT,
+            SETUP_PYTHON,
+            SETUP_RUST,
+            SETUP_UV,
+            DEPENDENCY_REVIEW,
+        ):
             with self.subTest(action=action):
                 self.assertIn(f"uses: {action}", text)
         self.assertEqual(
@@ -334,6 +605,68 @@ class CommunityHealthTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     self.assert_ci_security_contract(mutation)
 
+    def test_ci_python_contract_rejects_unlocked_or_imperative_setup(self) -> None:
+        text = self.read(".github/workflows/ci.yml")
+        python_step = f'''      - name: Set up Python
+        uses: {SETUP_PYTHON}
+        with:
+          python-version: "3.14"
+'''
+        sync_step = '''      - name: Synchronize locked Python environment
+        run: uv sync --frozen --no-cache
+'''
+        reordered = text.replace(python_step, "__PYTHON_STEP__", 1)
+        reordered = reordered.replace(sync_step, python_step, 1)
+        reordered = reordered.replace("__PYTHON_STEP__", sync_step, 1)
+        mutations = {
+            "floating setup action": text.replace(
+                SETUP_UV, "astral-sh/setup-uv@v9", 1
+            ),
+            "UV version drift": text.replace(
+                'version: "0.12.3"', 'version: "0.12.4"', 1
+            ),
+            "persistent cache": text.replace(
+                "enable-cache: false", "enable-cache: true", 1
+            ),
+            "unfrozen sync": text.replace(
+                "uv sync --frozen --no-cache", "uv sync --no-cache", 1
+            ),
+            "cached sync": text.replace(
+                "uv sync --frozen --no-cache", "uv sync --frozen", 1
+            ),
+            "missing lock check": text.replace(
+                "uv lock --check --offline --no-cache", "uv lock --offline --no-cache", 1
+            ),
+            "second unlocked sync": text.replace(
+                "        run: uv sync --frozen --no-cache",
+                "        run: uv sync --frozen --no-cache\n\n"
+                "      - name: Resynchronize without the lock\n"
+                "        run: |\n"
+                "          uv sync",
+                1,
+            ),
+            "inline pip install": text.replace(
+                "uv sync --frozen --no-cache",
+                "uv sync --frozen --no-cache\n          python -m pip install wheel",
+                1,
+            ),
+            "split inline pip install": text.replace(
+                "uv sync --frozen --no-cache",
+                "uv sync --frozen --no-cache\n          python -m pip \\\n"
+                "            install wheel",
+                1,
+            ),
+            "sync before Python": reordered,
+            "archive scanner removed": text.replace(
+                r"pyproject\.toml|uv\.lock", "metadata.toml", 1
+            ),
+        }
+        for name, mutation in mutations.items():
+            with self.subTest(mutation=name):
+                self.assertNotEqual(mutation, text)
+                with self.assertRaises(AssertionError):
+                    self.assert_python_ci_contract(mutation)
+
     def test_ci_checks_dco_dependency_changes_msrv_and_cli_platforms(self) -> None:
         text = self.read(".github/workflows/ci.yml")
         for job in ("dco", "dependency-review", "quality", "msrv", "cli", "required"):
@@ -360,14 +693,7 @@ class CommunityHealthTests(unittest.TestCase):
         text = self.read(".github/workflows/ci.yml")
         quality = text.split("  quality:\n", 1)[1].split("\n  msrv:", 1)[0]
         self.assertIn('python-version: "3.14"', quality)
-        self.assertIn("python3 -m venv .venv", quality)
-        self.assertIn("'torch==2.13.0'", quality)
-        self.assertIn("https://download.pytorch.org/whl/cpu", quality)
-        self.assertIn("'safetensors==0.8.0' 'numpy==2.5.2'", quality)
-        torch_step = quality.split("- name: Install PyTorch CPU runtime", 1)[1].split(
-            "- name: Install parity dependencies", 1
-        )[0]
-        self.assertNotIn("safetensors", torch_step)
+        self.assertIn("uv sync --frozen --no-cache", quality)
         self.assertIn("LD_LIBRARY_PATH", quality)
         self.assertIn("scripts/run-python-parity.sh", quality)
         self.assertIn("python -m unittest discover", quality)

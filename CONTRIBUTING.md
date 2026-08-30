@@ -34,6 +34,7 @@ Set up the project-local Python/LibTorch environment, then run the core checks
 from the repository root:
 
 ```sh
+uv sync --frozen --no-cache
 . scripts/dev-env.sh
 python3 scripts/check-dco.py --base origin/main --head HEAD
 python3 scripts/check-compatibility.py --check
@@ -52,6 +53,12 @@ cargo package -p rusttorch-cli --locked --list
 cargo package -p rusttorch --locked
 cargo package -p rusttorch-cli --locked
 ```
+
+The PyTorch CPU portion of the current lock contains CPython 3.14 wheels for
+Linux x86_64, AArch64, and s390x; macOS arm64; and Windows x86_64. CI executes
+the locked Python and parity environment only on Ubuntu x86_64. Resolving a
+wheel is not backend test evidence. The lock has no PyTorch wheel for
+Intel macOS or Windows ARM64.
 
 Before either package is published, a release tag `vX.Y.Z` must match the
 versions in `Cargo.toml` and `crates/rusttorch-cli/Cargo.toml`, and that version
