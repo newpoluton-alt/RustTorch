@@ -1,0 +1,281 @@
+# Compatibility Ledger Enforcement Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Track every implemented and major unimplemented PyTorch area with explicit scope and executable evidence, generate the public coverage page, and make stale or undocumented compatibility claims fail CI.
+
+**Architecture:** `compat/pytorch_api.toml` remains the single source of truth. A Python 3.11+ standard-library checker validates the ledger and deterministically generates `docs/api-coverage.md`, which is included in crate-level rustdoc.
+
+**Tech Stack:** TOML, Python `tomllib`, Markdown generation, rustdoc, GitHub Actions.
+
+**Spec:** `docs/superpowers/specs/2026-08-30-pytorch-compatibility-program.md`
+
+## Global Constraints
+
+- Product credo: “easy to use and easy to implement, but crazy fast.”
+- PyTorch reference is exactly `v2.13.0` commit `cf30153`; `tch` is exactly `0.26.0`.
+- `status` is one of `supported`, `partial`, `python_only`, `planned`, `not_supported`.
+- `implementation` is one of `libtorch`, `rusttorch`, `mixed`, `none`.
+- A supported row has executable evidence and a precise scope.
+- No percentage or blanket “100% supported” claim is generated.
+- The checker uses only Python’s standard library.
+
+---
+
+### Task 1: Define and validate ledger schema version 2
+
+**Files:**
+- Modify: `compat/pytorch_api.toml`
+- Create: `scripts/check-compatibility.py`
+- Create: `tests/test_compatibility_script.py`
+
+**Interfaces:**
+- Produces: `load_ledger(path)`, `validate_ledger(root, ledger)`, and `render_markdown(ledger)` in the checker.
+- Produces: CLI modes `--check` and `--write`.
+
+- [ ] **Step 1: Write checker unit tests**
+
+Use `importlib.util.spec_from_file_location` to load the hyphenated script and
+test a minimal valid row:
+
+```python
+row = {
+    "id": "nn.linear",
+    "python_symbols": ["torch.nn.Linear"],
+    "rust_symbols": ["rusttorch::nn::Linear"],
+    "status": "supported",
+    "implementation": "mixed",
+    "scope": "Forward, parameters, gradients, and documented defaults.",
+    "source": "torch/nn/modules/linear.py",
+    "evidence": ["tests/eager.rs::linear_bias_and_no_bias_have_expected_shapes_and_values"],
+    "notes": "Rust configuration replaces Python keyword arguments.",
+}
+```
+
+Assert duplicate/unsorted IDs, invalid enums, empty supported evidence, missing
+evidence files, and package/tch version mismatches each produce a validation
+error containing the row ID or field name.
+
+- [ ] **Step 2: Run tests and verify they fail**
+
+Run:
+
+```sh
+python3 -m unittest tests/test_compatibility_script.py -v
+```
+
+Expected: FAIL because the checker module does not exist.
+
+- [ ] **Step 3: Implement schema validation**
+
+Require top-level:
+
+```toml
+format_version = 2
+package = "rusttorch"
+crate = "rusttorch"
+tch = "0.26.0"
+pytorch_reference = "v2.13.0"
+pytorch_commit = "cf30153"
+```
+
+Require stable sorted unique row IDs and the row fields shown in Step 1. Paths
+before `::` in evidence must exist. `rust_symbols` may be empty only when
+status is `python_only`, `planned`, or `not_supported`; those statuses use
+implementation `none` unless a written partial Rust surface is named.
+
+- [ ] **Step 4: Migrate existing rows and add program inventory rows**
+
+Split aggregate existing rows into stable IDs such as `core.tensor`,
+`core.device`, `nn.linear`, `nn.relu`, `optim.adam`, `data.loader`, and
+`graph.ir`. Add explicit planned or Python-only rows for at least:
+
+```text
+amp, autograd.forward_ad, compiler.compile, compiler.export, compiler.fx,
+distributed.c10d, distributed.ddp, distributed.fsdp, distributions,
+fft, func, linalg, nn.attention, nn.convolution, nn.normalization,
+nn.recurrent, nn.transformer, onnx, optim.schedulers, profiler,
+quantization, serialization.pickle, sparse, nested, special, testing,
+utils.checkpoint, vision, audio, codec, text, tabular
+```
+
+Keep every currently supported API and its test evidence; do not mark a broad
+area supported because a single operation exists.
+
+- [ ] **Step 5: Run unit and real-ledger validation**
+
+Run:
+
+```sh
+python3 -m unittest tests/test_compatibility_script.py -v
+python3 scripts/check-compatibility.py --check
+```
+
+Expected: unit tests pass; the second command reports only that generated docs are stale.
+
+- [ ] **Step 6: Commit**
+
+```sh
+git add compat/pytorch_api.toml scripts/check-compatibility.py tests/test_compatibility_script.py
+git commit -m "feat: validate the PyTorch compatibility ledger"
+```
+
+### Task 2: Generate the public API coverage page
+
+**Files:**
+- Modify: `scripts/check-compatibility.py`
+- Modify: `tests/test_compatibility_script.py`
+- Replace: `docs/api-coverage.md`
+
+**Interfaces:**
+- Consumes: validated schema-version-2 ledger.
+- Produces: deterministic Markdown grouped by status with symbols, implementation, scope, notes, and evidence.
+
+- [ ] **Step 1: Write deterministic rendering tests**
+
+Assert `render_markdown` starts with:
+
+```markdown
+<!-- Generated by scripts/check-compatibility.py. Do not edit directly. -->
+# API coverage
+```
+
+Assert it renders `Supported`, `Partial`, `Planned`, `Python-only`, and
+`Not supported` sections; labels `libtorch` as “Delegated to LibTorch”; and
+does not contain `%` or `100%`.
+
+- [ ] **Step 2: Run the focused rendering test and verify failure**
+
+Run:
+
+```sh
+python3 -m unittest tests.test_compatibility_script.CompatibilityScriptTests.test_render_markdown -v
+```
+
+Expected: FAIL until rendering is implemented.
+
+- [ ] **Step 3: Implement rendering and write mode**
+
+Make `--write` replace `docs/api-coverage.md` atomically. Make `--check`
+compare generated bytes to the committed file and print the exact regeneration
+command when they differ.
+
+- [ ] **Step 4: Generate and validate**
+
+Run:
+
+```sh
+python3 scripts/check-compatibility.py --write
+python3 scripts/check-compatibility.py --check
+```
+
+Expected: the second command exits successfully without changing files.
+
+- [ ] **Step 5: Commit**
+
+```sh
+git add scripts/check-compatibility.py tests/test_compatibility_script.py docs/api-coverage.md
+git commit -m "docs: generate API coverage from the compatibility ledger"
+```
+
+### Task 3: Enforce complete public rustdoc and wire documentation
+
+**Files:**
+- Modify: `src/lib.rs`
+- Modify: `README.md`
+- Modify: `docs/pytorch-compatibility.md`
+- Modify: `CONTRIBUTING.md`
+
+**Interfaces:**
+- Consumes: generated `docs/api-coverage.md`.
+- Produces: crate-level coverage page in docs.rs and compile-time denial of missing public docs.
+
+- [ ] **Step 1: Tighten crate-level documentation attributes**
+
+Replace the warning with:
+
+```rust
+#![deny(missing_docs)]
+#![doc = include_str!("../docs/api-coverage.md")]
+```
+
+- [ ] **Step 2: Link the canonical ledger and generated page**
+
+README and compatibility prose must link directly to
+`compat/pytorch_api.toml` and `docs/api-coverage.md`, explain status/scope, and
+state that coverage grows feature by feature without treating rows as equal
+percentage points.
+
+- [ ] **Step 3: Run documentation gates**
+
+Run:
+
+```sh
+python3 scripts/check-compatibility.py --check
+cargo check -p rusttorch --all-targets --features tch/doc-only
+RUSTDOCFLAGS="-D warnings" cargo doc -p rusttorch --no-deps --no-default-features --features tch/doc-only
+```
+
+Expected: all public items are documented and rustdoc includes the generated matrix.
+
+- [ ] **Step 4: Commit**
+
+```sh
+git add src/lib.rs README.md docs/pytorch-compatibility.md CONTRIBUTING.md
+git commit -m "docs: enforce complete RustTorch API documentation"
+```
+
+### Task 4: Add continuous compatibility and package gates
+
+**Files:**
+- Create: `.github/workflows/ci.yml`
+- Modify: `CONTRIBUTING.md`
+
+**Interfaces:**
+- Produces: PR/push CI for ledger, formatting, check, Clippy, tests, rustdoc, and package contents.
+
+- [ ] **Step 1: Add one CI workflow**
+
+Use Ubuntu and Python 3.11+. Install the pinned CPU build and export its native
+library directory before running Cargo:
+
+```sh
+python3 -m pip install 'torch==2.13.0' 'safetensors==0.8.0' 'numpy==2.5.2' \
+  --index-url https://download.pytorch.org/whl/cpu
+python3 -c 'from pathlib import Path; import torch; print(Path(torch.__file__).resolve().parent / "lib")'
+```
+
+Set `LIBTORCH_USE_PYTORCH=1` for every Rust step and append the printed path to
+`LD_LIBRARY_PATH` through `$GITHUB_ENV`. Then run:
+
+```sh
+python3 scripts/check-compatibility.py --check
+cargo fmt --all -- --check
+cargo check --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --all-targets
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+cargo package -p rusttorch --locked --list
+cargo package -p rusttorch-cli --locked --list
+```
+
+Cache Cargo/PyTorch downloads without caching credentials.
+
+- [ ] **Step 2: Document the local equivalent and manual release check**
+
+Add the same commands to `CONTRIBUTING.md`. State that a tag `vX.Y.Z` must
+match `Cargo.toml`, the CLI manifest, and `CHANGELOG.md` before either package
+is published.
+
+- [ ] **Step 3: Validate workflow syntax and local gates**
+
+Run the ledger checker, formatting, doc-only Clippy, rustdoc, and package list
+locally. Inspect `.github/workflows/ci.yml` for secrets or write permissions;
+the workflow needs only `contents: read`.
+
+- [ ] **Step 4: Commit**
+
+```sh
+git add .github/workflows/ci.yml CONTRIBUTING.md
+git commit -m "ci: gate compatibility documentation and packages"
+```
