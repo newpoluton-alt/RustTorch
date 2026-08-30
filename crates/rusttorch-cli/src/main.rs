@@ -1,6 +1,6 @@
 use std::{
     env,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fmt, fs,
     io::Write,
     path::{Path, PathBuf},
@@ -8,7 +8,7 @@ use std::{
 };
 
 use tempfile::NamedTempFile;
-use toml_edit::{DocumentMut, Item, value};
+use toml_edit::{DocumentMut, InlineTable, Item, Value, value};
 
 const HELP: &str = "RustTorch managed LibTorch setup
 
@@ -144,9 +144,14 @@ fn is_libtorch_preconfigured(mut is_set: impl FnMut(&str) -> bool) -> bool {
         "LIBTORCH",
         "LIBTORCH_INCLUDE",
         "LIBTORCH_LIB",
+        "TORCH_CUDA_VERSION",
     ]
     .into_iter()
     .any(&mut is_set)
+}
+
+fn is_active_libtorch_variable(name: &str, value: Option<OsString>) -> bool {
+    value.is_some_and(|value| name != "TORCH_CUDA_VERSION" || !value.is_empty())
 }
 
 fn is_setup_preconfigured(
@@ -272,6 +277,13 @@ struct CargoCheckSpec {
     torch_cuda_environment: TorchCudaEnvironment,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct CargoLocateSpec {
+    program: OsString,
+    args: Vec<OsString>,
+    current_dir: PathBuf,
+}
+
 fn backend_name(backend: ResolvedBackend) -> Option<&'static str> {
     match backend {
         ResolvedBackend::Preconfigured => None,
@@ -302,10 +314,19 @@ fn ensure_project_root(root: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
+fn active_cargo_config(root: &Path) -> PathBuf {
+    let legacy = root.join(".cargo/config");
+    if legacy.exists() {
+        legacy
+    } else {
+        root.join(".cargo/config.toml")
+    }
+}
+
 fn configure_project(root: &Path, backend: ResolvedBackend) -> Result<PathBuf, CliError> {
     ensure_project_root(root)?;
     let config_directory = root.join(".cargo");
-    let config_path = config_directory.join("config.toml");
+    let config_path = active_cargo_config(root);
     if backend == ResolvedBackend::Preconfigured {
         return Ok(config_path);
     }
@@ -374,7 +395,10 @@ fn configure_project(root: &Path, backend: ResolvedBackend) -> Result<PathBuf, C
     document["env"]["RUSTTORCH_BACKEND"] = value(backend_name(backend).unwrap());
     match backend {
         ResolvedBackend::Cuda126 => {
-            document["env"]["TORCH_CUDA_VERSION"] = value("cu126");
+            let mut cuda = InlineTable::new();
+            cuda.insert("value", Value::from("cu126"));
+            cuda.insert("force", Value::from(true));
+            document["env"]["TORCH_CUDA_VERSION"] = Item::Value(Value::InlineTable(cuda));
         }
         ResolvedBackend::Cpu => {
             document["env"]
@@ -424,6 +448,75 @@ fn cargo_check_spec(root: &Path, backend: ResolvedBackend) -> CargoCheckSpec {
     }
 }
 
+fn validate_target_environment(
+    backend: ResolvedBackend,
+    mut value: impl FnMut(&str) -> Option<OsString>,
+) -> Result<(), CliError> {
+    if backend == ResolvedBackend::Preconfigured {
+        return Ok(());
+    }
+    for name in ["CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR"] {
+        if value(name).is_some_and(|value| !value.is_empty()) {
+            return Err(CliError::new(format!(
+                "{name} overrides RustTorch backend target isolation; unset it before setup"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn cargo_locate_spec(start: &Path) -> CargoLocateSpec {
+    CargoLocateSpec {
+        program: OsString::from("cargo"),
+        args: ["locate-project", "--workspace", "--message-format", "plain"]
+            .into_iter()
+            .map(OsString::from)
+            .collect(),
+        current_dir: start.to_path_buf(),
+    }
+}
+
+fn parse_workspace_root(output: &[u8]) -> Result<PathBuf, CliError> {
+    let output = std::str::from_utf8(output)
+        .map_err(|_| CliError::new("Cargo returned a non-UTF-8 workspace path"))?;
+    let mut lines = output.lines();
+    let manifest = lines
+        .next()
+        .filter(|line| !line.is_empty())
+        .ok_or_else(|| CliError::new("Cargo returned no workspace manifest path"))?;
+    if lines.next().is_some() {
+        return Err(CliError::new(
+            "Cargo returned more than one workspace manifest path",
+        ));
+    }
+    let manifest = PathBuf::from(manifest);
+    if manifest.file_name() != Some(OsStr::new("Cargo.toml")) {
+        return Err(CliError::new(
+            "Cargo returned an invalid workspace manifest path",
+        ));
+    }
+    manifest
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| CliError::new("Cargo returned an invalid workspace manifest path"))
+}
+
+fn locate_workspace_root(spec: &CargoLocateSpec) -> Result<PathBuf, CliError> {
+    let output = Command::new(&spec.program)
+        .args(&spec.args)
+        .current_dir(&spec.current_dir)
+        .output()
+        .map_err(|error| CliError::new(format!("could not locate Cargo workspace: {error}")))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        return Err(CliError::new(format!(
+            "could not locate Cargo workspace: {}",
+            detail.trim()
+        )));
+    }
+    parse_workspace_root(&output.stdout)
+}
+
 fn execute_cargo_check(spec: &CargoCheckSpec) -> Result<(), CliError> {
     let mut command = Command::new(&spec.program);
     command.args(&spec.args).current_dir(&spec.current_dir);
@@ -453,12 +546,17 @@ fn run() -> Result<(), CliError> {
         CliAction::Version => println!("rusttorch {}", env!("CARGO_PKG_VERSION")),
         CliAction::Setup(request) => {
             let platform = Platform::current();
-            let configured =
-                is_setup_preconfigured(platform, |name| env::var_os(name).is_some(), Path::exists);
+            let configured = is_setup_preconfigured(
+                platform,
+                |name| is_active_libtorch_variable(name, env::var_os(name)),
+                Path::exists,
+            );
             let backend = resolve_setup_backend(request, platform, configured, detect_driver)?;
-            let project_root = env::current_dir().map_err(|error| {
+            validate_target_environment(backend, |name| env::var_os(name))?;
+            let current_directory = env::current_dir().map_err(|error| {
                 CliError::new(format!("could not read current directory: {error}"))
             })?;
+            let project_root = locate_workspace_root(&cargo_locate_spec(&current_directory))?;
             ensure_project_root(&project_root)?;
             println!("Resolved backend: {backend}");
             if backend == ResolvedBackend::Preconfigured {
@@ -493,12 +591,18 @@ mod tests {
             "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
         )
         .unwrap();
+        fs::create_dir(directory.path().join("src")).unwrap();
+        fs::write(directory.path().join("src/lib.rs"), "").unwrap();
         directory
     }
 
     fn write_config(root: &std::path::Path, contents: &str) {
-        fs::create_dir(root.join(".cargo")).unwrap();
-        fs::write(root.join(".cargo/config.toml"), contents).unwrap();
+        write_named_config(root, "config.toml", contents);
+    }
+
+    fn write_named_config(root: &std::path::Path, name: &str, contents: &str) {
+        fs::create_dir_all(root.join(".cargo")).unwrap();
+        fs::write(root.join(".cargo").join(name), contents).unwrap();
     }
 
     #[test]
@@ -552,10 +656,75 @@ mod tests {
             "LIBTORCH",
             "LIBTORCH_INCLUDE",
             "LIBTORCH_LIB",
+            "TORCH_CUDA_VERSION",
         ] {
             assert!(is_libtorch_preconfigured(|name| name == configured_name));
         }
         assert!(!is_libtorch_preconfigured(|_| false));
+    }
+
+    #[test]
+    fn process_preconfiguration_ignores_only_an_empty_torch_cuda_selector() {
+        assert!(!is_active_libtorch_variable(
+            "TORCH_CUDA_VERSION",
+            Some(OsString::new())
+        ));
+        assert!(is_active_libtorch_variable(
+            "LIBTORCH",
+            Some(OsString::new())
+        ));
+        assert!(!is_active_libtorch_variable("LIBTORCH", None));
+    }
+
+    #[test]
+    fn torch_cuda_preconfiguration_skips_the_driver_probe() {
+        use std::cell::Cell;
+
+        let configured = is_setup_preconfigured(
+            Platform::Linux,
+            |name| name == "TORCH_CUDA_VERSION",
+            |_| false,
+        );
+        let calls = Cell::new(0);
+
+        assert_eq!(
+            resolve_setup_backend(BackendRequest::Auto, Platform::Linux, configured, || {
+                calls.set(calls.get() + 1);
+                None
+            })
+            .unwrap(),
+            ResolvedBackend::Preconfigured
+        );
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn torch_cuda_preconfiguration_refuses_explicit_cpu_without_probe_or_write() {
+        use std::cell::Cell;
+
+        let project = cargo_project();
+        let original = "[alias]\nfast = \"check\"\n";
+        write_config(project.path(), original);
+        let configured = is_setup_preconfigured(
+            Platform::Linux,
+            |name| name == "TORCH_CUDA_VERSION",
+            |_| false,
+        );
+        let calls = Cell::new(0);
+
+        let result =
+            resolve_setup_backend(BackendRequest::Cpu, Platform::Linux, configured, || {
+                calls.set(calls.get() + 1);
+                None
+            })
+            .and_then(|backend| configure_project(project.path(), backend));
+
+        assert!(result.unwrap_err().to_string().contains("conflict"));
+        assert_eq!(calls.get(), 0);
+        assert_eq!(
+            fs::read_to_string(project.path().join(".cargo/config.toml")).unwrap(),
+            original
+        );
     }
 
     #[test]
@@ -717,7 +886,18 @@ mod tests {
         assert!(document.contains("fast = \"check\""));
         assert!(document.contains("target-dir = \"target/rusttorch/cuda-12.6\""));
         assert!(document.contains("RUSTTORCH_BACKEND = \"cuda-12.6\""));
-        assert!(document.contains("TORCH_CUDA_VERSION = \"cu126\""));
+        let document = document.parse::<DocumentMut>().unwrap();
+        let cuda = document["env"]["TORCH_CUDA_VERSION"]
+            .as_inline_table()
+            .unwrap();
+        assert_eq!(
+            cuda.get("value").and_then(|value| value.as_str()),
+            Some("cu126")
+        );
+        assert_eq!(
+            cuda.get("force").and_then(|value| value.as_bool()),
+            Some(true)
+        );
     }
 
     #[test]
@@ -727,7 +907,7 @@ mod tests {
             project.path(),
             "[build]\ntarget-dir = \"target/rusttorch/cuda-12.6\"\n\
              [env]\nRUSTTORCH_BACKEND = \"cuda-12.6\"\n\
-             TORCH_CUDA_VERSION = \"cu126\"\nKEEP = \"yes\"\n",
+             TORCH_CUDA_VERSION = { value = \"cu126\", force = true }\nKEEP = \"yes\"\n",
         );
 
         let path = configure_project(project.path(), ResolvedBackend::Cpu).unwrap();
@@ -737,6 +917,51 @@ mod tests {
         assert!(document.contains("RUSTTORCH_BACKEND = \"cpu\""));
         assert!(!document.contains("TORCH_CUDA_VERSION"));
         assert!(document.contains("KEEP = \"yes\""));
+    }
+
+    #[test]
+    fn configuration_edits_the_active_legacy_file_when_both_names_exist() {
+        let project = cargo_project();
+        let inactive = "[build]\ntarget-dir = \"target/user-owned\"\n";
+        write_named_config(project.path(), "config", "[alias]\nactive = \"check\"\n");
+        write_named_config(project.path(), "config.toml", inactive);
+
+        let path = configure_project(project.path(), ResolvedBackend::Cuda126).unwrap();
+
+        assert_eq!(path, project.path().join(".cargo/config"));
+        assert!(
+            fs::read_to_string(path)
+                .unwrap()
+                .contains("target/rusttorch/cuda-12.6")
+        );
+        assert_eq!(
+            fs::read_to_string(project.path().join(".cargo/config.toml")).unwrap(),
+            inactive
+        );
+    }
+
+    #[test]
+    fn configuration_switches_owned_legacy_file_without_parsing_inactive_toml() {
+        let project = cargo_project();
+        write_named_config(
+            project.path(),
+            "config",
+            "[build]\ntarget-dir = \"target/rusttorch/cuda-12.6\"\n\
+             [env]\nRUSTTORCH_BACKEND = \"cuda-12.6\"\n\
+             TORCH_CUDA_VERSION = { value = \"cu126\", force = true }\n",
+        );
+        let inactive = "[this is invalid\n";
+        write_named_config(project.path(), "config.toml", inactive);
+
+        let path = configure_project(project.path(), ResolvedBackend::Cpu).unwrap();
+        let active = fs::read_to_string(path).unwrap();
+
+        assert!(active.contains("target/rusttorch/cpu"));
+        assert!(!active.contains("TORCH_CUDA_VERSION"));
+        assert_eq!(
+            fs::read_to_string(project.path().join(".cargo/config.toml")).unwrap(),
+            inactive
+        );
     }
 
     #[test]
@@ -811,7 +1036,7 @@ mod tests {
     #[test]
     fn configuration_does_not_adopt_an_unowned_same_value_cuda_key() {
         let project = cargo_project();
-        let original = "[env]\nTORCH_CUDA_VERSION = \"cu126\"\n";
+        let original = "[env]\nTORCH_CUDA_VERSION = { value = \"cu126\", force = true }\n";
         write_config(project.path(), original);
 
         let error = configure_project(project.path(), ResolvedBackend::Cuda126).unwrap_err();
@@ -859,6 +1084,106 @@ mod tests {
             cargo_check_spec(project.path(), ResolvedBackend::Preconfigured).torch_cuda_environment,
             TorchCudaEnvironment::Inherit
         );
+    }
+
+    #[test]
+    fn managed_setup_rejects_target_overrides_before_configuration_write() {
+        for (backend, variable) in [
+            (ResolvedBackend::Cpu, "CARGO_TARGET_DIR"),
+            (ResolvedBackend::Cpu, "CARGO_BUILD_TARGET_DIR"),
+            (ResolvedBackend::Cuda126, "CARGO_TARGET_DIR"),
+            (ResolvedBackend::Cuda126, "CARGO_BUILD_TARGET_DIR"),
+        ] {
+            let project = cargo_project();
+            let original = "[alias]\nfast = \"check\"\n";
+            write_config(project.path(), original);
+
+            let result = validate_target_environment(backend, |name| {
+                (name == variable).then(|| OsString::from("external-target"))
+            })
+            .and_then(|()| configure_project(project.path(), backend));
+
+            assert!(result.unwrap_err().to_string().contains(variable));
+            assert_eq!(
+                fs::read_to_string(project.path().join(".cargo/config.toml")).unwrap(),
+                original
+            );
+        }
+    }
+
+    #[test]
+    fn empty_target_overrides_do_not_conflict_with_managed_setup() {
+        assert!(
+            validate_target_environment(ResolvedBackend::Cpu, |_| { Some(OsString::new()) })
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn preconfigured_setup_may_inherit_target_overrides() {
+        assert!(
+            validate_target_environment(ResolvedBackend::Preconfigured, |_| {
+                Some(OsString::from("external-target"))
+            })
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn cargo_locate_spec_uses_the_lightweight_workspace_command() {
+        let project = cargo_project();
+
+        assert_eq!(
+            cargo_locate_spec(project.path()),
+            CargoLocateSpec {
+                program: OsString::from("cargo"),
+                args: vec![
+                    OsString::from("locate-project"),
+                    OsString::from("--workspace"),
+                    OsString::from("--message-format"),
+                    OsString::from("plain"),
+                ],
+                current_dir: project.path().to_path_buf(),
+            }
+        );
+    }
+
+    #[test]
+    fn workspace_manifest_parser_rejects_empty_or_ambiguous_output() {
+        assert!(parse_workspace_root(b"").is_err());
+        assert!(parse_workspace_root(b"/one/Cargo.toml\n/two/Cargo.toml\n").is_err());
+        assert!(parse_workspace_root(b"/project/not-a-manifest\n").is_err());
+    }
+
+    #[test]
+    fn cargo_locate_resolves_a_standalone_package_without_building() {
+        let project = cargo_project();
+
+        let root = locate_workspace_root(&cargo_locate_spec(project.path())).unwrap();
+
+        assert_eq!(root, project.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn cargo_locate_resolves_the_workspace_root_from_a_member() {
+        let workspace = tempfile::tempdir().unwrap();
+        fs::write(
+            workspace.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"member\"]\nresolver = \"2\"\n",
+        )
+        .unwrap();
+        let member = workspace.path().join("member");
+        fs::create_dir_all(member.join("src")).unwrap();
+        fs::write(
+            member.join("Cargo.toml"),
+            "[package]\nname = \"member\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(member.join("src/lib.rs"), "").unwrap();
+
+        let root = locate_workspace_root(&cargo_locate_spec(&member)).unwrap();
+
+        assert_eq!(root, workspace.path().canonicalize().unwrap());
     }
 
     #[test]
