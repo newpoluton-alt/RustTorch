@@ -1,0 +1,16 @@
+/target
+/.venv
+/.reference
+/rustorch_codex_project_prompt.md
+/.idea/
+.DS_Store
+__pycache__/
+*.py[cod]
+__pycache__/
+*.py[cod]
+*.ot
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.rustorch

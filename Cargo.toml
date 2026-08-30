@@ -1,0 +1,31 @@
+[package]
+name = "rusttorch"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Eager PyTorch-style neural networks and graph execution for Rust, backed by LibTorch"
+documentation = "https://docs.rs/rusttorch"
+repository = "https://github.com/newpoluton-alt/RustTorch"
+readme = "README.md"
+keywords = ["pytorch", "libtorch", "machine-learning", "deep-learning", "autograd"]
+categories = ["science", "api-bindings"]
+license = "MIT OR Apache-2.0"
+publish = ["crates-io"]
+exclude = [
+    "/rustorch_codex_project_prompt.md",
+    "**/__pycache__/**",
+    "**/*.pyc",
+]
+
+[lib]
+name = "rusttorch"
+
+[dependencies]
+tch = "0.26.0"
+thiserror = "2.0"
+
+[dev-dependencies]
+serde_json = "1.0"
+
+[package.metadata.docs.rs]
+features = ["tch/doc-only"]
