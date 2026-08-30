@@ -456,7 +456,7 @@ fn validate_target_environment(
         return Ok(());
     }
     for name in ["CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR"] {
-        if value(name).is_some_and(|value| !value.is_empty()) {
+        if value(name).is_some() {
             return Err(CliError::new(format!(
                 "{name} overrides RustTorch backend target isolation; unset it before setup"
             )));
@@ -1112,11 +1112,29 @@ mod tests {
     }
 
     #[test]
-    fn empty_target_overrides_do_not_conflict_with_managed_setup() {
-        assert!(
-            validate_target_environment(ResolvedBackend::Cpu, |_| { Some(OsString::new()) })
-                .is_ok()
-        );
+    fn empty_target_overrides_are_rejected_before_any_configuration_write() {
+        for variable in ["CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR"] {
+            for original in [None, Some("[alias]\nfast = \"check\"\n")] {
+                let project = cargo_project();
+                if let Some(original) = original {
+                    write_config(project.path(), original);
+                }
+
+                let result = validate_target_environment(ResolvedBackend::Cpu, |name| {
+                    (name == variable).then(OsString::new)
+                })
+                .and_then(|()| configure_project(project.path(), ResolvedBackend::Cpu));
+
+                assert!(result.unwrap_err().to_string().contains(variable));
+                match original {
+                    Some(original) => assert_eq!(
+                        fs::read_to_string(project.path().join(".cargo/config.toml")).unwrap(),
+                        original
+                    ),
+                    None => assert!(!project.path().join(".cargo").exists()),
+                }
+            }
+        }
     }
 
     #[test]
