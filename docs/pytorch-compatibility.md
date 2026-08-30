@@ -11,6 +11,42 @@ Graph IR operations follow PyTorch defaults, validation, parameter naming, and
 train/eval behavior where Rust and `tch` can represent them. Numerical work and
 autograd are delegated to LibTorch.
 
+## Compatibility ledger
+
+[`compat/pytorch_api.toml`](../compat/pytorch_api.toml) is the canonical
+machine-readable inventory. It pins PyTorch tag `v2.13.0` at commit `cf30153`
+and `tch` 0.26.0, then records each capability's stable ID, PyTorch and
+RustTorch symbols, implementation boundary, exact scope, upstream source,
+evidence, and notes. [`api-coverage.md`](api-coverage.md) is generated from
+that ledger and included on the crate's rustdoc landing page.
+
+The statuses mean:
+
+- `supported`: executable evidence covers the row's exact written scope;
+- `partial`: a Rust surface exists, but the broader PyTorch area or some
+  exposed behavior is not yet evidenced;
+- `planned`: the capability is an intended milestone without a current
+  implementation claim;
+- `python_only`: the behavior depends on Python runtime semantics rather than
+  representing a native RustTorch surface; and
+- `not_supported`: RustTorch intentionally makes no support claim.
+
+Rows are independently scoped and differ greatly in size. Their count is not a
+meaningful denominator, so the project does not derive a compatibility
+percentage from them. Coverage grows feature by feature with executable Rust,
+Python, and backend evidence where each claim requires it.
+
+After editing the canonical ledger, regenerate and verify the public page:
+
+```sh
+python3 scripts/check-compatibility.py --write
+python3 scripts/check-compatibility.py --check
+```
+
+Do not edit the generated page by hand. The checker validates schema version,
+sorted IDs, pinned metadata, source paths, exact evidence declarations, and
+byte-for-byte generated output.
+
 The canonical deterministic CPU model is verified against Python PyTorch
 2.13.0 for strict bidirectional SafeTensors loading, forward values, input and
 parameter gradients, cross-entropy, MSE, one Adam/SGD step, and residual
@@ -46,5 +82,5 @@ and documented tolerances rather than assuming identical RNG streams.
   surface.
 - `.pt2` import/export is not implemented or claimed until separately tested.
 
-The compatibility manifest records each supported symbol, its source, support
-level, classification, naming, and test coverage.
+The canonical ledger and generated coverage page remain the authority when a
+summary elsewhere differs.

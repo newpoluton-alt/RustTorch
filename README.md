@@ -20,8 +20,9 @@ An unofficial, eager-first Rust frontend over LibTorch.
 > [!IMPORTANT]
 > RustTorch is early-stage software with a deliberately small API. It does not
 > provide full PyTorch parity, and the 0.x series does not promise API or graph
-> format stability. Use the [compatibility ledger](docs/api-coverage.md) to
-> evaluate implemented scope.
+> format stability. Use the [canonical compatibility ledger](compat/pytorch_api.toml)
+> and its [generated coverage page](docs/api-coverage.md) to evaluate
+> implemented scope.
 
 RustTorch offers fallible Rust APIs for common eager model code while LibTorch
 owns tensor storage, kernels, automatic differentiation, and backend execution.
@@ -81,10 +82,15 @@ must also be able to find its shared libraries at runtime.
 | Graphs | Optional named-input graph API with branching, validation, summaries, and DOT output |
 | Runtime | Project-local managed CPU or CUDA 12.6 setup over official LibTorch artifacts |
 
-The [API coverage ledger](docs/api-coverage.md) is the authoritative scoped
-inventory. Backend availability depends on the linked LibTorch build and host;
-explicit unavailable device requests return errors rather than silently
-falling back.
+The machine-readable [compatibility ledger](compat/pytorch_api.toml) is the
+canonical inventory; [API coverage](docs/api-coverage.md) is its generated
+human-readable view. Every entry has an exact scope and one of `supported`,
+`partial`, `planned`, `python_only`, or `not_supported`. `supported` applies
+only to the written scope. Rows cover differently sized capabilities, so their
+count is not converted into a support percentage.
+
+Backend availability depends on the linked LibTorch build and host; explicit
+unavailable device requests return errors rather than silently falling back.
 
 ## Runtime setup
 
@@ -116,7 +122,8 @@ isolation, retry behavior, and dynamic-loader requirements.
 | Guide | What it covers |
 |---|---|
 | [API documentation](https://docs.rs/rusttorch) | Public Rust types and functions |
-| [Compatibility coverage](docs/api-coverage.md) | Scoped status of PyTorch API areas |
+| [Compatibility ledger](compat/pytorch_api.toml) | Canonical machine-readable scopes and evidence |
+| [Compatibility coverage](docs/api-coverage.md) | Generated status view of PyTorch API areas |
 | [Architecture](docs/architecture.md) | Eager frontend and LibTorch boundary |
 | [Platform support](docs/platform-support.md) | Runtime, devices, and system/Python setup |
 | [Backend evidence](docs/backend-parity.md) | Hardware-specific validation and parity scope |
