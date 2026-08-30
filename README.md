@@ -1,256 +1,150 @@
+<div align="center">
+
 # RustTorch
 
-RustTorch is an unofficial Rust frontend for PyTorch-style eager machine
-learning. The Cargo package is `rusttorch`; Rust code imports the
-library as `rusttorch`. Version 0.1 is an MVP and does not yet promise API or
-graph-format stability.
+**easy to use and easy to implement, but crazy fast**
 
-`tch` supplies Rust bindings and LibTorch performs tensor storage, kernels,
-automatic differentiation, and backend execution. RustTorch adds a focused,
-idiomatic model API, SafeTensors state interchange, device selection, and an
-optional explicit graph for inspection and validation. It is not affiliated
-with or endorsed by the PyTorch Foundation.
+An unofficial, eager-first Rust frontend over LibTorch.
 
-## Installation
+[![crates.io](https://img.shields.io/crates/v/rusttorch.svg)](https://crates.io/crates/rusttorch)
+[![docs.rs](https://img.shields.io/docsrs/rusttorch)](https://docs.rs/rusttorch)
+[![license](https://img.shields.io/crates/l/rusttorch.svg)](#license)
+[![MSRV](https://img.shields.io/crates/msrv/rusttorch.svg)](Cargo.toml)
 
-Install the lightweight bootstrap command, add RustTorch to your Cargo project,
-configure the project, and run it:
+[Quick start](#quick-start) · [Capabilities](#current-capabilities) ·
+[Runtime setup](#runtime-setup) · [Documentation](#documentation) ·
+[Contributing](#contributing) · [License](#license)
+
+</div>
+
+> [!IMPORTANT]
+> RustTorch is early-stage software with a deliberately small API. It does not
+> provide full PyTorch parity, and the 0.x series does not promise API or graph
+> format stability. Use the [compatibility ledger](docs/api-coverage.md) to
+> evaluate implemented scope.
+
+RustTorch offers fallible Rust APIs for common eager model code while LibTorch
+owns tensor storage, kernels, automatic differentiation, and backend execution.
+The project credo guides API and implementation choices; it is not an
+unqualified performance claim.
+
+## Quick start
+
+`rusttorch-cli` is not published yet, so install both packages from the current
+Git source:
 
 ```sh
-cargo install rusttorch-cli
-cargo add rusttorch
+cargo install --git https://github.com/newpoluton-alt/RustTorch rusttorch-cli
+cargo new rusttorch-demo
+cd rusttorch-demo
+cargo add rusttorch --git https://github.com/newpoluton-alt/RustTorch
 rusttorch setup --backend auto
-cargo run
 ```
 
-Choose a managed backend explicitly when automatic selection is not wanted:
+Replace `src/main.rs` with this eager example:
 
-```sh
-rusttorch setup --backend cpu
-rusttorch setup --backend cuda-12.6
-```
+```rust
+use rusttorch::nn::Sequential;
+use rusttorch::{DeviceSpec, Kind, Result, Tensor};
 
-The setup command locates the Cargo workspace root, updates its active
-project-local Cargo configuration, and invokes `cargo check`. It is a project
-bootstrap command, not a global LibTorch installer. The default RustTorch
-feature lets upstream `torch-sys` acquire the official PyTorch/LibTorch 2.13.0
-artifact into Cargo build storage. A failed check leaves the safe project
-configuration in place so the same setup command can be retried.
-
-`auto` preserves an active `LIBTORCH_USE_PYTORCH`, `LIBTORCH`,
-`LIBTORCH_INCLUDE`, `LIBTORCH_LIB`, or nonempty `TORCH_CUDA_VERSION` selector;
-on Linux it also preserves `/usr/lib/libtorch.so`. Otherwise it selects CUDA
-12.6 only on Linux or Windows when the NVIDIA driver is compatible, and CPU on
-the remaining supported hosts. macOS acquires CPU LibTorch, whose supported
-builds can use MPS. Explicit managed CPU or CUDA setup refuses conflicting
-active selectors.
-
-Managed CPU and CUDA builds use `target/rusttorch/cpu` and
-`target/rusttorch/cuda-12.6`. CPU builds must keep `TORCH_CUDA_VERSION` unset;
-managed CUDA forces `TORCH_CUDA_VERSION=cu126`. Setup rejects
-`CARGO_TARGET_DIR` and `CARGO_BUILD_TARGET_DIR` in managed modes. Later raw
-Cargo `--target-dir` or environment overrides can bypass that isolation.
-Existing unrelated Cargo settings are preserved, including use of an active
-legacy `.cargo/config`; running setup in a workspace member still configures
-the workspace root. Preconfigured mode writes no Cargo configuration.
-
-For an existing Python, system, or offline LibTorch installation, disable
-automatic acquisition:
-
-```toml
-[dependencies]
-rusttorch = { version = "0.2", default-features = false }
-```
-
-Then build with one supported selector, for example:
-
-```sh
-LIBTORCH_USE_PYTORCH=1 cargo run
-LIBTORCH=/absolute/path/to/libtorch cargo run
-```
-
-With the dependency and selected LibTorch already available locally, Cargo's
-ordinary `--offline` mode can be used. The selector must identify a compatible
-PyTorch/LibTorch 2.13.0 installation.
-
-When running the application, the operating-system loader must be able to find
-LibTorch. If needed, add its `lib` directory (or the Python package's
-`torch/lib` directory) to
-`LD_LIBRARY_PATH` on Linux or `DYLD_LIBRARY_PATH` on macOS. CUDA applications
-must use a CUDA-enabled LibTorch build compatible with the installed NVIDIA
-driver. RustTorch never installs or modifies NVIDIA drivers or CUDA toolkits.
-
-The public API is documented on
-[docs.rs](https://docs.rs/rusttorch). Design, compatibility, backend,
-and interoperability guides live under [`docs/`](docs/). The source is hosted
-in the public [RustTorch GitHub repository](https://github.com/newpoluton-alt/RustTorch).
-
-## Compatibility
-
-- `tch`: 0.26.0
-- PyTorch/LibTorch: 2.13.0
-- behavioral reference: PyTorch tag v2.13.0, commit `cf30153`
-- local project Python: 3.14.7 with torch 2.13.0, safetensors 0.8.0,
-  and NumPy 2.5.2
-- Rust: 1.88 or newer
-
-The current development host is macOS 26.5.2 on arm64. Python reports that MPS
-is built and available and CUDA is unavailable. The Rust tests independently
-execute the linked LibTorch backend; Python availability is not treated as a
-Rust pass. CUDA requires a CUDA-enabled LibTorch distribution and a compatible
-NVIDIA driver on Linux or Windows.
-
-The CPU interoperability harness is verified: Python SafeTensors load strictly
-in Rust and match Linear forward/input/parameter gradients, cross-entropy, MSE,
-one SGD step, one Adam step, and residual forward/input/parameter gradients.
-Rust SafeTensors load strictly back into Python and forward output matches.
-On this host, Rust MPS forward/backward, gradients, SGD, Adam, CPU↔MPS model
-movement, and SafeTensors state transfer pass against the CPU reference. CUDA
-is unavailable and is reported as skipped, not passed.
-
-## Contributor setup
-
-Create the project-local environment if it is absent, then activate the
-platform setup from the repository root:
-
-```sh
-uv venv --python 3.14 .venv
-uv pip install --python .venv/bin/python3 \
-  'torch==2.13.0' 'safetensors==0.8.0' 'numpy==2.5.2'
-. scripts/dev-env.sh
-```
-
-These repository scripts use the active project `.venv` as LibTorch via
-`LIBTORCH_USE_PYTORCH=1`. They do not edit shell startup files or global Python
-installations. They are contributor conveniences, not an installation step for
-applications consuming RustTorch from crates.io. See
-[platform support](docs/platform-support.md) for the equivalent consumer setup
-and the repository's Linux CPU and CUDA helpers.
-
-## Contributor checks
-
-```sh
-cargo fmt --all -- --check
-cargo check --workspace --all-targets
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-targets
-cargo doc --workspace --no-deps
-scripts/check-backends.sh
-scripts/run-python-parity.sh
-```
-
-Run examples with `cargo run --example <name>`. Hardware tests are conditional:
-an unavailable backend must be reported as skipped, never as passed.
-
-## Eager API
-
-The intended primary style is ordinary eager Rust code:
-
-```rust,no_run
-use rusttorch::{nn, optim, DeviceSpec, Kind, Tensor};
-
-fn train_step() -> rusttorch::Result<()> {
-    rusttorch::manual_seed(42);
-    let mut model = nn::Sequential::builder()
-        .linear(4, 16)
+fn main() -> Result<()> {
+    let model = Sequential::builder()
+        .linear(2, 4)
         .relu()
-        .dropout(0.1)
-        .linear(16, 3)
+        .linear(4, 1)
         .build(DeviceSpec::Auto)?;
-    let device = model.device();
-    let inputs = Tensor::randn([32, 4], (Kind::Float, device));
-    let targets = Tensor::randint(3, [32], (Kind::Int64, device));
-    let mut optimizer = optim::Adam::builder()
-        .learning_rate(1e-3)
-        .build(model.var_store())?;
-    model.train();
-    let loss = nn::functional::cross_entropy(&model.forward(&inputs)?, &targets)?;
-    optimizer.backward_step(&loss)?;
-    model.save_weights("model.safetensors")?;
+    let input = Tensor::f_zeros([8, 2], (Kind::Float, model.device()))?;
+    let output = model.forward(&input)?;
+    assert_eq!(output.size(), [8, 1]);
     Ok(())
 }
 ```
 
-The MVP surface covers Linear, Identity, ReLU, GELU, Dropout, Flatten,
-Sequential, MSE, cross-entropy, Adam, and SGD. LibTorch owns the dynamic
-autograd graph. Calling `eval()` changes training-sensitive modules such as
-Dropout; it does not disable gradients.
+Then run it:
 
-Custom eager modules do not need to construct a RustTorch graph. The optional
-Graph IR supports named inputs and outputs, branching, residual addition,
-validation, summaries, and Graphviz DOT generation while still executing
-normal `tch::Tensor` operations.
-
-## Devices
-
-`DeviceSpec::Auto` selects CUDA device 0 when usable, otherwise MPS when
-usable, otherwise CPU. Explicit device requests fail when unavailable; they do
-not silently fall back. Inputs are not silently moved to a model device.
-
-```rust,ignore
-model.to_device(DeviceSpec::Cpu)?;
-model.to_device(DeviceSpec::Mps)?;
-model.to_device(DeviceSpec::Cuda(0))?;
+```sh
+cargo run
 ```
 
-Rebuild an optimizer after moving a model unless the implementation explicitly
-documents and verifies optimizer-state movement.
+The first setup may download a large official LibTorch artifact into Cargo
+build storage. RustTorch links LibTorch dynamically, so the platform loader
+must also be able to find its shared libraries at runtime.
 
-## PyTorch weight interchange
+## Current capabilities
 
-SafeTensors is the portable weight contract. Architecture and parameter names
-must be equivalent or explicitly mapped.
+| Area | Implemented scope |
+|---|---|
+| Eager models | `Linear`, `Identity`, ReLU, GELU, Dropout, Flatten, and `Sequential` |
+| Training | LibTorch autograd, MSE and cross-entropy losses, Adam, and SGD |
+| Devices | Explicit CPU, CUDA, and MPS requests plus checked automatic selection |
+| State interchange | Strict, non-strict, mapped, and dry-run SafeTensors loading |
+| Graphs | Optional named-input graph API with branching, validation, summaries, and DOT output |
+| Runtime | Project-local managed CPU or CUDA 12.6 setup over official LibTorch artifacts |
 
-RustTorch 0.1 modules register parameter tensors. The state helpers serialize
-the named tensors returned by `tch::nn::VarStore::variables`; there is not yet
-a dedicated RustTorch persistent-buffer API or a tested tied-parameter alias
-contract.
+The [API coverage ledger](docs/api-coverage.md) is the authoritative scoped
+inventory. Backend availability depends on the linked LibTorch build and host;
+explicit unavailable device requests return errors rather than silently
+falling back.
 
-Python to Rust:
+## Runtime setup
 
-```python
-from safetensors.torch import save_file
-save_file(model.state_dict(), "model.safetensors")
+Run one of the three supported commands inside a Cargo project:
+
+```sh
+rusttorch setup --backend auto
+rusttorch setup --backend cpu
+rusttorch setup --backend cuda-12.6
 ```
 
-```rust,ignore
-model.load_weights("model.safetensors")?;
-```
+- `auto` preserves an active Python, system LibTorch, or CUDA selector.
+  Otherwise it chooses CUDA 12.6 on a compatible Linux or Windows NVIDIA host
+  and CPU on the remaining supported hosts.
+- `cpu` selects the managed CPU distribution. On supported macOS systems that
+  distribution can expose MPS.
+- `cuda-12.6` selects `cu126` on Linux or Windows after checking the NVIDIA
+  driver. It never installs or changes drivers or CUDA toolkits.
 
-Rust to Python:
+Setup locates the Cargo workspace root, keeps managed CPU and CUDA artifacts
+separate, writes project-local Cargo settings, and runs `cargo check`. Existing
+Python, system, and offline LibTorch workflows remain available. See
+[platform setup](docs/platform-support.md) and
+[CUDA support](docs/cuda-support.md) for selectors, driver floors, target
+isolation, retry behavior, and dynamic-loader requirements.
 
-```rust,ignore
-model.save_weights("model.safetensors")?;
-```
+## Documentation
 
-```python
-from safetensors.torch import load_file
-model.load_state_dict(load_file("model.safetensors"), strict=True)
-```
+| Guide | What it covers |
+|---|---|
+| [API documentation](https://docs.rs/rusttorch) | Public Rust types and functions |
+| [Compatibility coverage](docs/api-coverage.md) | Scoped status of PyTorch API areas |
+| [Architecture](docs/architecture.md) | Eager frontend and LibTorch boundary |
+| [Platform support](docs/platform-support.md) | Runtime, devices, and system/Python setup |
+| [Backend evidence](docs/backend-parity.md) | Hardware-specific validation and parity scope |
+| [Graph system](docs/graph-system.md) | Optional graph construction, validation, and execution |
+| [Model interoperability](docs/model-interoperability.md) | SafeTensors exchange with PyTorch |
+| [Porting policy](docs/porting-policy.md) | Source attribution and compatibility rules |
 
-See [model interoperability](docs/model-interoperability.md) and
-[state-dict naming](docs/state-dict-naming.md). The helper scripts under
-`scripts/` create and verify a small deterministic parity model.
+## Limitations
 
-## Model formats and limitations
+RustTorch currently has no convolutional, recurrent, or transformer module
+surface; distributed training; quantization; replacement autograd;
+`torch.compile`; or custom-kernel framework. SafeTensors is the supported
+model-state format. Python pickle models, TorchScript, `torch.export`, and
+cross-language optimizer checkpoint resume are not exposed by the current API.
 
-- `.safetensors`: the only RustTorch 0.1 model-state format.
-- `.pt`/`.bin` state dictionaries: not supported by the RustTorch 0.1 API;
-  pickle must be treated as untrusted.
-- TorchScript: not exposed by RustTorch 0.1. Applications that need opaque
-  legacy inference can use `tch::CModule` directly.
-- `.pt2`/`torch.export`: roadmap only.
-- `.rusttorch`: graph-plus-weights package concept only; not implemented.
-- `torch.save(model)`: arbitrary Python-pickled whole models are not portable
-  to Rust and are not supported.
+## Contributing
 
-The MVP does not implement replacement autograd, `torch.compile`, custom
-kernels, distributed training, full PyTorch operator coverage, convolutional,
-recurrent, or transformer layers, quantization, or cross-language optimizer
-checkpoint resume.
+Contributions are welcome. Start with the
+[contribution guide](CONTRIBUTING.md), keep claims within tested scope, and add
+the narrowest evidence that proves a change. For vulnerabilities, use the
+repository's live [Security page](https://github.com/newpoluton-alt/RustTorch/security)
+for current reporting options instead of opening a public issue.
 
 ## License
 
-Original RustTorch code is dual-licensed under MIT or Apache-2.0. PyTorch and
-other dependencies retain their own licenses; see
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Original RustTorch code is available under either the [MIT License](LICENSE-MIT)
+or the [Apache License 2.0](LICENSE-APACHE), at your option. PyTorch, LibTorch,
+`tch`, and other dependencies retain their own licenses and attribution; see
+[third-party notices](THIRD_PARTY_NOTICES.md).
+
+RustTorch is not affiliated with or endorsed by the PyTorch Foundation.
