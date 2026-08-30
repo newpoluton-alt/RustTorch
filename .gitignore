@@ -1,6 +1,7 @@
 /target
 /.venv
 /.reference
+/.worktrees/
 /rustorch_codex_project_prompt.md
 /.idea/
 .DS_Store
