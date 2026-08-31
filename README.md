@@ -132,6 +132,7 @@ isolation, retry behavior, and dynamic-loader requirements.
 | [Graph system](docs/graph-system.md) | Optional graph construction, validation, and execution |
 | [Model interoperability](docs/model-interoperability.md) | SafeTensors exchange with PyTorch |
 | [Porting policy](docs/porting-policy.md) | Source attribution and compatibility rules |
+| [Release provenance](docs/releasing.md) | Exact package subjects and verification procedure |
 | [Governance](GOVERNANCE.md) | Roles, decisions, security, and release authority |
 | [Support](SUPPORT.md) | Usage questions and issue routing |
 | [Security](SECURITY.md) | Supported versions and private vulnerability reporting |

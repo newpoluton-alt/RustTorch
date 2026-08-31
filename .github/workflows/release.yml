@@ -1,0 +1,171 @@
+name: Release provenance
+
+on:
+  push:
+    tags:
+      - "v[0-9]*.[0-9]*.[0-9]*"
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build release packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.preflight.outputs.version }}
+      base64-subjects: ${{ steps.subjects.outputs.base64-subjects }}
+    env:
+      LIBTORCH_USE_PYTORCH: "1"
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Set up UV
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.3"
+          enable-cache: false
+
+      - name: Validate Python dependency lock
+        run: uv lock --check --offline --no-cache
+
+      - name: Synchronize locked Python environment
+        run: uv sync --frozen --no-cache
+
+      - name: Export project Python environment
+        run: |
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+
+      - name: Set up stable Rust
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
+        with:
+          toolchain: stable
+          cache: false
+
+      - name: Export LibTorch library path
+        run: |
+          torch_lib="$(.venv/bin/python -c 'from pathlib import Path; import torch; print(Path(torch.__file__).resolve().parent / "lib")')"
+          echo "LD_LIBRARY_PATH=${torch_lib}" >> "$GITHUB_ENV"
+
+      - name: Validate release metadata
+        id: preflight
+        run: |
+          version="$(.venv/bin/python scripts/check-release.py --tag "$GITHUB_REF_NAME")"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build each package archive once
+        env:
+          VERSION: ${{ steps.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          test ! -e dist
+          test ! -e target/package
+          mkdir dist
+          cargo package -p rusttorch --locked
+          cargo package -p rusttorch-cli --locked
+          test -f "target/package/rusttorch-$VERSION.crate"
+          test -f "target/package/rusttorch-cli-$VERSION.crate"
+          cp "target/package/rusttorch-$VERSION.crate" "dist/rusttorch-$VERSION.crate"
+          cp "target/package/rusttorch-cli-$VERSION.crate" "dist/rusttorch-cli-$VERSION.crate"
+
+      - name: Validate archives and create provenance subjects
+        id: subjects
+        run: |
+          set -euo pipefail
+          base64_subjects="$(.venv/bin/python scripts/check-release.py \
+            --tag "$GITHUB_REF_NAME" --dist dist --subjects-output dist/subjects.txt)"
+          test -n "$base64_subjects"
+          echo "base64-subjects=$base64_subjects" >> "$GITHUB_OUTPUT"
+
+      - name: Upload immutable package artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-packages
+          path: |
+            dist/rusttorch-${{ steps.preflight.outputs.version }}.crate
+            dist/rusttorch-cli-${{ steps.preflight.outputs.version }}.crate
+            dist/subjects.txt
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+          overwrite: false
+          include-hidden-files: false
+
+  provenance:
+    name: Generate package provenance
+    needs: build
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.build.outputs.base64-subjects }}
+      provenance-name: rusttorch-${{ needs.build.outputs.version }}.intoto.jsonl
+      upload-assets: true
+      draft-release: "true"
+
+  release:
+    name: Publish verified release
+    needs:
+      - build
+      - provenance
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download package artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-packages
+          path: dist
+
+      - name: Revalidate downloaded package bytes
+        env:
+          EXPECTED_BASE64_SUBJECTS: ${{ needs.build.outputs.base64-subjects }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd dist
+          test "$(find . -mindepth 1 -maxdepth 1 | wc -l)" -eq 3
+          test -f "rusttorch-$VERSION.crate" && test ! -L "rusttorch-$VERSION.crate"
+          test -f "rusttorch-cli-$VERSION.crate" && test ! -L "rusttorch-cli-$VERSION.crate"
+          test -f subjects.txt && test ! -L subjects.txt
+          actual_files="$(find . -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort)"
+          expected_files="$(printf '%s\n' subjects.txt \
+            "rusttorch-$VERSION.crate" "rusttorch-cli-$VERSION.crate" | sort)"
+          test "$actual_files" = "$expected_files"
+          sha256sum --check subjects.txt
+          actual_base64="$(base64 -w 0 subjects.txt)"
+          test -n "$actual_base64"
+          test "$actual_base64" = "$EXPECTED_BASE64_SUBJECTS"
+
+      - name: Complete and publish the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = "true"
+          gh release upload "$GITHUB_REF_NAME" dist/*.crate --clobber
+          actual_assets="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)"
+          expected_assets="$(printf '%s\n' "rusttorch-$VERSION.crate" \
+            "rusttorch-cli-$VERSION.crate" "rusttorch-$VERSION.intoto.jsonl" | sort)"
+          test "$actual_assets" = "$expected_assets"
+          gh release edit "$GITHUB_REF_NAME" --draft=false
