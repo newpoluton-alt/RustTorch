@@ -89,6 +89,7 @@ class CommunityHealthTests(unittest.TestCase):
 
     def assert_ci_security_contract(self, text: str) -> None:
         self.assertNotRegex(text, r'''(?i)["'][a-z_][a-z0-9_-]*["']\s*:''')
+        self.assertNotRegex(text, r"(?m)^\s*\?(?:\s|$)")
         self.assertRegex(text, r"(?m)^name: CI$")
         jobs_text = text.split("\njobs:\n", 1)[1]
         job_matches = list(re.finditer(r"(?m)^  ([a-z0-9_-]+):$", jobs_text))
@@ -258,6 +259,10 @@ class CommunityHealthTests(unittest.TestCase):
 
     def assert_python_ci_contract(self, text: str) -> None:
         quality = text.split("  quality:\n", 1)[1].split("\n  msrv:", 1)[0]
+        normalized_text = re.sub(r"\\\r?\n[ \t]*", "", text)
+        normalized_quality = normalized_text.split("  quality:\n", 1)[1].split(
+            "\n  msrv:", 1
+        )[0]
         self.assertEqual(text.count(f"uses: {SETUP_UV}"), 1)
         setup_uv = quality.split(f"uses: {SETUP_UV}", 1)[1].split(
             "\n      - name:", 1
@@ -268,13 +273,17 @@ class CommunityHealthTests(unittest.TestCase):
         )
         self.assertEqual(len(re.findall(r"(?i)\benable-cache\s*:", text)), 1)
         self.assertEqual(text.count("          enable-cache: false"), 1)
-        self.assertEqual(len(re.findall(r"(?i)\buv\s+lock\b", quality)), 1)
+        self.assertEqual(
+            len(re.findall(r"(?i)\buv\s+lock\b", normalized_quality)), 1
+        )
         self.assertRegex(
             quality, r"(?m)^        run: uv lock --check --offline --no-cache$"
         )
-        self.assertEqual(len(re.findall(r"(?i)\buv\s+sync\b", quality)), 1)
+        self.assertEqual(
+            len(re.findall(r"(?i)\buv\s+sync\b", normalized_quality)), 1
+        )
         self.assertRegex(quality, r"(?m)^        run: uv sync --frozen --no-cache$")
-        self.assertNotRegex(text, r"(?i)\bpip\b")
+        self.assertNotRegex(normalized_text, r"(?i)\bpip\b")
         self.assertNotIn("python3 -m venv", quality)
 
         path_export = 'echo "$PWD/.venv/bin" >> "$GITHUB_PATH"'
@@ -545,6 +554,14 @@ class CommunityHealthTests(unittest.TestCase):
                 '    steps:\n      - { name: Unapproved, "uses": evil/example@main }\n',
                 1,
             ),
+            "explicit action key": text.replace(
+                "    steps:\n",
+                "    steps:\n"
+                "      - name: Unapproved explicit action\n"
+                "        ? uses # invoke an unapproved action\n"
+                "        : evil/example@main\n",
+                1,
+            ),
             "secret context": text.replace(
                 "name: CI", "name: CI\n# ${{ secrets.CARGO_TOKEN }}", 1
             ),
@@ -569,6 +586,13 @@ class CommunityHealthTests(unittest.TestCase):
             "quoted flow cache config": text.replace(
                 "        with:\n          python-version: \"3.14\"",
                 '        with: { python-version: "3.14", "cache": pip }',
+                1,
+            ),
+            "explicit cache key": text.replace(
+                '          python-version: "3.14"',
+                '          python-version: "3.14"\n'
+                "          ? cache # enable a package cache\n"
+                "          : pip",
                 1,
             ),
             "write permission": text.replace("contents: read", "contents: write", 1),
@@ -645,6 +669,15 @@ class CommunityHealthTests(unittest.TestCase):
                 "          uv sync",
                 1,
             ),
+            "continued unlocked sync": text.replace(
+                "        run: uv sync --frozen --no-cache",
+                "        run: uv sync --frozen --no-cache\n\n"
+                "      - name: Resynchronize through a shell continuation\n"
+                "        run: |\n"
+                "          uv \\\n"
+                "          sync",
+                1,
+            ),
             "inline pip install": text.replace(
                 "uv sync --frozen --no-cache",
                 "uv sync --frozen --no-cache\n          python -m pip install wheel",
@@ -654,6 +687,15 @@ class CommunityHealthTests(unittest.TestCase):
                 "uv sync --frozen --no-cache",
                 "uv sync --frozen --no-cache\n          python -m pip \\\n"
                 "            install wheel",
+                1,
+            ),
+            "continued inline pip install": text.replace(
+                "        run: uv sync --frozen --no-cache",
+                "        run: uv sync --frozen --no-cache\n\n"
+                "      - name: Install through a shell continuation\n"
+                "        run: |\n"
+                "          python -m p\\\n"
+                "          ip install wheel",
                 1,
             ),
             "sync before Python": reordered,
