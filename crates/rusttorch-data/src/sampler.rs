@@ -1,4 +1,4 @@
-use std::{ops::Range, vec::IntoIter};
+use std::{num::NonZeroUsize, ops::Range, vec::IntoIter};
 
 use rand::{
     Rng, SeedableRng,
@@ -168,13 +168,16 @@ impl<S> BatchSampler<S> {
     /// Returns [`RustTorchError::InvalidConfiguration`] when `batch_size` is
     /// zero or cannot describe an allocatable index batch.
     pub fn new(sampler: S, batch_size: usize, drop_last: bool) -> Result<Self> {
-        validate_positive(batch_size, "batch_size")?;
-        let _ = try_vec::<usize>(batch_size, "batch_size")?;
-        Ok(Self {
+        let batch_size = validate_batch_size(batch_size)?;
+        Ok(Self::from_validated(sampler, batch_size, drop_last))
+    }
+
+    pub(crate) fn from_validated(sampler: S, batch_size: NonZeroUsize, drop_last: bool) -> Self {
+        Self {
             sampler,
-            batch_size,
+            batch_size: batch_size.get(),
             drop_last,
-        })
+        }
     }
 }
 
@@ -711,6 +714,13 @@ fn validate_positive(value: usize, field: &'static str) -> Result<()> {
         return Err(invalid_configuration(field, "must be greater than zero"));
     }
     Ok(())
+}
+
+pub(crate) fn validate_batch_size(batch_size: usize) -> Result<NonZeroUsize> {
+    validate_positive(batch_size, "batch_size")?;
+    let _ = try_vec::<usize>(batch_size, "batch_size")?;
+    NonZeroUsize::new(batch_size)
+        .ok_or_else(|| invalid_configuration("batch_size", "must be greater than zero"))
 }
 
 fn validate_weights(weights: &[f64]) -> Result<()> {

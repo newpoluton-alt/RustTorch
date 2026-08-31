@@ -2,6 +2,7 @@ use std::{
     convert::Infallible,
     error::Error,
     fmt,
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -477,6 +478,20 @@ fn conflicts_are_order_independent() {
     );
     assert_invalid(
         DataLoader::builder(Rows(vec![1]))
+            .without_batching()
+            .batch_sampler(batches())
+            .build(),
+        "batch_sampler",
+    );
+    assert_invalid(
+        DataLoader::builder(Rows(vec![1]))
+            .batch_sampler(batches())
+            .without_batching()
+            .build(),
+        "batch_sampler",
+    );
+    assert_invalid(
+        DataLoader::builder(Rows(vec![1]))
             .drop_last(true)
             .without_batching()
             .build(),
@@ -556,8 +571,45 @@ fn scalar_configuration_is_validated_and_prefetch_is_normalized() -> Result<(), 
 }
 
 #[test]
+fn unallocatable_batch_size_is_a_typed_build_error_without_panicking() {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        DataLoader::builder(Rows(vec![]))
+            .batch_size(usize::MAX)
+            .collate(VecCollate)
+            .build()
+    }));
+    assert!(result.is_ok(), "caller-controlled capacity must not panic");
+    assert_invalid(result.unwrap(), "batch_size");
+}
+
+#[test]
 fn positive_workers_fail_explicitly_until_worker_execution_lands() -> Result<(), RustTorchError> {
     let mut loader = DataLoader::builder(Rows(vec![1])).workers(1).build()?;
+    let mut iter = loader.iter();
+    assert!(matches!(
+        iter.next(),
+        Some(Err(LoaderError::Configuration(
+            RustTorchError::InvalidConfiguration {
+                field: "workers",
+                ..
+            }
+        )))
+    ));
+    assert!(iter.next().is_none());
+    Ok(())
+}
+
+#[test]
+fn positive_worker_rejection_does_not_start_the_sampler() -> Result<(), RustTorchError> {
+    let sampler = FnSampler::new(Some(1), |_| -> std::vec::IntoIter<usize> {
+        panic!("the sampler must not start before worker support exists")
+    });
+    let mut loader = DataLoader::builder(Rows(vec![1]))
+        .sampler(sampler)
+        .collate(VecCollate)
+        .workers(1)
+        .build()?;
+
     let mut iter = loader.iter();
     assert!(matches!(
         iter.next(),

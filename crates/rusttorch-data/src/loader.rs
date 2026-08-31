@@ -2,6 +2,7 @@ use std::{convert::Infallible, marker::PhantomData, num::NonZeroUsize, time::Dur
 
 use rusttorch_core::{Result, RustTorchError};
 
+use crate::sampler::validate_batch_size;
 use crate::{
     BatchSampler, BatchSource, Collate, Dataset, DefaultCollator, DefaultConverter, LoaderError,
     RandomSampler, Sampler, SequentialSampler,
@@ -82,8 +83,7 @@ where
     type Error = C::Error;
 
     fn iter(&self) -> Self::Iter {
-        BatchSampler::new(self.sampler.iter(), self.batch_size.get(), self.drop_last)
-            .expect("the builder validated its nonzero batch size")
+        BatchSampler::from_validated(self.sampler.iter(), self.batch_size, self.drop_last)
     }
 
     fn exact_len(&self) -> Option<usize> {
@@ -154,7 +154,7 @@ fn singleton(index: usize) -> Vec<usize> {
     vec![index]
 }
 
-impl<Sample, S, V> LoaderPlan<Sample, ()> for NoBatch<S, V>
+impl<Sample, S, V, C> LoaderPlan<Sample, C> for NoBatch<S, V>
 where
     S: Sampler,
     V: Collate<Sample>,
@@ -181,7 +181,7 @@ where
 
     fn finish(
         &mut self,
-        _collator: &mut (),
+        _collator: &mut C,
         samples: Vec<Sample>,
     ) -> std::result::Result<Self::Batch, Self::Error> {
         self.converter.collate(samples)
@@ -339,8 +339,7 @@ impl<D, P, C> DataLoaderBuilder<D, P, C> {
         P::Error: From<D::Error>,
     {
         validate_configuration(&self.configuration, self.explicit)?;
-        let batch_size = NonZeroUsize::new(self.configuration.batch_size)
-            .ok_or_else(|| invalid_configuration("batch_size", "must be greater than zero"))?;
+        let batch_size = validate_batch_size(self.configuration.batch_size)?;
         self.plan
             .apply_batch_options(batch_size, self.configuration.drop_last);
         let effective_prefetch = match (
@@ -409,15 +408,15 @@ where
     }
 
     /// Disables automatic batching and selects default conversion.
-    pub fn without_batching(mut self) -> DataLoaderBuilder<D, NoBatch<S, DefaultConverter>, ()> {
+    pub fn without_batching(mut self) -> DataLoaderBuilder<D, NoBatch<S, DefaultConverter>, C> {
         self.explicit.without_batching = true;
-        self.map(|plan, _| {
+        self.map(|plan, collator| {
             (
                 NoBatch {
                     sampler: plan.sampler,
                     converter: DefaultConverter,
                 },
-                (),
+                collator,
             )
         })
     }
@@ -480,16 +479,16 @@ where
     /// Disables batching; build rejects its conflict with the earlier batch sampler.
     pub fn without_batching(
         mut self,
-    ) -> DataLoaderBuilder<D, NoBatch<SequentialSampler, DefaultConverter>, ()> {
+    ) -> DataLoaderBuilder<D, NoBatch<SequentialSampler, DefaultConverter>, C> {
         self.explicit.without_batching = true;
         let length = self.dataset.len();
-        self.map(|_, _| {
+        self.map(|_, collator| {
             (
                 NoBatch {
                     sampler: SequentialSampler::new(length),
                     converter: DefaultConverter,
                 },
-                (),
+                collator,
             )
         })
     }
@@ -500,20 +499,20 @@ where
     }
 }
 
-impl<D, S, V> DataLoaderBuilder<D, NoBatch<S, V>, ()>
+impl<D, S, V, C> DataLoaderBuilder<D, NoBatch<S, V>, C>
 where
     D: Dataset,
 {
     /// Replaces the no-batching sampler.
-    pub fn sampler<S2>(mut self, sampler: S2) -> DataLoaderBuilder<D, NoBatch<S2, V>, ()> {
+    pub fn sampler<S2>(mut self, sampler: S2) -> DataLoaderBuilder<D, NoBatch<S2, V>, C> {
         self.explicit.sampler = true;
-        self.map(|plan, _| {
+        self.map(|plan, collator| {
             (
                 NoBatch {
                     sampler,
                     converter: plan.converter,
                 },
-                (),
+                collator,
             )
         })
     }
@@ -527,29 +526,29 @@ where
     pub fn shuffle(
         mut self,
         seed: u64,
-    ) -> Result<DataLoaderBuilder<D, NoBatch<RandomSampler, V>, ()>> {
+    ) -> Result<DataLoaderBuilder<D, NoBatch<RandomSampler, V>, C>> {
         self.explicit.shuffle = true;
         let sampler = RandomSampler::new(self.dataset.len(), seed)?;
-        Ok(self.map(|plan, _| {
+        Ok(self.map(|plan, collator| {
             (
                 NoBatch {
                     sampler,
                     converter: plan.converter,
                 },
-                (),
+                collator,
             )
         }))
     }
 
     /// Replaces the no-batching converter.
-    pub fn convert<V2>(self, converter: V2) -> DataLoaderBuilder<D, NoBatch<S, V2>, ()> {
-        self.map(|plan, _| {
+    pub fn convert<V2>(self, converter: V2) -> DataLoaderBuilder<D, NoBatch<S, V2>, C> {
+        self.map(|plan, collator| {
             (
                 NoBatch {
                     sampler: plan.sampler,
                     converter,
                 },
-                (),
+                collator,
             )
         })
     }
@@ -576,7 +575,7 @@ where
 {
     /// Starts a fresh finite iteration for the configured epoch.
     pub fn iter(&mut self) -> LoaderIter<'_, D, P, C> {
-        let batches = self.plan.iter();
+        let batches = (self.workers == 0).then(|| self.plan.iter());
         LoaderIter {
             dataset: &self.dataset,
             plan: &mut self.plan,
@@ -649,7 +648,7 @@ where
     dataset: &'a D,
     plan: &'a mut P,
     collator: &'a mut C,
-    batches: P::Iter,
+    batches: Option<P::Iter>,
     next_batch: u64,
     exhausted: bool,
     workers_unsupported: bool,
@@ -676,7 +675,7 @@ where
             ))));
         }
 
-        let indices = match self.batches.next() {
+        let indices = match self.batches.as_mut().and_then(Iterator::next) {
             Some(indices) => indices,
             None => {
                 self.exhausted = true;
