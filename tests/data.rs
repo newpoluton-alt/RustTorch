@@ -83,6 +83,35 @@ fn facade_exposes_the_owned_loader_builder() {
 }
 
 #[test]
+fn facade_reexports_task_transform_and_worker_context_contracts() {
+    use rusttorch::data::{
+        FnTransform, PipelineError, TaskContext, Transform, WorkerInfo, get_worker_info,
+    };
+
+    let context = TaskContext {
+        loader_seed: 42,
+        epoch: 3,
+        rank: 1,
+        logical_sample: 99,
+        stage: 7,
+    };
+    let mut transform =
+        FnTransform::new(|value: i64, _: &TaskContext| Ok::<_, Infallible>(value + 1));
+    assert_eq!(transform.transform(2, &context), Ok(3));
+    assert_eq!(context.deterministic_seed(), 0x1d7d_73dc_f6e9_4f2d);
+    assert_eq!(get_worker_info(), None);
+    assert_eq!(
+        WorkerInfo::from_loader_seed(3, 4, 42, 1, 2)
+            .expect("worker identity is valid")
+            .seed,
+        0xdcae_5da8_9952_36e4
+    );
+
+    let error: PipelineError<&str, &str, &str, &str, &str> = PipelineError::Dataset("fetch");
+    assert!(matches!(error, PipelineError::Dataset("fetch")));
+}
+
+#[test]
 fn facade_reexports_typed_collation_contracts() {
     use rusttorch::{
         Kind, Tensor,

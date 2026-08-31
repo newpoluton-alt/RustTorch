@@ -4,8 +4,10 @@ use rusttorch_core::{Result, RustTorchError};
 
 use crate::sampler::validate_batch_size;
 use crate::{
-    BatchSampler, BatchSource, Collate, Dataset, DefaultCollator, DefaultConverter, LoaderError,
-    RandomSampler, Sampler, SequentialSampler,
+    BatchSampler, BatchSource, CloneTransformFactory, Collate, Dataset, DefaultCollator,
+    DefaultConverter, IdentityTransformFactory, LoaderError, NoWorkerInit, PipelineError,
+    RandomSampler, Sampler, SequentialSampler, TaskContext, Transform, TransformFactory,
+    WorkerInit,
 };
 
 /// Type-level marker used only to make [`crate::DataLoader::builder`] inferable.
@@ -76,6 +78,8 @@ pub trait LoaderPlan<Sample, C> {
 pub trait LoaderPlanConfiguration {
     /// Applies builder-level automatic batch controls when relevant.
     fn apply_batch_options(&mut self, batch_size: NonZeroUsize, drop_last: bool);
+    /// Applies the initial epoch selected by the builder.
+    fn apply_epoch(&mut self, epoch: u64);
 }
 
 impl<Sample, S, C> LoaderPlan<Sample, C> for AutoBatch<S>
@@ -122,6 +126,10 @@ where
         self.batch_size = batch_size;
         self.drop_last = drop_last;
     }
+
+    fn apply_epoch(&mut self, epoch: u64) {
+        self.sampler.set_epoch(epoch);
+    }
 }
 
 impl<Sample, B, C> LoaderPlan<Sample, C> for ExplicitBatches<B>
@@ -163,6 +171,10 @@ where
     B: BatchSource,
 {
     fn apply_batch_options(&mut self, _batch_size: NonZeroUsize, _drop_last: bool) {}
+
+    fn apply_epoch(&mut self, epoch: u64) {
+        self.batches.set_epoch(epoch);
+    }
 }
 
 fn singleton(index: usize) -> Vec<usize> {
@@ -208,6 +220,10 @@ where
     S: Sampler,
 {
     fn apply_batch_options(&mut self, _batch_size: NonZeroUsize, _drop_last: bool) {}
+
+    fn apply_epoch(&mut self, epoch: u64) {
+        self.sampler.set_epoch(epoch);
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -231,6 +247,9 @@ struct LoaderConfiguration {
     ordered: bool,
     pin_memory: bool,
     prefetch_factor: Option<usize>,
+    loader_seed: u64,
+    epoch: u64,
+    rank: usize,
 }
 
 impl Default for LoaderConfiguration {
@@ -244,15 +263,20 @@ impl Default for LoaderConfiguration {
             ordered: true,
             pin_memory: false,
             prefetch_factor: None,
+            loader_seed: 0,
+            epoch: 0,
+            rank: 0,
         }
     }
 }
 
 /// Builder for an owned, re-iterable map-style data loader.
-pub struct DataLoaderBuilder<D, P, C> {
+pub struct DataLoaderBuilder<D, P, C, F = IdentityTransformFactory, I = NoWorkerInit> {
     dataset: D,
     plan: P,
     collator: C,
+    transform_factory: F,
+    worker_init: I,
     configuration: LoaderConfiguration,
     explicit: ExplicitArguments,
 }
@@ -271,19 +295,26 @@ where
             },
             dataset,
             collator: DefaultCollator,
+            transform_factory: IdentityTransformFactory,
+            worker_init: NoWorkerInit,
             configuration: LoaderConfiguration::default(),
             explicit: ExplicitArguments::default(),
         }
     }
 }
 
-impl<D, P, C> DataLoaderBuilder<D, P, C> {
-    fn map<P2, C2>(self, transform: impl FnOnce(P, C) -> (P2, C2)) -> DataLoaderBuilder<D, P2, C2> {
+impl<D, P, C, F, I> DataLoaderBuilder<D, P, C, F, I> {
+    fn map<P2, C2>(
+        self,
+        transform: impl FnOnce(P, C) -> (P2, C2),
+    ) -> DataLoaderBuilder<D, P2, C2, F, I> {
         let (plan, collator) = transform(self.plan, self.collator);
         DataLoaderBuilder {
             dataset: self.dataset,
             plan,
             collator,
+            transform_factory: self.transform_factory,
+            worker_init: self.worker_init,
             configuration: self.configuration,
             explicit: self.explicit,
         }
@@ -307,6 +338,66 @@ impl<D, P, C> DataLoaderBuilder<D, P, C> {
     pub fn workers(mut self, workers: usize) -> Self {
         self.configuration.workers = workers;
         self
+    }
+
+    /// Sets the seed used by deterministic task and worker contexts.
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.configuration.loader_seed = seed;
+        self
+    }
+
+    /// Sets the initial epoch used by sampling and task contexts.
+    pub fn epoch(mut self, epoch: u64) -> Self {
+        self.configuration.epoch = epoch;
+        self
+    }
+
+    /// Sets the distributed rank included in deterministic contexts.
+    pub fn rank(mut self, rank: usize) -> Self {
+        self.configuration.rank = rank;
+        self
+    }
+
+    /// Clones `transform` once for each serial iterator or worker lifecycle.
+    pub fn transform<T>(
+        self,
+        transform: T,
+    ) -> DataLoaderBuilder<D, P, C, CloneTransformFactory<T>, I> {
+        DataLoaderBuilder {
+            dataset: self.dataset,
+            plan: self.plan,
+            collator: self.collator,
+            transform_factory: CloneTransformFactory::new(transform),
+            worker_init: self.worker_init,
+            configuration: self.configuration,
+            explicit: self.explicit,
+        }
+    }
+
+    /// Replaces transform construction with an explicit typed factory.
+    pub fn transform_factory<F2>(self, factory: F2) -> DataLoaderBuilder<D, P, C, F2, I> {
+        DataLoaderBuilder {
+            dataset: self.dataset,
+            plan: self.plan,
+            collator: self.collator,
+            transform_factory: factory,
+            worker_init: self.worker_init,
+            configuration: self.configuration,
+            explicit: self.explicit,
+        }
+    }
+
+    /// Stores the initializer used by future positive-worker execution.
+    pub fn worker_init<I2>(self, worker_init: I2) -> DataLoaderBuilder<D, P, C, F, I2> {
+        DataLoaderBuilder {
+            dataset: self.dataset,
+            plan: self.plan,
+            collator: self.collator,
+            transform_factory: self.transform_factory,
+            worker_init,
+            configuration: self.configuration,
+            explicit: self.explicit,
+        }
     }
 
     /// Selects persistent workers for positive-worker execution.
@@ -341,7 +432,10 @@ impl<D, P, C> DataLoaderBuilder<D, P, C> {
     }
 
     /// Replaces automatic batching with explicit reusable index batches.
-    pub fn batch_sampler<B>(mut self, batches: B) -> DataLoaderBuilder<D, ExplicitBatches<B>, C> {
+    pub fn batch_sampler<B>(
+        mut self,
+        batches: B,
+    ) -> DataLoaderBuilder<D, ExplicitBatches<B>, C, F, I> {
         self.explicit.batch_sampler = true;
         self.map(|_, collator| (ExplicitBatches { batches }, collator))
     }
@@ -352,7 +446,7 @@ impl<D, P, C> DataLoaderBuilder<D, P, C> {
     ///
     /// Returns [`RustTorchError::InvalidConfiguration`] for incompatible
     /// PyTorch-style arguments or zero-valued size controls.
-    pub fn build(mut self) -> Result<OwnedDataLoader<D, P, C>>
+    pub fn build(mut self) -> Result<OwnedDataLoader<D, P, C, F, I>>
     where
         D: Dataset,
         P: LoaderPlanConfiguration,
@@ -361,6 +455,7 @@ impl<D, P, C> DataLoaderBuilder<D, P, C> {
         let batch_size = validate_batch_size(self.configuration.batch_size)?;
         self.plan
             .apply_batch_options(batch_size, self.configuration.drop_last);
+        self.plan.apply_epoch(self.configuration.epoch);
         let effective_prefetch = match (
             self.configuration.workers,
             self.configuration.prefetch_factor,
@@ -373,22 +468,26 @@ impl<D, P, C> DataLoaderBuilder<D, P, C> {
             dataset: self.dataset,
             plan: self.plan,
             collator: self.collator,
+            transform_factory: self.transform_factory,
+            _worker_init: self.worker_init,
             workers: self.configuration.workers,
             persistent_workers: self.configuration.persistent_workers,
             timeout: self.configuration.timeout,
             ordered: self.configuration.ordered,
             pin_memory: self.configuration.pin_memory,
             effective_prefetch,
+            loader_seed: self.configuration.loader_seed,
+            rank: self.configuration.rank,
         })
     }
 }
 
-impl<D, S, C> DataLoaderBuilder<D, AutoBatch<S>, C>
+impl<D, S, C, F, I> DataLoaderBuilder<D, AutoBatch<S>, C, F, I>
 where
     D: Dataset,
 {
     /// Replaces the current sampler.
-    pub fn sampler<S2>(mut self, sampler: S2) -> DataLoaderBuilder<D, AutoBatch<S2>, C> {
+    pub fn sampler<S2>(mut self, sampler: S2) -> DataLoaderBuilder<D, AutoBatch<S2>, C, F, I> {
         self.explicit.sampler = true;
         self.map(|plan, collator| {
             (
@@ -411,7 +510,7 @@ where
     pub fn shuffle(
         mut self,
         seed: u64,
-    ) -> Result<DataLoaderBuilder<D, AutoBatch<RandomSampler>, C>> {
+    ) -> Result<DataLoaderBuilder<D, AutoBatch<RandomSampler>, C, F, I>> {
         self.explicit.shuffle = true;
         let sampler = RandomSampler::new(self.dataset.len(), seed)?;
         Ok(self.map(|plan, collator| {
@@ -427,7 +526,9 @@ where
     }
 
     /// Disables automatic batching and selects default conversion.
-    pub fn without_batching(mut self) -> DataLoaderBuilder<D, NoBatch<S, DefaultConverter>, C> {
+    pub fn without_batching(
+        mut self,
+    ) -> DataLoaderBuilder<D, NoBatch<S, DefaultConverter>, C, F, I> {
         self.explicit.without_batching = true;
         self.map(|plan, collator| {
             (
@@ -441,17 +542,17 @@ where
     }
 
     /// Replaces the automatic-batch collator.
-    pub fn collate<C2>(self, collator: C2) -> DataLoaderBuilder<D, AutoBatch<S>, C2> {
+    pub fn collate<C2>(self, collator: C2) -> DataLoaderBuilder<D, AutoBatch<S>, C2, F, I> {
         self.map(|plan, _| (plan, collator))
     }
 }
 
-impl<D, B, C> DataLoaderBuilder<D, ExplicitBatches<B>, C>
+impl<D, B, C, F, I> DataLoaderBuilder<D, ExplicitBatches<B>, C, F, I>
 where
     D: Dataset,
 {
     /// Selects a sampler; build rejects its conflict with the earlier batch sampler.
-    pub fn sampler<S>(mut self, sampler: S) -> DataLoaderBuilder<D, AutoBatch<S>, C> {
+    pub fn sampler<S>(mut self, sampler: S) -> DataLoaderBuilder<D, AutoBatch<S>, C, F, I> {
         self.explicit.sampler = true;
         let batch_size =
             NonZeroUsize::new(self.configuration.batch_size).unwrap_or(NonZeroUsize::MIN);
@@ -477,7 +578,7 @@ where
     pub fn shuffle(
         mut self,
         seed: u64,
-    ) -> Result<DataLoaderBuilder<D, AutoBatch<RandomSampler>, C>> {
+    ) -> Result<DataLoaderBuilder<D, AutoBatch<RandomSampler>, C, F, I>> {
         self.explicit.shuffle = true;
         let sampler = RandomSampler::new(self.dataset.len(), seed)?;
         let batch_size =
@@ -498,7 +599,7 @@ where
     /// Disables batching; build rejects its conflict with the earlier batch sampler.
     pub fn without_batching(
         mut self,
-    ) -> DataLoaderBuilder<D, NoBatch<SequentialSampler, DefaultConverter>, C> {
+    ) -> DataLoaderBuilder<D, NoBatch<SequentialSampler, DefaultConverter>, C, F, I> {
         self.explicit.without_batching = true;
         let length = self.dataset.len();
         self.map(|_, collator| {
@@ -513,17 +614,17 @@ where
     }
 
     /// Replaces the explicit-batch collator.
-    pub fn collate<C2>(self, collator: C2) -> DataLoaderBuilder<D, ExplicitBatches<B>, C2> {
+    pub fn collate<C2>(self, collator: C2) -> DataLoaderBuilder<D, ExplicitBatches<B>, C2, F, I> {
         self.map(|plan, _| (plan, collator))
     }
 }
 
-impl<D, S, V, C> DataLoaderBuilder<D, NoBatch<S, V>, C>
+impl<D, S, V, C, F, I> DataLoaderBuilder<D, NoBatch<S, V>, C, F, I>
 where
     D: Dataset,
 {
     /// Replaces the no-batching sampler.
-    pub fn sampler<S2>(mut self, sampler: S2) -> DataLoaderBuilder<D, NoBatch<S2, V>, C> {
+    pub fn sampler<S2>(mut self, sampler: S2) -> DataLoaderBuilder<D, NoBatch<S2, V>, C, F, I> {
         self.explicit.sampler = true;
         self.map(|plan, collator| {
             (
@@ -542,10 +643,11 @@ where
     ///
     /// Returns an invalid-configuration error for an empty dataset or an
     /// unallocatable permutation.
+    #[allow(clippy::type_complexity)]
     pub fn shuffle(
         mut self,
         seed: u64,
-    ) -> Result<DataLoaderBuilder<D, NoBatch<RandomSampler, V>, C>> {
+    ) -> Result<DataLoaderBuilder<D, NoBatch<RandomSampler, V>, C, F, I>> {
         self.explicit.shuffle = true;
         let sampler = RandomSampler::new(self.dataset.len(), seed)?;
         Ok(self.map(|plan, collator| {
@@ -560,7 +662,7 @@ where
     }
 
     /// Replaces the no-batching converter.
-    pub fn convert<V2>(self, converter: V2) -> DataLoaderBuilder<D, NoBatch<S, V2>, C> {
+    pub fn convert<V2>(self, converter: V2) -> DataLoaderBuilder<D, NoBatch<S, V2>, C, F, I> {
         self.map(|plan, collator| {
             (
                 NoBatch {
@@ -574,35 +676,56 @@ where
 }
 
 /// An owned, re-iterable map-style data loader.
-pub struct OwnedDataLoader<D, P, C> {
+pub struct OwnedDataLoader<D, P, C, F = IdentityTransformFactory, I = NoWorkerInit> {
     dataset: D,
     plan: P,
     collator: C,
+    transform_factory: F,
+    _worker_init: I,
     workers: usize,
     persistent_workers: bool,
     timeout: Option<Duration>,
     ordered: bool,
     pin_memory: bool,
     effective_prefetch: Option<NonZeroUsize>,
+    loader_seed: u64,
+    rank: usize,
 }
 
-impl<D, P, C> OwnedDataLoader<D, P, C>
+impl<D, P, C, F, I> OwnedDataLoader<D, P, C, F, I>
 where
     D: Dataset,
-    P: LoaderPlan<D::Sample, C>,
-    P::Error: From<D::Error>,
+    F: TransformFactory<D::Sample>,
+    P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
+    I: WorkerInit,
 {
     /// Starts a fresh finite iteration for the configured epoch.
-    pub fn iter(&mut self) -> LoaderIter<'_, D, P, C> {
-        let batches = (self.workers == 0).then(|| self.plan.iter());
+    pub fn iter(&mut self) -> LoaderIter<'_, D, P, C, F, I> {
+        let workers_unsupported = self.workers > 0;
+        let (transform, transform_error) = if workers_unsupported {
+            (None, None)
+        } else {
+            match self.transform_factory.create(None) {
+                Ok(transform) => (Some(transform), None),
+                Err(error) => (None, Some(error)),
+            }
+        };
+        let batches = transform.as_ref().map(|_| self.plan.iter());
+        let epoch = self.plan.epoch();
         LoaderIter {
             dataset: &self.dataset,
             plan: &mut self.plan,
             collator: &mut self.collator,
             batches,
+            transform,
+            transform_error,
             next_batch: 0,
+            next_logical_sample: 0,
             exhausted: false,
-            workers_unsupported: self.workers > 0,
+            workers_unsupported,
+            loader_seed: self.loader_seed,
+            epoch,
+            rank: self.rank,
             output: PhantomData,
         }
     }
@@ -659,28 +782,48 @@ where
 }
 
 /// One fresh iteration borrowed from an [`OwnedDataLoader`].
-pub struct LoaderIter<'a, D, P, C>
+pub struct LoaderIter<'a, D, P, C, F = IdentityTransformFactory, I = NoWorkerInit>
 where
     D: Dataset,
-    P: LoaderPlan<D::Sample, C>,
+    F: TransformFactory<D::Sample>,
+    P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
+    I: WorkerInit,
 {
     dataset: &'a D,
     plan: &'a mut P,
     collator: &'a mut C,
     batches: Option<P::Iter>,
+    transform: Option<F::Transform>,
+    transform_error: Option<F::Error>,
     next_batch: u64,
+    next_logical_sample: u64,
     exhausted: bool,
     workers_unsupported: bool,
-    output: PhantomData<fn() -> D::Error>,
+    loader_seed: u64,
+    epoch: u64,
+    rank: usize,
+    output: PhantomData<fn() -> I>,
 }
 
-impl<D, P, C> Iterator for LoaderIter<'_, D, P, C>
+impl<D, P, C, F, I> Iterator for LoaderIter<'_, D, P, C, F, I>
 where
     D: Dataset,
-    P: LoaderPlan<D::Sample, C>,
-    P::Error: From<D::Error>,
+    F: TransformFactory<D::Sample>,
+    P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
+    I: WorkerInit,
 {
-    type Item = std::result::Result<P::Batch, LoaderError<P::Error>>;
+    type Item = std::result::Result<
+        P::Batch,
+        LoaderError<
+            PipelineError<
+                D::Error,
+                <F::Transform as Transform<D::Sample>>::Error,
+                P::Error,
+                F::Error,
+                I::Error,
+            >,
+        >,
+    >;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.exhausted {
@@ -692,6 +835,14 @@ where
                 "workers",
                 "positive-worker execution is scheduled for DataLoader Task 7",
             ))));
+        }
+        if let Some(source) = self.transform_error.take() {
+            self.exhausted = true;
+            return Some(Err(LoaderError::Pipeline {
+                batch: None,
+                worker: None,
+                source: PipelineError::TransformInit(source),
+            }));
         }
 
         let indices = match self.batches.as_mut().and_then(Iterator::next) {
@@ -709,7 +860,7 @@ where
                 return Some(Err(LoaderError::Pipeline {
                     batch: Some(batch),
                     worker: None,
-                    source: P::Error::from(source),
+                    source: PipelineError::Dataset(source),
                 }));
             }
         };
@@ -722,14 +873,43 @@ where
                 actual: samples.len(),
             }));
         }
-        let result =
-            self.plan
-                .finish(self.collator, samples)
-                .map_err(|source| LoaderError::Pipeline {
-                    batch: Some(batch),
-                    worker: None,
-                    source,
-                });
+        let mut transformed = Vec::with_capacity(samples.len());
+        for sample in samples {
+            let context = TaskContext {
+                loader_seed: self.loader_seed,
+                epoch: self.epoch,
+                rank: self.rank,
+                logical_sample: self.next_logical_sample,
+                stage: 0,
+            };
+            let Some(transform) = self.transform.as_mut() else {
+                self.exhausted = true;
+                return None;
+            };
+            match transform.transform(sample, &context) {
+                Ok(sample) => transformed.push(sample),
+                Err(source) => {
+                    self.exhausted = true;
+                    return Some(Err(LoaderError::Pipeline {
+                        batch: Some(batch),
+                        worker: None,
+                        source: PipelineError::Transform(source),
+                    }));
+                }
+            }
+            match self.next_logical_sample.checked_add(1) {
+                Some(next) => self.next_logical_sample = next,
+                None => self.exhausted = true,
+            }
+        }
+        let result = self
+            .plan
+            .finish(self.collator, transformed)
+            .map_err(|source| LoaderError::Pipeline {
+                batch: Some(batch),
+                worker: None,
+                source: PipelineError::Collate(source),
+            });
         if result.is_err() {
             self.exhausted = true;
         } else if let Some(next) = self.next_batch.checked_add(1) {

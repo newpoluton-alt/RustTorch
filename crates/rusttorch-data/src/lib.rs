@@ -12,6 +12,8 @@ mod dataset;
 mod error;
 mod loader;
 mod sampler;
+mod transform;
+mod worker_context;
 
 pub use collate::{
     Bytes, Collate, CollateError, DefaultCollate, DefaultCollator, DefaultConvert,
@@ -21,7 +23,7 @@ pub use dataset::{
     ConcatDataset, SplitLength, StackDataset, StackTuple, Subset, TensorDataset, chain_datasets,
     random_split,
 };
-pub use error::LoaderError;
+pub use error::{LoaderError, PipelineError};
 pub use loader::{
     AutoBatch, BuilderDatasetMarker, DataLoaderBuilder, ExplicitBatches, LoaderIter, LoaderPlan,
     LoaderPlanConfiguration, NoBatch, OwnedDataLoader,
@@ -29,6 +31,15 @@ pub use loader::{
 pub use sampler::{
     BatchSampler, BatchSource, DistributedSampler, FnBatchSource, FnSampler, RandomSampler,
     Sampler, SequentialSampler, SubsetRandomSampler, WeightedRandomSampler,
+};
+pub use transform::{
+    CloneTransformFactory, FnTransform, FnTransformFactory, IdentityTransform,
+    IdentityTransformFactory, TASK_RNG_DERIVATION_VERSION, TaskContext, Transform,
+    TransformFactory,
+};
+pub use worker_context::{
+    FnWorkerInit, NoWorkerInit, WORKER_SEED_DERIVATION_VERSION, WorkerInfo, WorkerInit,
+    get_worker_info, with_worker_info,
 };
 
 /// A finite, indexable collection of samples.

@@ -10,8 +10,11 @@ use std::{
 use rusttorch_core::{RustTorchError, Tensor};
 use rusttorch_data::{
     CollateError, DataLoader, Dataset, FnBatchSource, FnCollate, FnSampler, LoaderError,
-    RandomSampler, Sampler, VecCollate,
+    PipelineError, RandomSampler, Sampler, VecCollate,
 };
+
+type DefaultLoaderError =
+    LoaderError<PipelineError<Infallible, Infallible, CollateError, Infallible, Infallible>>;
 
 struct Rows(Vec<i64>);
 
@@ -59,11 +62,11 @@ fn defaults_batch_scalars_and_fresh_iterations_restart() -> Result<(), RustTorch
 
     let first = loader
         .iter()
-        .collect::<Result<Vec<Tensor>, LoaderError<CollateError>>>()
+        .collect::<Result<Vec<Tensor>, DefaultLoaderError>>()
         .expect("default scalar collation succeeds");
     let second = loader
         .iter()
-        .collect::<Result<Vec<Tensor>, LoaderError<CollateError>>>()
+        .collect::<Result<Vec<Tensor>, DefaultLoaderError>>()
         .expect("a fresh sampler iterator is created");
     assert_eq!(first.len(), 3);
     assert_eq!(first[0].int64_value(&[0]), 0);
@@ -384,7 +387,7 @@ fn pipeline_failures_remain_typed_and_terminate_iteration() -> Result<(), RustTo
         Some(Err(LoaderError::Pipeline {
             batch: Some(0),
             worker: None,
-            source: PipelineFailure::Dataset,
+            source: PipelineError::Dataset(PipelineFailure::Dataset),
         }))
     ));
     assert!(iter.next().is_none());
@@ -400,7 +403,7 @@ fn pipeline_failures_remain_typed_and_terminate_iteration() -> Result<(), RustTo
         Some(Err(LoaderError::Pipeline {
             batch: Some(0),
             worker: None,
-            source: PipelineFailure::Collate,
+            source: PipelineError::Collate(PipelineFailure::Collate),
         }))
     ));
     assert!(iter.next().is_none());
