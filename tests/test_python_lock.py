@@ -190,6 +190,19 @@ class PythonLockCheckerTests(unittest.TestCase):
                 1,
             ),
             "artifact missing hash": original.replace("hash =", "digest =", 1),
+            "artifact size true": original.replace(
+                "size = 222126", "size = true", 1
+            ),
+            "artifact size false": original.replace(
+                "size = 222126", "size = false", 1
+            ),
+            "artifact size zero": original.replace("size = 222126", "size = 0", 1),
+            "artifact size negative": original.replace(
+                "size = 222126", "size = -1", 1
+            ),
+            "artifact size string": original.replace(
+                "size = 222126", 'size = "222126"', 1
+            ),
             "unknown nested artifact": original.replace(
                 'sdist = { url = "https://files.pythonhosted.org/',
                 'payload = { url = "https://evil.example/payload.whl", hash = "sha256:'
