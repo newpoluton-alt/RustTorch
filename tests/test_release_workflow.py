@@ -35,6 +35,7 @@ SLSA_GENERATOR = (
     "slsa-framework/slsa-github-generator/.github/workflows/"
     "generator_generic_slsa3.yml@v2.1.0"
 )
+PYTHON_LOCK_CHECK = "python3 scripts/check-python-lock.py"
 APPROVED_RELEASE_ACTIONS = {
     value.split(" #", 1)[0]
     for value in (
@@ -367,6 +368,25 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("gh release create", normalized_text)
         self.assertNotIn("GH_TOKEN:", jobs["build"] + jobs["provenance"])
         self.assertNotIn("GH_REPO:", jobs["build"] + jobs["provenance"])
+        lock_policy_step = (
+            "      - name: Validate Python lock artifacts\n"
+            f"        run: {PYTHON_LOCK_CHECK}\n"
+        )
+        build = jobs["build"]
+        normalized_build = re.sub(r"\\\r?\n[ \t]*", "", build)
+        self.assertEqual(build.count(lock_policy_step), 1)
+        self.assertEqual(build.count("scripts/check-python-lock.py"), 1)
+        self.assertEqual(normalized_build.count(PYTHON_LOCK_CHECK), 1)
+        self.assertLess(build.index(f"uses: {SETUP_PYTHON}"), build.index(lock_policy_step))
+        self.assertLess(build.index(lock_policy_step), build.index(f"uses: {SETUP_UV}"))
+        self.assertLess(
+            build.index(lock_policy_step),
+            build.index("uv lock --check --offline --no-cache"),
+        )
+        self.assertLess(
+            build.index(lock_policy_step),
+            build.index("uv sync --frozen --no-cache"),
+        )
         normalized_release = re.sub(r"\\\r?\n[ \t]*", "", jobs["release"])
         self.assertNotRegex(normalized_release, r"(?i)\bcargo\s")
         self.assertNotIn("scripts/", jobs["release"])
@@ -390,11 +410,27 @@ class ReleaseWorkflowTests(unittest.TestCase):
         for action in (CHECKOUT, SETUP_PYTHON, SETUP_UV, SETUP_RUST, UPLOAD_ARTIFACT):
             self.assertIn(f"uses: {action}", build)
         self.assertIn('python-version: "3.14"', build)
+        lock_policy_step = (
+            "      - name: Validate Python lock artifacts\n"
+            f"        run: {PYTHON_LOCK_CHECK}\n"
+        )
+        self.assertEqual(build.count(lock_policy_step), 1)
+        self.assertEqual(build.count("scripts/check-python-lock.py"), 1)
         self.assertIn('version: "0.12.3"', build)
         self.assertIn("enable-cache: false", build)
         self.assertIn("cache: false", build)
         self.assertIn("uv lock --check --offline --no-cache", build)
         self.assertIn("uv sync --frozen --no-cache", build)
+        self.assertLess(build.index(f"uses: {SETUP_PYTHON}"), build.index(lock_policy_step))
+        self.assertLess(build.index(lock_policy_step), build.index(f"uses: {SETUP_UV}"))
+        self.assertLess(
+            build.index(lock_policy_step),
+            build.index("uv lock --check --offline --no-cache"),
+        )
+        self.assertLess(
+            build.index(lock_policy_step),
+            build.index("uv sync --frozen --no-cache"),
+        )
         self.assertIn('echo "$PWD/.venv/bin" >> "$GITHUB_PATH"', build)
         self.assertIn('echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"', build)
         self.assertIn("LD_LIBRARY_PATH", build)
@@ -490,6 +526,20 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
     def test_release_security_contract_fails_closed_on_workflow_drift(self) -> None:
         text = self.read_workflow()
+        lock_policy_step = (
+            "      - name: Validate Python lock artifacts\n"
+            f"        run: {PYTHON_LOCK_CHECK}\n"
+        )
+        setup_uv_step = f'''      - name: Set up UV
+        uses: {SETUP_UV}
+        with:
+          version: "0.12.3"
+          enable-cache: false
+'''
+        late_policy = text.replace(lock_policy_step, "", 1)
+        late_policy = late_policy.replace(
+            setup_uv_step, setup_uv_step + "\n" + lock_policy_step, 1
+        )
         mutations = {
             "broad tag trigger": text.replace(
                 '"v[0-9]+.[0-9]+.[0-9]+"',
@@ -550,6 +600,39 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "continued pip install": text.replace(
                 "uv sync --frozen --no-cache",
                 "uv sync --frozen --no-cache\n          python -m p\\\n            ip install wheel",
+                1,
+            ),
+            "missing artifact policy": text.replace(lock_policy_step, "", 1),
+            "artifact policy after setup UV": late_policy,
+            "artifact policy through venv": text.replace(
+                PYTHON_LOCK_CHECK,
+                ".venv/bin/python scripts/check-python-lock.py",
+                1,
+            ),
+            "continued artifact policy": text.replace(
+                PYTHON_LOCK_CHECK,
+                "python3 scripts/check-python-\\\n          lock.py",
+                1,
+            ),
+            "aliased artifact policy": text.replace(
+                f"        run: {PYTHON_LOCK_CHECK}",
+                "        run: |\n"
+                "          alias python3=true\n"
+                f"          {PYTHON_LOCK_CHECK}",
+                1,
+            ),
+            "ignored artifact policy failure": text.replace(
+                PYTHON_LOCK_CHECK, f"{PYTHON_LOCK_CHECK} || true", 1
+            ),
+            "quoted artifact policy key": text.replace(
+                f"        run: {PYTHON_LOCK_CHECK}",
+                f'        "run": {PYTHON_LOCK_CHECK}',
+                1,
+            ),
+            "explicit artifact policy key": text.replace(
+                f"        run: {PYTHON_LOCK_CHECK}",
+                "        ? run # validate before environment creation\n"
+                f"        : {PYTHON_LOCK_CHECK}",
                 1,
             ),
             "second unlocked sync": text.replace(
