@@ -304,7 +304,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotRegex(text, r'''(?i)["'][a-z_][a-z0-9_-]*["']\s*:''')
         self.assertNotRegex(text, r"(?m)(?:^\s*(?:-\s+)?|[{\[,]\s*)\?(?:\s|$)")
         expected_trigger = (
-            "  push:\n    tags:\n      - \"v[0-9]*.[0-9]*.[0-9]*\"\n"
+            "  push:\n    tags:\n      - \"v[0-9]+.[0-9]+.[0-9]+\"\n"
         )
         trigger_text = text.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
         self.assertEqual(trigger_text, expected_trigger)
@@ -491,6 +491,11 @@ class ReleaseWorkflowTests(unittest.TestCase):
     def test_release_security_contract_fails_closed_on_workflow_drift(self) -> None:
         text = self.read_workflow()
         mutations = {
+            "broad tag trigger": text.replace(
+                '"v[0-9]+.[0-9]+.[0-9]+"',
+                '"v[0-9]*.[0-9]*.[0-9]*"',
+                1,
+            ),
             "pull request trigger": text.replace(
                 "  push:\n", "  pull_request:\n  push:\n", 1
             ),
