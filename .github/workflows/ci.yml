@@ -132,17 +132,37 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc -p rusttorch-cli --no-deps --locked
 
+      - name: Build rusttorch-core documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: >-
+          cargo doc -p rusttorch-core --no-deps --locked --no-default-features
+          --features doc-only
+
+      - name: Build rusttorch-data documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: >-
+          cargo doc -p rusttorch-data --no-deps --locked --no-default-features
+          --features doc-only
+
       - name: Check docs.rs configuration
         run: >-
           cargo check -p rusttorch --all-targets --locked --no-default-features
-          --features tch/doc-only
+          --features doc-only
 
       - name: Build docs.rs documentation
         env:
           RUSTDOCFLAGS: -D warnings
         run: >-
           cargo doc -p rusttorch --no-deps --locked --no-default-features
-          --features tch/doc-only
+          --features doc-only
+
+      - name: Inspect rusttorch-core package
+        run: cargo package -p rusttorch-core --locked --list | tee "$RUNNER_TEMP/rusttorch-core-package-files.txt"
+
+      - name: Inspect rusttorch-data package
+        run: cargo package -p rusttorch-data --locked --list | tee "$RUNNER_TEMP/rusttorch-data-package-files.txt"
 
       - name: Inspect rusttorch package
         run: cargo package -p rusttorch --locked --list | tee "$RUNNER_TEMP/rusttorch-package-files.txt"
@@ -153,17 +173,17 @@ jobs:
       - name: Reject unsafe package contents
         run: |
           if grep -E '(^|/)(\.venv|target|__pycache__|libtorch)(/|$)|(^|/)(pyproject\.toml|uv\.lock)$|\.(pyc|pyo|so|dylib|dll)$' \
+            "$RUNNER_TEMP/rusttorch-core-package-files.txt" \
+            "$RUNNER_TEMP/rusttorch-data-package-files.txt" \
             "$RUNNER_TEMP/rusttorch-package-files.txt" \
             "$RUNNER_TEMP/rusttorch-cli-package-files.txt"; then
             echo "error: package contains Python tooling or a generated/native environment artifact" >&2
             exit 1
           fi
 
-      - name: Verify rusttorch archive
-        run: cargo package -p rusttorch --locked
-
-      - name: Verify rusttorch-cli archive
-        run: cargo package -p rusttorch-cli --locked
+      # Packaging needs Cargo 1.90+; the crate MSRV remains Rust 1.88 and is check-only below.
+      - name: Verify workspace archives
+        run: cargo package --workspace --locked
 
   msrv:
     name: MSRV / ${{ matrix.package }}
@@ -172,6 +192,8 @@ jobs:
       fail-fast: false
       matrix:
         package:
+          - rusttorch-core
+          - rusttorch-data
           - rusttorch
           - rusttorch-cli
     steps:
@@ -186,13 +208,13 @@ jobs:
           toolchain: "1.88"
           cache: false
 
-      - name: Check rusttorch on the MSRV
-        if: matrix.package == 'rusttorch'
+      - name: Check library package on the MSRV
+        if: matrix.package != 'rusttorch-cli'
         run: >-
-          cargo check -p rusttorch --all-targets --locked --no-default-features
-          --features tch/doc-only
+          cargo check -p ${{ matrix.package }} --all-targets --locked
+          --no-default-features --features doc-only
 
-      - name: Check rusttorch-cli on the MSRV
+      - name: Check CLI package on the MSRV
         if: matrix.package == 'rusttorch-cli'
         run: cargo check -p rusttorch-cli --all-targets --locked
 

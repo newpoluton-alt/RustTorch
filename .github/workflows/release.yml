@@ -71,7 +71,8 @@ jobs:
           test -n "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Build each package archive once
+      # Packaging needs Cargo 1.90+; the crate MSRV remains Rust 1.88 and is check-only in CI.
+      - name: Build workspace package archives once
         env:
           VERSION: ${{ steps.preflight.outputs.version }}
         run: |
@@ -79,12 +80,15 @@ jobs:
           test ! -e dist
           test ! -e target/package
           mkdir dist
-          cargo package -p rusttorch --locked
-          cargo package -p rusttorch-cli --locked
-          test -f "target/package/rusttorch-$VERSION.crate"
+          cargo package --workspace --locked
+          test -f "target/package/rusttorch-core-$VERSION.crate"
+          test -f "target/package/rusttorch-data-$VERSION.crate"
           test -f "target/package/rusttorch-cli-$VERSION.crate"
-          cp "target/package/rusttorch-$VERSION.crate" "dist/rusttorch-$VERSION.crate"
+          test -f "target/package/rusttorch-$VERSION.crate"
+          cp "target/package/rusttorch-core-$VERSION.crate" "dist/rusttorch-core-$VERSION.crate"
+          cp "target/package/rusttorch-data-$VERSION.crate" "dist/rusttorch-data-$VERSION.crate"
           cp "target/package/rusttorch-cli-$VERSION.crate" "dist/rusttorch-cli-$VERSION.crate"
+          cp "target/package/rusttorch-$VERSION.crate" "dist/rusttorch-$VERSION.crate"
 
       - name: Validate archives and create provenance subjects
         id: subjects
@@ -100,8 +104,10 @@ jobs:
         with:
           name: release-packages
           path: |
-            dist/rusttorch-${{ steps.preflight.outputs.version }}.crate
+            dist/rusttorch-core-${{ steps.preflight.outputs.version }}.crate
+            dist/rusttorch-data-${{ steps.preflight.outputs.version }}.crate
             dist/rusttorch-cli-${{ steps.preflight.outputs.version }}.crate
+            dist/rusttorch-${{ steps.preflight.outputs.version }}.crate
             dist/subjects.txt
           if-no-files-found: error
           retention-days: 7
@@ -145,13 +151,16 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          test "$(find . -mindepth 1 -maxdepth 1 | wc -l)" -eq 3
-          test -f "rusttorch-$VERSION.crate" && test ! -L "rusttorch-$VERSION.crate"
+          test "$(find . -mindepth 1 -maxdepth 1 | wc -l)" -eq 5
+          test -f "rusttorch-core-$VERSION.crate" && test ! -L "rusttorch-core-$VERSION.crate"
+          test -f "rusttorch-data-$VERSION.crate" && test ! -L "rusttorch-data-$VERSION.crate"
           test -f "rusttorch-cli-$VERSION.crate" && test ! -L "rusttorch-cli-$VERSION.crate"
+          test -f "rusttorch-$VERSION.crate" && test ! -L "rusttorch-$VERSION.crate"
           test -f subjects.txt && test ! -L subjects.txt
           actual_files="$(find . -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort)"
           expected_files="$(printf '%s\n' subjects.txt \
-            "rusttorch-$VERSION.crate" "rusttorch-cli-$VERSION.crate" | sort)"
+            "rusttorch-core-$VERSION.crate" "rusttorch-data-$VERSION.crate" \
+            "rusttorch-cli-$VERSION.crate" "rusttorch-$VERSION.crate" | sort)"
           test "$actual_files" = "$expected_files"
           sha256sum --check subjects.txt
           actual_base64="$(base64 -w 0 subjects.txt)"
@@ -168,7 +177,8 @@ jobs:
           test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = "true"
           gh release upload "$GITHUB_REF_NAME" dist/*.crate --clobber
           actual_assets="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)"
-          expected_assets="$(printf '%s\n' "rusttorch-$VERSION.crate" \
-            "rusttorch-cli-$VERSION.crate" "rusttorch-$VERSION.intoto.jsonl" | sort)"
+          expected_assets="$(printf '%s\n' "rusttorch-core-$VERSION.crate" \
+            "rusttorch-data-$VERSION.crate" "rusttorch-cli-$VERSION.crate" \
+            "rusttorch-$VERSION.crate" "rusttorch-$VERSION.intoto.jsonl" | sort)"
           test "$actual_assets" = "$expected_assets"
           gh release edit "$GITHUB_REF_NAME" --draft=false
