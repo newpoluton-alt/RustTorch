@@ -210,7 +210,8 @@ impl RandomSampler {
     ///
     /// # Errors
     ///
-    /// Returns [`RustTorchError::InvalidConfiguration`] when `length` is zero.
+    /// Returns [`RustTorchError::InvalidConfiguration`] when `length` is zero
+    /// or storage for the permutation cannot be reserved.
     pub fn new(length: usize, seed: u64) -> Result<Self> {
         Self::without_replacement(length, length, seed)
     }
@@ -220,7 +221,7 @@ impl RandomSampler {
     /// # Errors
     ///
     /// Returns [`RustTorchError::InvalidConfiguration`] when `length` or
-    /// `num_samples` is zero.
+    /// `num_samples` is zero or requested sampler storage cannot be reserved.
     pub fn with_replacement(length: usize, num_samples: usize, seed: u64) -> Result<Self> {
         Self::build(length, num_samples, Replacement::With, seed)
     }
@@ -233,7 +234,7 @@ impl RandomSampler {
     /// # Errors
     ///
     /// Returns [`RustTorchError::InvalidConfiguration`] when `length` or
-    /// `num_samples` is zero.
+    /// `num_samples` is zero or requested sampler storage cannot be reserved.
     pub fn without_replacement(length: usize, num_samples: usize, seed: u64) -> Result<Self> {
         Self::build(length, num_samples, Replacement::Without, seed)
     }
@@ -246,7 +247,7 @@ impl RandomSampler {
     ) -> Result<Self> {
         validate_positive(length, "length")?;
         validate_positive(num_samples, "num_samples")?;
-        let indices = random_indices(length, num_samples, replacement, seed).into_iter();
+        let indices = random_indices(length, num_samples, replacement, seed)?.into_iter();
         Ok(Self {
             length,
             num_samples,
@@ -264,6 +265,7 @@ impl RandomSampler {
             self.replacement,
             epoch_seed(self.seed, self.epoch),
         )
+        .expect("sampler storage dimensions were validated during construction")
     }
 }
 
@@ -306,18 +308,24 @@ pub struct SubsetRandomSampler {
 
 impl SubsetRandomSampler {
     /// Creates a sampler that yields each supplied index once.
-    pub fn new(indices: Vec<usize>, seed: u64) -> Self {
-        let shuffled = shuffled_copy(&indices, seed).into_iter();
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RustTorchError::InvalidConfiguration`] when storage for a
+    /// shuffled copy of the supplied indices cannot be reserved.
+    pub fn new(indices: Vec<usize>, seed: u64) -> Result<Self> {
+        let shuffled = shuffled_copy(&indices, seed)?.into_iter();
+        Ok(Self {
             source: indices,
             seed,
             epoch: 0,
             indices: shuffled,
-        }
+        })
     }
 
     fn indices_for_epoch(&self) -> Vec<usize> {
         shuffled_copy(&self.source, epoch_seed(self.seed, self.epoch))
+            .expect("sampler storage dimensions were validated during construction")
     }
 }
 
@@ -372,8 +380,9 @@ impl WeightedRandomSampler {
     ///
     /// Returns [`RustTorchError::InvalidConfiguration`] when weights are
     /// empty, non-finite, negative, or have no positive finite total; when
-    /// `num_samples` is zero; or when a without-replacement count exceeds the
-    /// number of weights.
+    /// `num_samples` is zero; when a without-replacement count exceeds the
+    /// number of weights; or when requested sampler storage cannot be
+    /// reserved.
     pub fn new(
         weights: Vec<f64>,
         num_samples: usize,
@@ -392,7 +401,7 @@ impl WeightedRandomSampler {
             invalid_configuration("weights", format!("cannot form a distribution: {error}"))
         })?;
         let indices =
-            weighted_indices(&weights, num_samples, replacement, seed, &distribution).into_iter();
+            weighted_indices(&weights, num_samples, replacement, seed, &distribution)?.into_iter();
         Ok(Self {
             weights,
             num_samples,
@@ -412,6 +421,7 @@ impl WeightedRandomSampler {
             epoch_seed(self.seed, self.epoch),
             &self.distribution,
         )
+        .expect("sampler storage dimensions were validated during construction")
     }
 }
 
@@ -487,27 +497,41 @@ fn random_indices(
     num_samples: usize,
     replacement: Replacement,
     seed: u64,
-) -> Vec<usize> {
+) -> Result<Vec<usize>> {
     let mut rng = ChaCha12Rng::seed_from_u64(seed);
     match replacement {
-        Replacement::With => (0..num_samples).map(|_| rng.gen_range(0..length)).collect(),
+        Replacement::With => {
+            let mut output = try_vec(num_samples, "num_samples")?;
+            output.extend((0..num_samples).map(|_| rng.gen_range(0..length)));
+            Ok(output)
+        }
         Replacement::Without => {
-            let mut output = Vec::with_capacity(num_samples);
+            let mut permutation = try_vec(length, "length")?;
+            permutation.extend(0..length);
+            let mut output = try_vec(num_samples, "num_samples")?;
             while output.len() < num_samples {
-                let mut permutation = (0..length).collect::<Vec<_>>();
                 permutation.shuffle(&mut rng);
                 let remaining = num_samples - output.len();
-                output.extend(permutation.into_iter().take(remaining));
+                output.extend(permutation.iter().copied().take(remaining));
             }
-            output
+            Ok(output)
         }
     }
 }
 
-fn shuffled_copy(indices: &[usize], seed: u64) -> Vec<usize> {
-    let mut shuffled = indices.to_vec();
+fn try_vec<T>(capacity: usize, field: &'static str) -> Result<Vec<T>> {
+    let mut values = Vec::new();
+    values.try_reserve_exact(capacity).map_err(|error| {
+        invalid_configuration(field, format!("cannot reserve requested storage: {error}"))
+    })?;
+    Ok(values)
+}
+
+fn shuffled_copy(indices: &[usize], seed: u64) -> Result<Vec<usize>> {
+    let mut shuffled = try_vec(indices.len(), "indices")?;
+    shuffled.extend_from_slice(indices);
     shuffled.shuffle(&mut ChaCha12Rng::seed_from_u64(seed));
-    shuffled
+    Ok(shuffled)
 }
 
 fn weighted_indices(
@@ -516,40 +540,46 @@ fn weighted_indices(
     replacement: bool,
     seed: u64,
     distribution: &WeightedIndex<f64>,
-) -> Vec<usize> {
+) -> Result<Vec<usize>> {
     let mut rng = ChaCha12Rng::seed_from_u64(seed);
     if replacement {
-        return (0..num_samples)
-            .map(|_| distribution.sample(&mut rng))
-            .collect();
+        let mut output = try_vec(num_samples, "num_samples")?;
+        output.extend((0..num_samples).map(|_| distribution.sample(&mut rng)));
+        return Ok(output);
     }
 
-    let mut positive = weights
-        .iter()
-        .enumerate()
-        .filter(|(_, weight)| **weight > 0.0)
-        .map(|(index, &weight)| {
-            let draw: f64 = rng.sample(Open01);
-            (index, draw.ln() / weight)
-        })
-        .collect::<Vec<_>>();
+    let mut positive = try_vec(weights.len(), "weights")?;
+    positive.extend(
+        weights
+            .iter()
+            .enumerate()
+            .filter(|(_, weight)| **weight > 0.0)
+            .map(|(index, &weight)| {
+                let draw: f64 = rng.sample(Open01);
+                (index, weight.ln() - (-draw.ln()).ln())
+            }),
+    );
     positive.sort_unstable_by(|(left_index, left_key), (right_index, right_key)| {
         right_key
             .total_cmp(left_key)
             .then_with(|| left_index.cmp(right_index))
     });
 
-    let mut output = positive
-        .into_iter()
-        .take(num_samples)
-        .map(|(index, _)| index)
-        .collect::<Vec<_>>();
+    let mut output = try_vec(num_samples, "num_samples")?;
+    output.extend(
+        positive
+            .into_iter()
+            .take(num_samples)
+            .map(|(index, _)| index),
+    );
     if output.len() < num_samples {
-        let mut zero_weight_indices = weights
-            .iter()
-            .enumerate()
-            .filter_map(|(index, &weight)| (weight == 0.0).then_some(index))
-            .collect::<Vec<_>>();
+        let mut zero_weight_indices = try_vec(weights.len(), "weights")?;
+        zero_weight_indices.extend(
+            weights
+                .iter()
+                .enumerate()
+                .filter_map(|(index, &weight)| (weight == 0.0).then_some(index)),
+        );
         zero_weight_indices.shuffle(&mut rng);
         output.extend(
             zero_weight_indices
@@ -557,5 +587,5 @@ fn weighted_indices(
                 .take(num_samples - output.len()),
         );
     }
-    output
+    Ok(output)
 }

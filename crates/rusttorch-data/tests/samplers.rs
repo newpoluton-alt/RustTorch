@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, panic::catch_unwind, rc::Rc};
 
 use rusttorch_core::RustTorchError;
 use rusttorch_data::{
@@ -14,6 +14,14 @@ fn assert_invalid_configuration<T>(result: rusttorch_core::Result<T>, field: &'s
             ..
         }) if actual == field
     ));
+}
+
+fn assert_caught_invalid_configuration<T>(
+    caught: std::thread::Result<rusttorch_core::Result<T>>,
+    field: &'static str,
+) {
+    let result = caught.unwrap_or_else(|_| panic!("constructor panicked for `{field}`"));
+    assert_invalid_configuration(result, field);
 }
 
 #[test]
@@ -70,16 +78,33 @@ fn random_sampler_constructors_validate_length_and_sample_count() {
 }
 
 #[test]
-fn subset_random_sampler_yields_one_seeded_permutation() {
-    let first = SubsetRandomSampler::new(vec![9, 4, 7], 3).collect::<Vec<_>>();
-    let second = SubsetRandomSampler::new(vec![9, 4, 7], 3).collect::<Vec<_>>();
-    let different_seed = SubsetRandomSampler::new(vec![9, 4, 7], 4).collect::<Vec<_>>();
+fn random_sampler_rejects_unrepresentable_storage_without_panicking() {
+    for caught in [
+        catch_unwind(|| RandomSampler::new(usize::MAX, 7)),
+        catch_unwind(|| RandomSampler::without_replacement(usize::MAX, 1, 7)),
+    ] {
+        assert_caught_invalid_configuration(caught, "length");
+    }
+    for caught in [
+        catch_unwind(|| RandomSampler::with_replacement(1, usize::MAX, 7)),
+        catch_unwind(|| RandomSampler::without_replacement(1, usize::MAX, 7)),
+    ] {
+        assert_caught_invalid_configuration(caught, "num_samples");
+    }
+}
+
+#[test]
+fn subset_random_sampler_yields_one_seeded_permutation() -> rusttorch_core::Result<()> {
+    let first = SubsetRandomSampler::new(vec![9, 4, 7], 3)?.collect::<Vec<_>>();
+    let second = SubsetRandomSampler::new(vec![9, 4, 7], 3)?.collect::<Vec<_>>();
+    let different_seed = SubsetRandomSampler::new(vec![9, 4, 7], 4)?.collect::<Vec<_>>();
 
     let mut sorted = first.clone();
     sorted.sort_unstable();
     assert_eq!(sorted, vec![4, 7, 9]);
     assert_eq!(first, second);
     assert_ne!(first, different_seed);
+    Ok(())
 }
 
 #[test]
@@ -126,6 +151,14 @@ fn weighted_random_sampler_with_replacement_is_deterministic_and_has_cardinality
 }
 
 #[test]
+fn weighted_random_sampler_rejects_unrepresentable_storage_without_panicking() {
+    assert_caught_invalid_configuration(
+        catch_unwind(|| WeightedRandomSampler::new(vec![1.0], usize::MAX, true, 7)),
+        "num_samples",
+    );
+}
+
+#[test]
 fn weighted_random_sampler_without_replacement_is_unique_and_fills_zero_weights() {
     let indices = WeightedRandomSampler::new(vec![1.0, 0.0, 0.0], 3, false, 7)
         .expect("zero weights may fill after positive weights")
@@ -135,6 +168,23 @@ fn weighted_random_sampler_without_replacement_is_unique_and_fills_zero_weights(
     let mut sorted = indices;
     sorted.sort_unstable();
     assert_eq!(sorted, vec![0, 1, 2]);
+}
+
+#[test]
+fn weighted_random_sampler_keeps_equal_subnormal_weights_random() {
+    let weight = f64::from_bits(1);
+    let mut selected = (0..16)
+        .map(|seed| {
+            WeightedRandomSampler::new(vec![weight, weight], 1, false, seed)
+                .expect("positive finite subnormal weights must be valid")
+                .next()
+                .expect("one sample was requested")
+        })
+        .collect::<Vec<_>>();
+    selected.sort_unstable();
+    selected.dedup();
+
+    assert_eq!(selected, vec![0, 1]);
 }
 
 #[test]
@@ -156,6 +206,24 @@ fn concrete_samplers_create_fresh_epoch_aware_iterators() {
     let epoch_one = random.iter().collect::<Vec<_>>();
     assert_ne!(epoch_zero, epoch_one);
     assert_eq!(epoch_one, random.iter().collect::<Vec<_>>());
+}
+
+#[test]
+fn subset_and_weighted_samplers_create_fresh_epoch_iterators() -> rusttorch_core::Result<()> {
+    let mut subset = SubsetRandomSampler::new((0..8).collect(), 42)?;
+    let subset_epoch_zero = subset.iter().collect::<Vec<_>>();
+    assert_eq!(subset_epoch_zero, subset.iter().collect::<Vec<_>>());
+    subset.set_epoch(1);
+    assert_eq!(subset.epoch(), 1);
+    assert_ne!(subset_epoch_zero, subset.iter().collect::<Vec<_>>());
+
+    let mut weighted = WeightedRandomSampler::new(vec![1.0, 2.0, 3.0, 4.0], 3, false, 42)?;
+    let weighted_epoch_zero = weighted.iter().collect::<Vec<_>>();
+    assert_eq!(weighted_epoch_zero, weighted.iter().collect::<Vec<_>>());
+    weighted.set_epoch(1);
+    assert_eq!(weighted.epoch(), 1);
+    assert_ne!(weighted_epoch_zero, weighted.iter().collect::<Vec<_>>());
+    Ok(())
 }
 
 #[test]
