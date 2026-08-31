@@ -1,6 +1,7 @@
 //! Typed datasets, samplers, batching, and loading for RustTorch.
 
 #![deny(missing_docs)]
+#![doc = include_str!("../COMPATIBILITY.md")]
 
 use std::{marker::PhantomData, ops::Range, vec::IntoIter};
 

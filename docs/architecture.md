@@ -3,6 +3,19 @@
 RustTorch is a high-level Rust layer over `tch`; `tch` binds LibTorch, which
 owns tensors, kernels, devices, and automatic differentiation.
 
+The workspace dependency direction is:
+
+```text
+rusttorch -> rusttorch-data -> rusttorch-core -> tch
+rusttorch -------------------------------> tch
+```
+
+`rusttorch-core` owns shared runtime, device, tensor, and error contracts.
+`rusttorch-data` owns datasets, samplers, batching, and loading. The
+`rusttorch` facade re-exports both packages so existing facade imports remain
+source-compatible; extracting package ownership does not expand the supported
+API scope.
+
 ```text
 eager modules ───────────────┐
                             ├─> tch::Tensor -> LibTorch -> CPU/CUDA/MPS
@@ -26,7 +39,8 @@ that vector and can stack tensors, pad sequences, or build structured batches
 without an implicit tensor copy in the loader. A sampler-local RNG makes
 seeded shuffling reproducible without consuming LibTorch's global random
 state. Workers, prefetch, pinned memory, distributed sharding, and loader
-checkpoint/resume are later milestones.
+checkpoint/resume remain planned in the
+[complete-loader plan](superpowers/plans/2026-08-31-complete-data-loader.md).
 
 ## Eager path
 

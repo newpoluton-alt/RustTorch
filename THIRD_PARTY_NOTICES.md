@@ -111,16 +111,17 @@ concise source-path attribution.
 ## Runtime acquisition and external components
 
 With RustTorch's default download feature, `torch-sys` downloads official
-PyTorch/LibTorch artifacts into Cargo build storage. Neither the `rusttorch`
-nor `rusttorch-cli` `.crate` archive redistributes LibTorch or a downloaded
-runtime. NVIDIA drivers and CUDA toolkits remain system components outside
-these packages; setup never installs or modifies them.
+PyTorch/LibTorch artifacts into Cargo build storage. None of the
+`rusttorch-core`, `rusttorch-data`, `rusttorch-cli`, or `rusttorch` `.crate`
+archives redistributes LibTorch or a downloaded runtime. NVIDIA drivers and
+CUDA toolkits remain system components outside these packages; setup never
+installs or modifies them.
 
 ## Rust dependency inventory
 
 Generated on 2026-08-30 from the complete locked, all-feature direct and
 transitive package set reported by
-`cargo metadata --locked --all-features --format-version 1`. Both RustTorch
+`cargo metadata --locked --all-features --format-version 1`. All four RustTorch
 workspace packages are excluded. The resulting external inventory has 149
 rows; duplicate crate versions are preserved.
 

@@ -1,6 +1,7 @@
 //! Shared runtime contracts for the RustTorch workspace.
 
 #![deny(missing_docs)]
+#![doc = include_str!("../COMPATIBILITY.md")]
 
 pub mod device;
 pub mod error;

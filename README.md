@@ -68,6 +68,42 @@ Then run it:
 cargo run
 ```
 
+The `rusttorch` facade is the seamless default for data loading:
+
+```rust
+use std::convert::Infallible;
+
+use rusttorch::data::{DataLoader, Dataset, SequentialSampler};
+
+struct Rows([i64; 3]);
+
+impl Dataset for Rows {
+    type Sample = i64;
+    type Error = Infallible;
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn get(&self, index: usize) -> Result<Self::Sample, Self::Error> {
+        Ok(self.0[index])
+    }
+}
+
+fn main() {
+    let rows = Rows([2, 3, 5]);
+    let batches = DataLoader::new(&rows, SequentialSampler::new(rows.len()), 2, false)
+        .expect("batch size is nonzero")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("rows are infallible");
+
+    assert_eq!(batches, vec![vec![2, 3], vec![5]]);
+}
+```
+
+Use the separate `rusttorch-data` package when an application wants the data
+layer without the facade; it provides the same loader surface directly.
+
 The first setup may download a large official LibTorch artifact into Cargo
 build storage. RustTorch links LibTorch dynamically, so the platform loader
 must also be able to find its shared libraries at runtime.
@@ -126,6 +162,8 @@ isolation, retry behavior, and dynamic-loader requirements.
 | [API documentation](https://docs.rs/rusttorch) | Public Rust types and functions |
 | [Compatibility ledger](compat/pytorch_api.toml) | Canonical machine-readable scopes and evidence |
 | [Compatibility coverage](docs/api-coverage.md) | Generated status view of PyTorch API areas |
+| [`rusttorch-core` compatibility](crates/rusttorch-core/COMPATIBILITY.md) | Generated core-package compatibility scope |
+| [`rusttorch-data` compatibility](crates/rusttorch-data/COMPATIBILITY.md) | Generated data-package compatibility scope |
 | [Architecture](docs/architecture.md) | Eager frontend and LibTorch boundary |
 | [Platform support](docs/platform-support.md) | Runtime, devices, and system/Python setup |
 | [Backend evidence](docs/backend-parity.md) | Hardware-specific validation and parity scope |

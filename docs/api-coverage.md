@@ -9,52 +9,52 @@ Each entry is independently scoped. Supported applies only to its written scope;
 ### `core.device`
 
 - **PyTorch:** `torch.device`, `torch.cuda.is_available`, `torch.backends.mps.is_available`
-- **RustTorch:** `rusttorch::Device`, `rusttorch::DeviceSpec`, `rusttorch::DeviceCapabilities`, `rusttorch::available_devices`, `rusttorch::resolve_device`
+- **RustTorch:** `rusttorch_core::Device`, `rusttorch_core::DeviceSpec`, `rusttorch_core::DeviceCapabilities`, `rusttorch_core::available_devices`, `rusttorch_core::resolve_device`, `rusttorch::Device`, `rusttorch::DeviceSpec`, `rusttorch::DeviceCapabilities`, `rusttorch::available_devices`, `rusttorch::resolve_device`
 - **Implementation:** RustTorch frontend backed by LibTorch
 - **Scope:** CPU resolution, runtime-reported CUDA and MPS capability mapping, explicit unavailable-device errors, and CUDA-then-MPS-then-CPU automatic selection.
 - **Pinned source:** [`torch/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/__init__.py)
 - **Evidence:** [`tests/device.rs::cpu_resolves_explicitly`](../tests/device.rs), [`tests/device.rs::reported_capabilities_match_resolved_devices`](../tests/device.rs), [`tests/device.rs::unavailable_or_out_of_range_cuda_is_an_error`](../tests/device.rs), [`tests/device.rs::explicit_mps_is_resolved_or_rejected_without_fallback`](../tests/device.rs)
-- **Notes:** Accelerator branches are conditional on the linked runtime; this row does not claim a CUDA or MPS pass on every host.
+- **Notes:** rusttorch-core owns the direct surface and the rusttorch facade preserves it. Accelerator branches are conditional on the linked runtime; this row does not claim a CUDA or MPS pass on every host.
 
 ### `data.batches`
 
 - **PyTorch:** `torch.utils.data.IterableDataset`, `torch.utils.data.DataLoader`
-- **RustTorch:** `rusttorch::data::batches`, `rusttorch::data::batches_with_collate`
+- **RustTorch:** `rusttorch_data::batches`, `rusttorch_data::batches_with_collate`, `rusttorch::data::batches`, `rusttorch::data::batches_with_collate`
 - **Implementation:** Implemented by RustTorch
 - **Scope:** Single-threaded batching of ordinary fallible Rust iterators, with explicit nonzero batch size, drop-last behavior, identity Vec collation or fallible custom collation, and one-error-then-exhaust semantics.
 - **Pinned source:** [`torch/utils/data/_utils/fetch.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/_utils/fetch.py)
 - **Evidence:** [`tests/data.rs::stream_batches_keep_a_short_tail`](../tests/data.rs), [`tests/data.rs::stream_batches_drop_a_short_tail`](../tests/data.rs), [`tests/data.rs::stream_batches_reject_zero_batch_size_with_a_structured_error`](../tests/data.rs), [`tests/data.rs::stream_batches_apply_fallible_collation`](../tests/data.rs), [`tests/data.rs::stream_batches_report_a_partial_drop_last_failure_once_then_exhaust`](../tests/data.rs), [`tests/data.rs::stream_batches_report_a_collation_failure_once_then_exhaust`](../tests/data.rs)
-- **Notes:** An ordinary Rust iterator is the streaming surface; RustTorch does not require an IterableDataset wrapper or claim Python multiprocessing behavior.
+- **Notes:** rusttorch-data owns the direct surface and rusttorch::data preserves it. An ordinary Rust iterator is the streaming surface; RustTorch does not require an IterableDataset wrapper or claim Python multiprocessing behavior.
 
 ### `data.dataset`
 
 - **PyTorch:** `torch.utils.data.Dataset`
-- **RustTorch:** `rusttorch::data::Dataset`, `rusttorch::data::DatasetSamples`
+- **RustTorch:** `rusttorch_data::Dataset`, `rusttorch_data::DatasetSamples`, `rusttorch::data::Dataset`, `rusttorch::data::DatasetSamples`
 - **Implementation:** Implemented by RustTorch
 - **Scope:** Finite map-style datasets with owned samples, fallible indexed access, length and empty queries, and a lazy borrowing iterator over samples in index order.
 - **Pinned source:** [`torch/utils/data/dataset.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataset.py)
 - **Evidence:** [`tests/data.rs::dataset_default_is_empty_follows_len`](../tests/data.rs), [`tests/data.rs::dataset_samples_borrow_and_fetch_lazily_in_order`](../tests/data.rs)
-- **Notes:** DatasetSamples performs no dataset clone or precollection; format-specific decoding belongs in optional packages.
+- **Notes:** rusttorch-data owns the direct surface and rusttorch::data preserves it. DatasetSamples performs no dataset clone or precollection; format-specific decoding belongs in optional packages.
 
 ### `data.loader`
 
 - **PyTorch:** `torch.utils.data.DataLoader`
-- **RustTorch:** `rusttorch::data::DataLoader`
+- **RustTorch:** `rusttorch_data::DataLoader`, `rusttorch::data::DataLoader`
 - **Implementation:** Implemented by RustTorch
 - **Scope:** Single-threaded map-dataset batching with a caller-provided index sampler, explicit nonzero batch size and drop-last behavior, owned Vec batches or fallible custom collation, and one-error-then-exhaust semantics.
 - **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
 - **Evidence:** [`tests/data.rs::loader_keeps_a_short_tail`](../tests/data.rs), [`tests/data.rs::loader_drops_a_short_tail`](../tests/data.rs), [`tests/data.rs::loader_rejects_zero_batch_size_with_a_structured_error`](../tests/data.rs), [`tests/data.rs::loader_applies_fallible_collation`](../tests/data.rs), [`tests/data.rs::loader_moves_non_clone_samples_into_batches`](../tests/data.rs), [`tests/data.rs::loader_discards_a_partial_batch_on_dataset_failure_then_exhausts`](../tests/data.rs), [`tests/data.rs::loader_yields_a_collation_failure_once_then_exhausts`](../tests/data.rs)
-- **Notes:** This claim is limited to the written Rust surface; worker processes, prefetch, memory pinning, and iterator checkpointing have separate planned rows.
+- **Notes:** rusttorch-data owns the direct loader and rusttorch::data preserves it. This claim is limited to the written Rust surface; worker processes, prefetch, memory pinning, and iterator checkpointing have separate planned rows.
 
 ### `data.sampler`
 
 - **PyTorch:** `torch.utils.data.SequentialSampler`, `torch.utils.data.RandomSampler`
-- **RustTorch:** `rusttorch::data::SequentialSampler`, `rusttorch::data::RandomSampler`
+- **RustTorch:** `rusttorch_data::SequentialSampler`, `rusttorch_data::RandomSampler`, `rusttorch::data::SequentialSampler`, `rusttorch::data::RandomSampler`
 - **Implementation:** Implemented by RustTorch
 - **Scope:** Allocation-free sequential indices and a reproducible random permutation from a sampler-local ChaCha12 RNG that does not mutate LibTorch's global RNG; random sampling rejects an empty length.
 - **Pinned source:** [`torch/utils/data/sampler.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/sampler.py)
 - **Evidence:** [`tests/data.rs::sequential_sampler_yields_every_index_in_order`](../tests/data.rs), [`tests/data.rs::random_sampler_is_seeded_and_yields_a_permutation`](../tests/data.rs), [`tests/data.rs::random_sampler_rejects_zero_length_with_a_structured_error`](../tests/data.rs), [`tests/data_libtorch.rs::random_sampler_does_not_change_libtorch_global_rng`](../tests/data_libtorch.rs)
-- **Notes:** Seed equality is guaranteed only within this RustTorch sampler implementation; index order and empty-input behavior are not claimed to match PyTorch's RNG contract.
+- **Notes:** rusttorch-data owns the direct samplers and rusttorch::data preserves them. Seed equality is guaranteed only within this RustTorch sampler implementation; index order and empty-input behavior are not claimed to match PyTorch's RNG contract.
 
 ### `graph.executor`
 
@@ -171,32 +171,32 @@ Each entry is independently scoped. Supported applies only to its written scope;
 ### `autograd.reverse_mode`
 
 - **PyTorch:** `torch.Tensor.backward`, `torch.no_grad`, `torch.Tensor.detach`
-- **RustTorch:** `rusttorch::Tensor`, `rusttorch::no_grad`, `rusttorch::no_grad_guard`
+- **RustTorch:** `rusttorch_core::Tensor`, `rusttorch_core::no_grad`, `rusttorch_core::no_grad_guard`, `rusttorch::Tensor`, `rusttorch::no_grad`, `rusttorch::no_grad_guard`
 - **Implementation:** Delegated to LibTorch
 - **Scope:** Reverse-mode gradients through the tested eager and graph operations, plus tested no-grad and detach behavior.
 - **Pinned source:** [`torch/autograd/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/autograd/__init__.py)
 - **Evidence:** [`tests/eager.rs::gradients_accumulate_across_eager_residual_branches`](../tests/eager.rs), [`tests/eager.rs::no_grad_and_detach_stop_gradient_recording`](../tests/eager.rs)
-- **Notes:** LibTorch owns autograd; hooks, custom Function, forward AD, and the rest of the Python surface remain outside this claim.
+- **Notes:** rusttorch-core owns these direct reexports and the rusttorch facade preserves them; LibTorch owns autograd, while hooks, custom Function, forward AD, and the rest of the Python surface remain outside this claim.
 
 ### `core.random`
 
 - **PyTorch:** `torch.manual_seed`
-- **RustTorch:** `rusttorch::manual_seed`
+- **RustTorch:** `rusttorch_core::manual_seed`, `rusttorch::manual_seed`
 - **Implementation:** Delegated to LibTorch
 - **Scope:** A seed can be delegated to LibTorch; deterministic behavior and cross-language stream identity are not yet verified by a focused test.
 - **Pinned source:** [`torch/random.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/random.py)
 - **Evidence:** —
-- **Notes:** The public function remains partial until executable evidence proves its documented contract.
+- **Notes:** rusttorch-core owns the direct function and the rusttorch facade preserves it. The function remains partial until executable evidence proves its documented contract.
 
 ### `core.tensor`
 
 - **PyTorch:** `torch.Tensor`, `torch.dtype`, `torch.nn.functional reduction`
-- **RustTorch:** `rusttorch::Tensor`, `rusttorch::Kind`, `rusttorch::Reduction`
+- **RustTorch:** `rusttorch_core::Tensor`, `rusttorch_core::Kind`, `rusttorch_core::Reduction`, `rusttorch::Tensor`, `rusttorch::Kind`, `rusttorch::Reduction`
 - **Implementation:** Delegated to LibTorch
 - **Scope:** Root type reexports plus the tensor construction, dtype, device, and eager operations exercised by current RustTorch tests.
 - **Pinned source:** [`torch/_tensor.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/_tensor.py)
 - **Evidence:** [`tests/eager.rs::tensor_core_types_are_reexported`](../tests/eager.rs)
-- **Notes:** Reexporting tch::Tensor is not evidence that every torch.Tensor method matches PyTorch.
+- **Notes:** rusttorch-core owns the direct reexports and the rusttorch facade preserves them. Reexporting tch::Tensor is not evidence that every torch.Tensor method matches PyTorch.
 
 ### `graph.ir`
 
