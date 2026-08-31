@@ -9,6 +9,13 @@ use rand::{SeedableRng, seq::SliceRandom};
 use rand_chacha::ChaCha12Rng;
 use rusttorch_core::{Result, RustTorchError};
 
+mod dataset;
+
+pub use dataset::{
+    ConcatDataset, SplitLength, StackDataset, StackTuple, Subset, TensorDataset, chain_datasets,
+    random_split,
+};
+
 /// A finite, indexable collection of samples.
 ///
 /// Implementations return owned samples so loaders can move them into batches
@@ -25,6 +32,14 @@ pub trait Dataset {
 
     /// Loads the sample at `index`.
     fn get(&self, index: usize) -> std::result::Result<Self::Sample, Self::Error>;
+
+    /// Loads samples for one index batch.
+    ///
+    /// The default calls [`Dataset::get`] once per index. Overrides must
+    /// return exactly one sample per supplied index and preserve index order.
+    fn get_batch(&self, indices: &[usize]) -> std::result::Result<Vec<Self::Sample>, Self::Error> {
+        indices.iter().map(|&index| self.get(index)).collect()
+    }
 
     /// Returns `true` when the dataset has no samples.
     fn is_empty(&self) -> bool {
@@ -131,24 +146,66 @@ fn identity_batch<T, E>(samples: Vec<T>) -> std::result::Result<Vec<T>, E> {
     Ok(samples)
 }
 
-struct DatasetSource<'a, D, S, E> {
+struct DatasetBatchIterator<'a, D, S, C, B, E> {
     dataset: &'a D,
     sampler: S,
-    error: PhantomData<fn() -> E>,
+    batch_size: usize,
+    drop_last: bool,
+    collate: C,
+    exhausted: bool,
+    output: PhantomData<fn() -> (B, E)>,
 }
 
-impl<D, S, E> Iterator for DatasetSource<'_, D, S, E>
+impl<D, S, C, B, E> Iterator for DatasetBatchIterator<'_, D, S, C, B, E>
 where
     D: Dataset,
     S: Iterator<Item = usize>,
+    C: FnMut(Vec<D::Sample>) -> std::result::Result<B, E>,
     E: From<D::Error>,
 {
-    type Item = std::result::Result<D::Sample, E>;
+    type Item = std::result::Result<B, E>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.sampler
-            .next()
-            .map(|index| self.dataset.get(index).map_err(E::from))
+        if self.exhausted {
+            return None;
+        }
+
+        let mut indices = Vec::with_capacity(self.batch_size);
+        while indices.len() < self.batch_size {
+            match self.sampler.next() {
+                Some(index) => indices.push(index),
+                None => {
+                    self.exhausted = true;
+                    if indices.is_empty() {
+                        return None;
+                    }
+                    break;
+                }
+            }
+        }
+
+        let samples = match self.dataset.get_batch(&indices) {
+            Ok(samples) => samples,
+            Err(error) => {
+                self.exhausted = true;
+                return Some(Err(E::from(error)));
+            }
+        };
+        assert_eq!(
+            samples.len(),
+            indices.len(),
+            "Dataset::get_batch returned {} samples for {} indices",
+            samples.len(),
+            indices.len()
+        );
+        if self.drop_last && indices.len() < self.batch_size {
+            return None;
+        }
+        let batch = (self.collate)(samples);
+        if batch.is_err() {
+            self.exhausted = true;
+        }
+        Some(batch)
     }
 }
 
@@ -345,7 +402,7 @@ pub struct DataLoader<'a, D, S, C, B, E>
 where
     D: Dataset,
 {
-    batches: BatchIterator<DatasetSource<'a, D, S, E>, C, D::Sample, B, E>,
+    batches: DatasetBatchIterator<'a, D, S, C, B, E>,
 }
 
 impl<'a, D, S> DataLoader<'a, D, S, IdentityCollate<D::Sample, D::Error>, Vec<D::Sample>, D::Error>
@@ -398,17 +455,22 @@ where
         drop_last: bool,
         collate: C,
     ) -> Result<Self> {
+        if batch_size == 0 {
+            return Err(RustTorchError::InvalidConfiguration {
+                field: "batch_size",
+                reason: "must be greater than zero".to_owned(),
+            });
+        }
         Ok(Self {
-            batches: BatchIterator::new(
-                DatasetSource {
-                    dataset,
-                    sampler,
-                    error: PhantomData,
-                },
+            batches: DatasetBatchIterator {
+                dataset,
+                sampler,
                 batch_size,
                 drop_last,
                 collate,
-            )?,
+                exhausted: false,
+                output: PhantomData,
+            },
         })
     }
 }

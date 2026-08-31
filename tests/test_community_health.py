@@ -371,6 +371,18 @@ class CommunityHealthTests(unittest.TestCase):
                 self.assertIn("doc-only", text)
                 self.assertIn("2.13.0", text)
 
+    def test_unpublished_packages_use_current_git_source_installation(self) -> None:
+        root_readme = self.read("README.md")
+        cli_readme = self.read("crates/rusttorch-cli/README.md")
+        for command in (
+            "cargo install --git https://github.com/newpoluton-alt/RustTorch rusttorch-cli",
+            "cargo add rusttorch --git https://github.com/newpoluton-alt/RustTorch",
+        ):
+            self.assertIn(command, root_readme)
+            self.assertIn(command, cli_readme)
+        self.assertNotIn("cargo install rusttorch-cli", cli_readme)
+        self.assertNotIn("cargo add rusttorch\n", cli_readme)
+
     def test_dependabot_checks_cargo_and_actions_weekly(self) -> None:
         text = self.read(".github/dependabot.yml")
         self.assertRegex(text, r"(?m)^version: 2$")

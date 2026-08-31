@@ -138,6 +138,17 @@ evidence = ["tests/eager.rs::tensor_core_types_are_reexported"]
 notes = "rusttorch-core owns the direct reexports and the rusttorch facade preserves them. Reexporting tch::Tensor is not evidence that every torch.Tensor method matches PyTorch."
 
 [[api]]
+id = "data.batched_fetch"
+python_symbols = ["torch.utils.data.Dataset.__getitems__", "torch.utils.data._utils.fetch._MapDatasetFetcher"]
+rust_symbols = ["rusttorch_data::Dataset::get_batch", "rusttorch::data::Dataset::get_batch"]
+status = "supported"
+implementation = "rusttorch"
+scope = "Source-compatible batched map-dataset fetch with an ordered per-index default and one Dataset::get_batch call per DataLoader index batch; incorrect result cardinality is rejected before collation."
+source = "torch/utils/data/_utils/fetch.py"
+evidence = ["crates/rusttorch-data/tests/datasets.rs::loader_uses_one_batched_fetch_per_index_batch", "crates/rusttorch-data/tests/datasets.rs::loader_preserves_errors_from_a_short_dropped_tail", "crates/rusttorch-data/tests/datasets.rs::loader_rejects_wrong_batched_fetch_cardinality_before_collation"]
+notes = "Rust map indices are usize and do not reproduce Python negative indexing. The preserved borrowed loader path treats wrong cardinality as a trait-contract violation; ordinary dataset and collation failures remain recoverable."
+
+[[api]]
 id = "data.batches"
 python_symbols = ["torch.utils.data.IterableDataset", "torch.utils.data.DataLoader"]
 rust_symbols = ["rusttorch_data::batches", "rusttorch_data::batches_with_collate", "rusttorch::data::batches", "rusttorch::data::batches_with_collate"]
@@ -147,6 +158,28 @@ scope = "Single-threaded batching of ordinary fallible Rust iterators, with expl
 source = "torch/utils/data/_utils/fetch.py"
 evidence = ["tests/data.rs::stream_batches_keep_a_short_tail", "tests/data.rs::stream_batches_drop_a_short_tail", "tests/data.rs::stream_batches_reject_zero_batch_size_with_a_structured_error", "tests/data.rs::stream_batches_apply_fallible_collation", "tests/data.rs::stream_batches_report_a_partial_drop_last_failure_once_then_exhaust", "tests/data.rs::stream_batches_report_a_collation_failure_once_then_exhaust"]
 notes = "rusttorch-data owns the direct surface and rusttorch::data preserves it. An ordinary Rust iterator is the streaming surface; RustTorch does not require an IterableDataset wrapper or claim Python multiprocessing behavior."
+
+[[api]]
+id = "data.chain_dataset"
+python_symbols = ["torch.utils.data.ChainDataset"]
+rust_symbols = ["rusttorch_data::chain_datasets", "rusttorch::data::chain_datasets"]
+status = "supported"
+implementation = "rusttorch"
+scope = "Lazy sequential chaining for datasets or other Rust iterables through the standard IntoIterator flatten adapter, without custom buffering."
+source = "torch/utils/data/dataset.py"
+evidence = ["crates/rusttorch-data/tests/datasets.rs::chain_datasets_is_the_standard_flattened_iterator"]
+notes = "RustTorch uses the standard typed iterator item in place of Python's dynamically typed dataset protocol."
+
+[[api]]
+id = "data.concat_dataset"
+python_symbols = ["torch.utils.data.ConcatDataset"]
+rust_symbols = ["rusttorch_data::ConcatDataset", "rusttorch::data::ConcatDataset"]
+status = "supported"
+implementation = "rusttorch"
+scope = "Nonempty concatenation of same-typed map datasets with checked cumulative sizes and binary-search global index routing."
+source = "torch/utils/data/dataset.py"
+evidence = ["crates/rusttorch-data/tests/datasets.rs::concat_dataset_uses_global_indices_and_rejects_empty_input"]
+notes = "Indices are usize, so Python negative-index translation is intentionally absent; all children share one Rust sample and error type."
 
 [[api]]
 id = "data.dataset"
@@ -215,6 +248,17 @@ evidence = []
 notes = "Phase one is deliberately single-threaded and has no worker lifecycle to manage."
 
 [[api]]
+id = "data.random_split"
+python_symbols = ["torch.utils.data.random_split"]
+rust_symbols = ["rusttorch_data::SplitLength", "rusttorch_data::random_split", "rusttorch::data::SplitLength", "rusttorch::data::random_split"]
+status = "supported"
+implementation = "rusttorch"
+scope = "Seeded non-overlapping splits from exact usize counts or finite fractions summing to one, with fractional floors and round-robin remainder distribution."
+source = "torch/utils/data/dataset.py"
+evidence = ["crates/rusttorch-data/tests/datasets.rs::random_split_requires_integer_lengths_to_sum_to_dataset_length", "crates/rusttorch-data/tests/datasets.rs::random_split_floors_fractions_and_distributes_remainder_round_robin", "crates/rusttorch-data/tests/datasets.rs::random_split_rejects_fraction_floors_larger_than_the_dataset", "crates/rusttorch-data/tests/datasets.rs::random_split_is_deterministic_and_allows_zero_length_parts"]
+notes = "SplitLength is a typed Rust enum replacing Python's mixed numeric list, and produced subset indices are usize; the seeded ChaCha12 permutation is reproducible within RustTorch rather than claimed PyTorch RNG identity."
+
+[[api]]
 id = "data.sampler"
 python_symbols = ["torch.utils.data.SequentialSampler", "torch.utils.data.RandomSampler"]
 rust_symbols = ["rusttorch_data::SequentialSampler", "rusttorch_data::RandomSampler", "rusttorch::data::SequentialSampler", "rusttorch::data::RandomSampler"]
@@ -235,6 +279,39 @@ scope = "Rank-aware sharding, replica padding or dropping, epoch-dependent shuff
 source = "torch/utils/data/distributed.py"
 evidence = []
 notes = "This requires the process-group foundation and multi-rank parity evidence."
+
+[[api]]
+id = "data.stack_dataset"
+python_symbols = ["torch.utils.data.StackDataset"]
+rust_symbols = ["rusttorch_data::StackDataset", "rusttorch_data::StackTuple", "rusttorch::data::StackDataset", "rusttorch::data::StackTuple"]
+status = "supported"
+implementation = "rusttorch"
+scope = "Equal-length typed dataset tuples at arities two through eight, producing aligned sample tuples whose children share one error type."
+source = "torch/utils/data/dataset.py"
+evidence = ["crates/rusttorch-data/tests/datasets.rs::stack_dataset_checks_lengths_and_returns_tuples", "crates/rusttorch-data/tests/datasets.rs::stack_dataset_supports_tuple_arities_two_through_eight"]
+notes = "Typed Rust tuples replace Python's positional tuple or string-keyed dictionary StackDataset forms; indices are usize and dictionary stacking is represented by an application-defined typed struct instead of dynamic keys."
+
+[[api]]
+id = "data.subset"
+python_symbols = ["torch.utils.data.Subset"]
+rust_symbols = ["rusttorch_data::Subset", "rusttorch::data::Subset"]
+status = "supported"
+implementation = "rusttorch"
+scope = "Validated selection of usize source indices with shared ownership available through blanket Dataset delegation for Arc<D>."
+source = "torch/utils/data/dataset.py"
+evidence = ["crates/rusttorch-data/tests/datasets.rs::subset_validates_source_indices_and_arc_delegates_dataset"]
+notes = "Construction rejects out-of-range usize indices, so Python negative indexing is intentionally not reproduced."
+
+[[api]]
+id = "data.tensor_dataset"
+python_symbols = ["torch.utils.data.TensorDataset"]
+rust_symbols = ["rusttorch_data::TensorDataset", "rusttorch::data::TensorDataset"]
+status = "supported"
+implementation = "mixed"
+scope = "Nonempty tensors with equal first dimensions and ordered Vec<Tensor> row samples whose ordinary indexed views share LibTorch storage with the source tensors."
+source = "torch/utils/data/dataset.py"
+evidence = ["crates/rusttorch-data/tests/datasets.rs::tensor_dataset_returns_one_row_from_each_tensor", "crates/rusttorch-data/tests/datasets.rs::tensor_dataset_rejects_mismatched_first_dimensions", "crates/rusttorch-data/tests/datasets.rs::tensor_dataset_get_returns_storage_sharing_views", "crates/rusttorch-data/tests/datasets.rs::tensor_dataset_get_batch_returns_storage_sharing_views"]
+notes = "A typed Vec<Tensor> replaces Python's dynamically sized tuple, indices are usize, and storage-sharing mutation means this adapter is not automatically replay-safe."
 
 [[api]]
 id = "distributed.c10d"

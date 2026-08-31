@@ -6,8 +6,8 @@
 project after adding the RustTorch library dependency:
 
 ```sh
-cargo install rusttorch-cli
-cargo add rusttorch
+cargo install --git https://github.com/newpoluton-alt/RustTorch rusttorch-cli
+cargo add rusttorch --git https://github.com/newpoluton-alt/RustTorch
 rusttorch setup --backend auto
 cargo run
 ```
