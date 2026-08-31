@@ -138,6 +138,108 @@ where
     }
 }
 
+/// Groups sampler indices into fixed-size batches.
+///
+/// The sampler remains directly iterable when `S` is an iterator. When `S`
+/// implements [`Sampler`], this type also implements [`BatchSource`] and
+/// creates fresh batches for every iteration.
+///
+/// ```
+/// use rusttorch_data::BatchSampler;
+///
+/// let batches = BatchSampler::new(0..5, 2, false)
+///     .expect("batch size is nonzero")
+///     .collect::<Vec<_>>();
+/// assert_eq!(batches, vec![vec![0, 1], vec![2, 3], vec![4]]);
+/// ```
+pub struct BatchSampler<S> {
+    sampler: S,
+    batch_size: usize,
+    drop_last: bool,
+}
+
+impl<S> BatchSampler<S> {
+    /// Creates a batch sampler.
+    ///
+    /// A short final batch is omitted when `drop_last` is `true`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RustTorchError::InvalidConfiguration`] when `batch_size` is
+    /// zero or cannot describe an allocatable index batch.
+    pub fn new(sampler: S, batch_size: usize, drop_last: bool) -> Result<Self> {
+        validate_positive(batch_size, "batch_size")?;
+        let _ = try_vec::<usize>(batch_size, "batch_size")?;
+        Ok(Self {
+            sampler,
+            batch_size,
+            drop_last,
+        })
+    }
+}
+
+impl<S> BatchSampler<S>
+where
+    S: Iterator<Item = usize>,
+{
+    /// Returns the exact number of remaining batches when the sampler reports
+    /// an exact remaining length.
+    pub fn exact_len(&self) -> Option<usize> {
+        let (lower, upper) = self.sampler.size_hint();
+        (upper == Some(lower)).then(|| batch_count(lower, self.batch_size, self.drop_last))
+    }
+}
+
+impl<S> Iterator for BatchSampler<S>
+where
+    S: Iterator<Item = usize>,
+{
+    type Item = Vec<usize>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let first = self.sampler.next()?;
+        let mut batch = try_vec(self.batch_size, "batch_size")
+            .expect("batch storage dimensions were validated during construction");
+        batch.push(first);
+        batch.extend(self.sampler.by_ref().take(self.batch_size - 1));
+        (!self.drop_last || batch.len() == self.batch_size).then_some(batch)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (lower, upper) = self.sampler.size_hint();
+        (
+            batch_count(lower, self.batch_size, self.drop_last),
+            upper.map(|length| batch_count(length, self.batch_size, self.drop_last)),
+        )
+    }
+}
+
+impl<S> BatchSource for BatchSampler<S>
+where
+    S: Sampler,
+{
+    type Iter = BatchSampler<S::Iter>;
+
+    fn iter(&self) -> Self::Iter {
+        BatchSampler::new(self.sampler.iter(), self.batch_size, self.drop_last)
+            .expect("batch storage dimensions were validated during construction")
+    }
+
+    fn exact_len(&self) -> Option<usize> {
+        self.sampler
+            .exact_len()
+            .map(|length| batch_count(length, self.batch_size, self.drop_last))
+    }
+
+    fn epoch(&self) -> u64 {
+        self.sampler.epoch()
+    }
+
+    fn set_epoch(&mut self, epoch: u64) {
+        self.sampler.set_epoch(epoch);
+    }
+}
+
 /// An allocation-free sampler that yields indices in ascending order.
 pub struct SequentialSampler {
     length: usize,
@@ -454,6 +556,156 @@ impl Iterator for WeightedRandomSampler {
     }
 }
 
+/// Deterministically shards a finite index range across distributed ranks.
+///
+/// When `drop_last` is false, indices are cyclically padded so every rank has
+/// the same length. When it is true, the global sequence is truncated to a
+/// multiple of the replica count. Optional shuffling uses sampler-local
+/// ChaCha12 state and does not alter LibTorch's global random state.
+///
+/// ```
+/// use rusttorch_data::DistributedSampler;
+///
+/// let rank_one = DistributedSampler::new(5, 2, 1, false, 0, false)
+///     .expect("replica and rank are valid")
+///     .collect::<Vec<_>>();
+/// assert_eq!(rank_one, vec![1, 3, 0]);
+/// ```
+pub struct DistributedSampler {
+    length: usize,
+    replicas: usize,
+    rank: usize,
+    shuffle: bool,
+    seed: u64,
+    drop_last: bool,
+    epoch: u64,
+    num_samples: usize,
+    indices: IntoIter<usize>,
+}
+
+impl DistributedSampler {
+    /// Creates a rank-aware sampler over `0..length`.
+    ///
+    /// Empty datasets are accepted and yield no indices on every valid rank.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RustTorchError::InvalidConfiguration`] when `replicas` is
+    /// zero, `rank` is outside `0..replicas`, padding arithmetic overflows, or
+    /// requested sampler storage cannot be reserved.
+    pub fn new(
+        length: usize,
+        replicas: usize,
+        rank: usize,
+        shuffle: bool,
+        seed: u64,
+        drop_last: bool,
+    ) -> Result<Self> {
+        validate_positive(replicas, "replicas")?;
+        if rank >= replicas {
+            return Err(invalid_configuration(
+                "rank",
+                "must be less than the replica count",
+            ));
+        }
+        let num_samples = distributed_sample_count(length, replicas, drop_last)?;
+        let indices = distributed_indices(
+            length,
+            replicas,
+            rank,
+            shuffle,
+            seed,
+            drop_last,
+            num_samples,
+        )?
+        .into_iter();
+        Ok(Self {
+            length,
+            replicas,
+            rank,
+            shuffle,
+            seed,
+            drop_last,
+            epoch: 0,
+            num_samples,
+            indices,
+        })
+    }
+
+    /// Returns the number of indices assigned to this rank.
+    pub fn len(&self) -> usize {
+        self.num_samples
+    }
+
+    /// Returns `true` when this rank has no indices.
+    pub fn is_empty(&self) -> bool {
+        self.num_samples == 0
+    }
+
+    /// Returns the current epoch.
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Returns the number of indices consumed by direct iteration.
+    pub fn position(&self) -> usize {
+        self.num_samples - self.indices.len()
+    }
+
+    /// Selects the epoch and resets direct iteration to its beginning.
+    pub fn set_epoch(&mut self, epoch: u64) {
+        self.epoch = epoch;
+        self.indices = self.indices_for_epoch().into_iter();
+    }
+
+    fn indices_for_epoch(&self) -> Vec<usize> {
+        distributed_indices(
+            self.length,
+            self.replicas,
+            self.rank,
+            self.shuffle,
+            epoch_seed(self.seed, self.epoch),
+            self.drop_last,
+            self.num_samples,
+        )
+        .expect("distributed sampler dimensions were validated during construction")
+    }
+}
+
+impl Sampler for DistributedSampler {
+    type Iter = IntoIter<usize>;
+
+    fn iter(&self) -> Self::Iter {
+        self.indices_for_epoch().into_iter()
+    }
+
+    fn exact_len(&self) -> Option<usize> {
+        Some(self.num_samples)
+    }
+
+    fn epoch(&self) -> u64 {
+        self.epoch()
+    }
+
+    fn set_epoch(&mut self, epoch: u64) {
+        self.set_epoch(epoch);
+    }
+}
+
+impl Iterator for DistributedSampler {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.indices.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.indices.size_hint()
+    }
+}
+
+impl ExactSizeIterator for DistributedSampler {}
+
 fn validate_positive(value: usize, field: &'static str) -> Result<()> {
     if value == 0 {
         return Err(invalid_configuration(field, "must be greater than zero"));
@@ -490,6 +742,52 @@ fn invalid_configuration(field: &'static str, reason: impl Into<String>) -> Rust
 
 fn epoch_seed(seed: u64, epoch: u64) -> u64 {
     seed.wrapping_add(epoch)
+}
+
+fn batch_count(length: usize, batch_size: usize, drop_last: bool) -> usize {
+    let complete = length / batch_size;
+    complete + usize::from(!drop_last && !length.is_multiple_of(batch_size))
+}
+
+fn distributed_sample_count(length: usize, replicas: usize, drop_last: bool) -> Result<usize> {
+    if drop_last {
+        return Ok(length / replicas);
+    }
+    let complete = length / replicas;
+    complete
+        .checked_add(usize::from(!length.is_multiple_of(replicas)))
+        .ok_or_else(|| invalid_configuration("length", "padded rank length overflows usize"))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn distributed_indices(
+    length: usize,
+    replicas: usize,
+    rank: usize,
+    shuffle: bool,
+    seed: u64,
+    drop_last: bool,
+    num_samples: usize,
+) -> Result<Vec<usize>> {
+    let total_size = num_samples
+        .checked_mul(replicas)
+        .ok_or_else(|| invalid_configuration("length", "padded global length overflows usize"))?;
+    let mut indices = try_vec(total_size, "length")?;
+    indices.extend(0..length);
+    if shuffle {
+        indices.shuffle(&mut ChaCha12Rng::seed_from_u64(seed));
+    }
+    if drop_last {
+        indices.truncate(total_size);
+    } else if length != 0 {
+        for position in length..total_size {
+            indices.push(indices[(position - length) % length]);
+        }
+    }
+
+    let mut rank_indices = try_vec(num_samples, "length")?;
+    rank_indices.extend(indices.into_iter().skip(rank).step_by(replicas));
+    Ok(rank_indices)
 }
 
 fn random_indices(

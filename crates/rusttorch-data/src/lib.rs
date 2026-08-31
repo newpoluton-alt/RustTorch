@@ -15,8 +15,8 @@ pub use dataset::{
     random_split,
 };
 pub use sampler::{
-    BatchSource, FnBatchSource, FnSampler, RandomSampler, Sampler, SequentialSampler,
-    SubsetRandomSampler, WeightedRandomSampler,
+    BatchSampler, BatchSource, DistributedSampler, FnBatchSource, FnSampler, RandomSampler,
+    Sampler, SequentialSampler, SubsetRandomSampler, WeightedRandomSampler,
 };
 
 /// A finite, indexable collection of samples.
