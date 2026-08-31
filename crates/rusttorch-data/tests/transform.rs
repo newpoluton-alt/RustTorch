@@ -406,6 +406,57 @@ fn pipeline_error_generic_positions_are_distinct() {
     assert!(matches!(errors[4], PipelineError::WorkerInit(InitError)));
 }
 
+#[test]
+fn every_pipeline_variant_preserves_the_standard_error_source_chain() {
+    let errors: Vec<
+        PipelineError<FetchError, TransformError, CollateFailure, FactoryError, InitError>,
+    > = vec![
+        PipelineError::Dataset(FetchError),
+        PipelineError::Transform(TransformError),
+        PipelineError::Collate(CollateFailure),
+        PipelineError::TransformInit(FactoryError),
+        PipelineError::WorkerInit(InitError),
+    ];
+
+    let stage_names = [
+        "dataset fetch failed",
+        "transform failed",
+        "collation failed",
+        "transform initialization failed",
+        "worker initialization failed",
+    ];
+    for (stage, source) in errors.into_iter().enumerate() {
+        let loader = LoaderError::Pipeline {
+            batch: Some(7),
+            worker: None,
+            source,
+        };
+        let display = loader.to_string();
+        assert!(display.contains(stage_names[stage]));
+        let pipeline = Error::source(&loader).expect("LoaderError exposes PipelineError");
+        let leaf = pipeline
+            .source()
+            .expect("PipelineError exposes its typed stage error");
+        let concrete_type_is_preserved = match stage {
+            0 => leaf.downcast_ref::<FetchError>().is_some(),
+            1 => leaf.downcast_ref::<TransformError>().is_some(),
+            2 => leaf.downcast_ref::<CollateFailure>().is_some(),
+            3 => leaf.downcast_ref::<FactoryError>().is_some(),
+            4 => leaf.downcast_ref::<InitError>().is_some(),
+            _ => unreachable!(),
+        };
+        assert!(concrete_type_is_preserved);
+        assert!(leaf.source().is_none());
+    }
+
+    let public_without_error_bounds: PipelineError<u8, u16, u32, u64, u128> =
+        PipelineError::Dataset(7);
+    assert!(matches!(
+        public_without_error_bounds,
+        PipelineError::Dataset(7)
+    ));
+}
+
 fn _assert_default_error_types(
     _error: LoaderError<PipelineError<FetchError, Infallible, Infallible, Infallible, Infallible>>,
 ) {

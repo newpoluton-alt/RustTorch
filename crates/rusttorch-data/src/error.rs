@@ -6,19 +6,19 @@ use rusttorch_core::RustTorchError;
 pub enum PipelineError<DE, TE, CE, FE, IE> {
     /// Dataset fetch failed.
     #[error("dataset fetch failed: {0}")]
-    Dataset(DE),
+    Dataset(#[source] DE),
     /// Sample transformation failed.
     #[error("transform failed: {0}")]
-    Transform(TE),
+    Transform(#[source] TE),
     /// Coordinator collation failed.
     #[error("collation failed: {0}")]
-    Collate(CE),
+    Collate(#[source] CE),
     /// Per-iterator or per-worker transform construction failed.
     #[error("transform initialization failed: {0}")]
-    TransformInit(FE),
+    TransformInit(#[source] FE),
     /// Worker initialization failed.
     #[error("worker initialization failed: {0}")]
-    WorkerInit(IE),
+    WorkerInit(#[source] IE),
 }
 
 /// A typed failure produced while an owned data loader is active.

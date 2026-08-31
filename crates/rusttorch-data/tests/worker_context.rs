@@ -3,7 +3,7 @@ use std::{
     fmt,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Mutex,
+        Arc, Barrier, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -31,6 +31,29 @@ fn worker_info_scopes_are_nested_and_panic_safe() {
         assert!(panic.is_err());
         assert_eq!(get_worker_info(), Some(outer));
     });
+    assert_eq!(get_worker_info(), None);
+}
+
+#[test]
+fn worker_info_is_isolated_between_concurrent_threads() {
+    let barrier = Arc::new(Barrier::new(2));
+    let handles = (0..2)
+        .map(|id| {
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let worker = WorkerInfo::new(id, 2, 10 + id as u64, 4).expect("valid worker");
+                with_worker_info(worker, || {
+                    barrier.wait();
+                    assert_eq!(get_worker_info(), Some(worker));
+                });
+                assert_eq!(get_worker_info(), None);
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for handle in handles {
+        handle.join().expect("worker scope must not panic");
+    }
     assert_eq!(get_worker_info(), None);
 }
 
