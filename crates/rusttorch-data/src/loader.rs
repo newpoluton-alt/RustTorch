@@ -69,6 +69,11 @@ pub trait LoaderPlan<Sample, C> {
         collator: &mut C,
         samples: Vec<Sample>,
     ) -> std::result::Result<Self::Batch, Self::Error>;
+}
+
+/// Configuration-only behavior shared by loader index plans.
+#[doc(hidden)]
+pub trait LoaderPlanConfiguration {
     /// Applies builder-level automatic batch controls when relevant.
     fn apply_batch_options(&mut self, batch_size: NonZeroUsize, drop_last: bool);
 }
@@ -107,7 +112,12 @@ where
     ) -> std::result::Result<Self::Batch, Self::Error> {
         collator.collate(samples)
     }
+}
 
+impl<S> LoaderPlanConfiguration for AutoBatch<S>
+where
+    S: Sampler,
+{
     fn apply_batch_options(&mut self, batch_size: NonZeroUsize, drop_last: bool) {
         self.batch_size = batch_size;
         self.drop_last = drop_last;
@@ -146,7 +156,12 @@ where
     ) -> std::result::Result<Self::Batch, Self::Error> {
         collator.collate(samples)
     }
+}
 
+impl<B> LoaderPlanConfiguration for ExplicitBatches<B>
+where
+    B: BatchSource,
+{
     fn apply_batch_options(&mut self, _batch_size: NonZeroUsize, _drop_last: bool) {}
 }
 
@@ -186,7 +201,12 @@ where
     ) -> std::result::Result<Self::Batch, Self::Error> {
         self.converter.collate(samples)
     }
+}
 
+impl<S, V> LoaderPlanConfiguration for NoBatch<S, V>
+where
+    S: Sampler,
+{
     fn apply_batch_options(&mut self, _batch_size: NonZeroUsize, _drop_last: bool) {}
 }
 
@@ -335,8 +355,7 @@ impl<D, P, C> DataLoaderBuilder<D, P, C> {
     pub fn build(mut self) -> Result<OwnedDataLoader<D, P, C>>
     where
         D: Dataset,
-        P: LoaderPlan<D::Sample, C>,
-        P::Error: From<D::Error>,
+        P: LoaderPlanConfiguration,
     {
         validate_configuration(&self.configuration, self.explicit)?;
         let batch_size = validate_batch_size(self.configuration.batch_size)?;

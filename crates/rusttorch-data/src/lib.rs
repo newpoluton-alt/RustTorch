@@ -24,7 +24,7 @@ pub use dataset::{
 pub use error::LoaderError;
 pub use loader::{
     AutoBatch, BuilderDatasetMarker, DataLoaderBuilder, ExplicitBatches, LoaderIter, LoaderPlan,
-    NoBatch, OwnedDataLoader,
+    LoaderPlanConfiguration, NoBatch, OwnedDataLoader,
 };
 pub use sampler::{
     BatchSampler, BatchSource, DistributedSampler, FnBatchSource, FnSampler, RandomSampler,

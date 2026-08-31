@@ -28,6 +28,23 @@ impl Dataset for Rows {
     }
 }
 
+struct CustomSample;
+
+struct CustomRows;
+
+impl Dataset for CustomRows {
+    type Sample = CustomSample;
+    type Error = Infallible;
+
+    fn len(&self) -> usize {
+        1
+    }
+
+    fn get(&self, _index: usize) -> Result<Self::Sample, Self::Error> {
+        Ok(CustomSample)
+    }
+}
+
 #[test]
 fn defaults_batch_scalars_and_fresh_iterations_restart() -> Result<(), RustTorchError> {
     let mut loader = DataLoader::builder(Rows(vec![0, 1, 2])).build()?;
@@ -503,6 +520,87 @@ fn conflicts_are_order_independent() {
             .drop_last(true)
             .build(),
         "drop_last",
+    );
+}
+
+#[test]
+fn batch_sampler_conflicts_do_not_require_discarded_operational_bounds() {
+    let batches = || FnBatchSource::new(Some(1), |_| vec![vec![0]].into_iter());
+    let sampler = || FnSampler::new(Some(1), |_| [0].into_iter());
+
+    assert_invalid(
+        DataLoader::builder(CustomRows)
+            .batch_size(2)
+            .batch_sampler(batches())
+            .build(),
+        "batch_sampler",
+    );
+    assert_invalid(
+        DataLoader::builder(CustomRows)
+            .batch_sampler(batches())
+            .batch_size(2)
+            .build(),
+        "batch_sampler",
+    );
+    assert_invalid(
+        DataLoader::builder(CustomRows)
+            .sampler(sampler())
+            .batch_sampler(batches())
+            .build(),
+        "batch_sampler",
+    );
+    assert_invalid(
+        DataLoader::builder(CustomRows)
+            .batch_sampler(batches())
+            .sampler(sampler())
+            .build(),
+        "batch_sampler",
+    );
+    assert_invalid(
+        DataLoader::builder(CustomRows)
+            .shuffle(1)
+            .unwrap()
+            .batch_sampler(batches())
+            .build(),
+        "batch_sampler",
+    );
+    assert_invalid(
+        DataLoader::builder(CustomRows)
+            .batch_sampler(batches())
+            .shuffle(1)
+            .unwrap()
+            .build(),
+        "batch_sampler",
+    );
+    assert_invalid(
+        DataLoader::builder(CustomRows)
+            .drop_last(true)
+            .batch_sampler(batches())
+            .build(),
+        "batch_sampler",
+    );
+    assert_invalid(
+        DataLoader::builder(CustomRows)
+            .batch_sampler(batches())
+            .drop_last(true)
+            .build(),
+        "batch_sampler",
+    );
+    assert_invalid(
+        DataLoader::builder(CustomRows)
+            .without_batching()
+            .convert(VecCollate)
+            .batch_sampler(batches())
+            .build(),
+        "batch_sampler",
+    );
+    assert_invalid(
+        DataLoader::builder(CustomRows)
+            .batch_sampler(batches())
+            .without_batching()
+            .convert(VecCollate)
+            .build(),
+        "batch_sampler",
     );
 }
 
