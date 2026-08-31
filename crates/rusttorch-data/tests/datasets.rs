@@ -264,6 +264,26 @@ fn random_split_floors_fractions_and_distributes_remainder_round_robin() {
     );
 }
 
+#[test]
+fn random_split_rejects_fraction_totals_above_one_within_tolerance() {
+    let rows = Arc::new(IntDataset::new((0..5).collect()));
+
+    assert!(matches!(
+        random_split(
+            rows,
+            &[
+                SplitLength::Fraction(0.500_000_000_4),
+                SplitLength::Fraction(0.500_000_000_4),
+            ],
+            7,
+        ),
+        Err(RustTorchError::InvalidConfiguration {
+            field: "lengths",
+            ..
+        })
+    ));
+}
+
 struct HugeDataset;
 
 impl Dataset for HugeDataset {

@@ -365,7 +365,7 @@ where
                 })
                 .collect::<Result<Vec<_>>>()?;
             let total = fractions.iter().sum::<f64>();
-            if (total - 1.0).abs() > 1e-9 {
+            if total > 1.0 || (total - 1.0).abs() > 1e-9 {
                 return Err(invalid_split(&format!(
                     "fractions sum to {total}, expected 1"
                 )));
