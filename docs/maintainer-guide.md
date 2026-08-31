@@ -35,12 +35,18 @@ rewrites.
 
 ## Releases
 
-Only the maintainer authorizes releases. Before publication, reconcile both
-Cargo package versions, `Cargo.lock`, `CHANGELOG.md`, compatibility metadata,
-tests, package contents, and release notes. Build final package archives once
-through the documented release process; never substitute rebuilt bytes after
-provenance is generated. Keep publication credentials out of Git and pull
-request execution.
+Only the maintainer authorizes releases. Follow the complete
+[release-provenance procedure](releasing.md): reconcile both Cargo package
+versions, `Cargo.lock`, `CHANGELOG.md`, compatibility metadata, tests, package
+contents, and release notes before publication. Publish both crates from the
+recorded commit with a newly configured protected credential, and push the
+immutable release tag only after both registry versions are public.
+
+The tag workflow builds final package archives once and keeps the GitHub
+release as a draft until the downloaded bytes, provenance subjects, and exact
+three-asset set are revalidated. Never create a competing release, move a
+release tag, substitute rebuilt bytes after provenance is generated, or place
+publication credentials in Git or pull-request execution.
 
 ## Repository administration
 
