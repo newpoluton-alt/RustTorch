@@ -772,8 +772,13 @@ fn distributed_indices(
     let total_size = num_samples
         .checked_mul(replicas)
         .ok_or_else(|| invalid_configuration("length", "padded global length overflows usize"))?;
-    let mut indices = try_vec(total_size, "length")?;
-    indices.extend(0..length);
+    let materialized_length = if shuffle || !drop_last {
+        length
+    } else {
+        total_size
+    };
+    let mut indices = try_vec(total_size.max(materialized_length), "length")?;
+    indices.extend(0..materialized_length);
     if shuffle {
         indices.shuffle(&mut ChaCha12Rng::seed_from_u64(seed));
     }

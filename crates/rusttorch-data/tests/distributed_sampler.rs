@@ -64,6 +64,23 @@ fn distributed_sampler_rejects_unrepresentable_padding_and_storage_without_panic
             })
         ));
     }
+
+    let unshuffled =
+        catch_unwind(|| DistributedSampler::new(usize::MAX - 1, usize::MAX, 0, false, 0, true));
+    let sampler = unshuffled
+        .expect("drop-last construction must not panic")
+        .expect("the discarded unshuffled range needs no allocation");
+    assert!(sampler.is_empty());
+
+    let shuffled =
+        catch_unwind(|| DistributedSampler::new(usize::MAX - 1, usize::MAX, 0, true, 0, true));
+    assert!(matches!(
+        shuffled.expect("shuffled drop-last construction must not panic"),
+        Err(RustTorchError::InvalidConfiguration {
+            field: "length",
+            ..
+        })
+    ));
 }
 
 #[test]
