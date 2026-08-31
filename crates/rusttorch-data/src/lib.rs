@@ -7,9 +7,14 @@ use std::marker::PhantomData;
 
 use rusttorch_core::{Result, RustTorchError};
 
+mod collate;
 mod dataset;
 mod sampler;
 
+pub use collate::{
+    Bytes, Collate, CollateError, DefaultCollate, DefaultCollator, DefaultConvert,
+    DefaultConverter, FnCollate, VecCollate,
+};
 pub use dataset::{
     ConcatDataset, SplitLength, StackDataset, StackTuple, Subset, TensorDataset, chain_datasets,
     random_split,
