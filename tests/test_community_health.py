@@ -2,7 +2,8 @@ import re
 import subprocess
 import tomllib
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from urllib.parse import unquote, urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +42,22 @@ PYTHON_DEPENDENCIES = [
     "torch==2.13.0",
 ]
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
+EXPECTED_TORCH_WHEEL_BASENAMES = {
+    "2.13.0": {
+        "torch-2.13.0-cp314-cp314-macosx_14_0_arm64.whl",
+        "torch-2.13.0-cp314-cp314t-macosx_14_0_arm64.whl",
+    },
+    "2.13.0+cpu": {
+        "torch-2.13.0+cpu-cp314-cp314-linux_s390x.whl",
+        "torch-2.13.0+cpu-cp314-cp314-manylinux_2_28_aarch64.whl",
+        "torch-2.13.0+cpu-cp314-cp314-manylinux_2_28_x86_64.whl",
+        "torch-2.13.0+cpu-cp314-cp314-win_amd64.whl",
+        "torch-2.13.0+cpu-cp314-cp314t-linux_s390x.whl",
+        "torch-2.13.0+cpu-cp314-cp314t-manylinux_2_28_aarch64.whl",
+        "torch-2.13.0+cpu-cp314-cp314t-manylinux_2_28_x86_64.whl",
+        "torch-2.13.0+cpu-cp314-cp314t-win_amd64.whl",
+    },
+}
 
 REQUIRED_FILES = (
     "CODE_OF_CONDUCT.md",
@@ -89,7 +106,10 @@ class CommunityHealthTests(unittest.TestCase):
 
     def assert_ci_security_contract(self, text: str) -> None:
         self.assertNotRegex(text, r'''(?i)["'][a-z_][a-z0-9_-]*["']\s*:''')
-        self.assertNotRegex(text, r"(?m)^\s*\?(?:\s|$)")
+        self.assertNotRegex(
+            text,
+            r"(?m)(?:^\s*(?:-\s+)?|[{\[,]\s*)\?(?:\s|$)",
+        )
         self.assertRegex(text, r"(?m)^name: CI$")
         jobs_text = text.split("\njobs:\n", 1)[1]
         job_matches = list(re.finditer(r"(?m)^  ([a-z0-9_-]+):$", jobs_text))
@@ -226,6 +246,46 @@ class CommunityHealthTests(unittest.TestCase):
         )
         for package in torch_packages:
             self.assertEqual(package["source"], {"registry": PYTORCH_CPU_INDEX})
+
+        def iter_artifacts(value):
+            if isinstance(value, dict):
+                for key, nested in value.items():
+                    if key == "sdist":
+                        yield nested
+                    elif key == "wheels":
+                        yield from nested
+                    else:
+                        yield from iter_artifacts(nested)
+            elif isinstance(value, list):
+                for nested in value:
+                    yield from iter_artifacts(nested)
+
+        for package in packages:
+            expected_host = (
+                "download-r2.pytorch.org"
+                if package["name"] == "torch"
+                else "files.pythonhosted.org"
+            )
+            for artifact in iter_artifacts(package):
+                parsed_url = urlsplit(artifact["url"])
+                self.assertEqual(parsed_url.scheme, "https")
+                self.assertEqual(parsed_url.netloc, expected_host)
+                self.assertRegex(artifact["hash"], r"\Asha256:[0-9a-f]{64}\Z")
+        for package in torch_packages:
+            self.assertNotIn("sdist", package)
+            expected_wheels = EXPECTED_TORCH_WHEEL_BASENAMES[package["version"]]
+            wheel_basenames = [
+                unquote(PurePosixPath(urlsplit(wheel["url"]).path).name)
+                for wheel in package["wheels"]
+            ]
+            self.assertEqual(len(wheel_basenames), len(expected_wheels))
+            self.assertEqual(set(wheel_basenames), expected_wheels)
+            for wheel, basename in zip(package["wheels"], wheel_basenames):
+                self.assertEqual(
+                    PurePosixPath(urlsplit(wheel["url"]).path).parent.as_posix(),
+                    "/whl/cpu",
+                )
+                self.assertTrue(basename.startswith(f"torch-{package['version']}-"))
         tooling = next(
             package for package in packages if package["name"] == "rusttorch-tooling"
         )
@@ -433,6 +493,55 @@ class CommunityHealthTests(unittest.TestCase):
             "transitive dependency drift": lock.replace(
                 'version = "3.32.4"', 'version = "3.32.5"', 1
             ),
+            "malicious torch artifact origin and digest": lock.replace(
+                "https://download-r2.pytorch.org/whl/cpu/"
+                "torch-2.13.0%2Bcpu-cp314-cp314-manylinux_2_28_x86_64.whl\", "
+                'hash = "sha256:d20fa53ee744502fa4c69818a720b05ca0d37abd055d4f6e66cae155114bc691"',
+                "https://evil.example/whl/cpu/"
+                "torch-2.13.0%2Bcpu-cp314-cp314-manylinux_2_28_x86_64.whl\", "
+                f'hash = "sha256:{"0" * 64}"',
+                1,
+            ),
+            "malicious PyPI artifact origin": lock.replace(
+                "https://files.pythonhosted.org/",
+                "https://evil.example/",
+                1,
+            ),
+            "non-HTTPS artifact origin": lock.replace(
+                "https://files.pythonhosted.org/",
+                "http://files.pythonhosted.org/",
+                1,
+            ),
+            "artifact hash algorithm": lock.replace("sha256:", "sha512:", 1),
+            "artifact hash uppercase": lock.replace(
+                "sha256:2bde2e4cf732e0153406d8a7bc80620ecf5e621fe0d25e41143c4e3b4733ff30",
+                f'sha256:{"A" * 64}',
+                1,
+            ),
+            "torch sdist": lock.replace(
+                'name = "torch"\nversion = "2.13.0"\n',
+                'name = "torch"\nversion = "2.13.0"\n'
+                'sdist = { url = "https://download-r2.pytorch.org/whl/cpu/'
+                'torch-2.13.0.tar.gz", hash = "sha256:'
+                + "0" * 64
+                + '" }\n',
+                1,
+            ),
+            "altered torch wheel platform": lock.replace(
+                "torch-2.13.0%2Bcpu-cp314-cp314-manylinux_2_28_x86_64.whl",
+                "torch-2.13.0%2Bcpu-cp314-cp314-manylinux_2_28_ppc64le.whl",
+                1,
+            ),
+            "altered torch wheel CPU path": lock.replace(
+                "download-r2.pytorch.org/whl/cpu/torch-2.13.0-cp314",
+                "download-r2.pytorch.org/whl/cu126/torch-2.13.0-cp314",
+                1,
+            ),
+            "altered torch wheel version": lock.replace(
+                "torch-2.13.0-cp314-cp314-macosx_14_0_arm64.whl",
+                "torch-2.13.1-cp314-cp314-macosx_14_0_arm64.whl",
+                1,
+            ),
         }
         for name, mutation in lock_mutations.items():
             with self.subTest(lock_mutation=name):
@@ -562,6 +671,13 @@ class CommunityHealthTests(unittest.TestCase):
                 "        : evil/example@main\n",
                 1,
             ),
+            "flow explicit action key": text.replace(
+                "    steps:\n",
+                "    steps:\n"
+                "      - { ? uses # invoke action\n"
+                "          : evil/example@main }\n",
+                1,
+            ),
             "secret context": text.replace(
                 "name: CI", "name: CI\n# ${{ secrets.CARGO_TOKEN }}", 1
             ),
@@ -593,6 +709,12 @@ class CommunityHealthTests(unittest.TestCase):
                 '          python-version: "3.14"\n'
                 "          ? cache # enable a package cache\n"
                 "          : pip",
+                1,
+            ),
+            "flow explicit cache key": text.replace(
+                '        with:\n          python-version: "3.14"',
+                "        with: { ? cache # enable wheels\n"
+                '                  : pip, python-version: "3.14" }',
                 1,
             ),
             "write permission": text.replace("contents: read", "contents: write", 1),
