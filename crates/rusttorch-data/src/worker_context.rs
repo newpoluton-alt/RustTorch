@@ -65,7 +65,10 @@ impl WorkerInfo {
 }
 
 /// Initializes one worker after its context becomes active.
-pub trait WorkerInit: Send + Sync {
+///
+/// The default serial loader imposes no thread-safety bound; positive worker
+/// execution requires a shared `Send + Sync` initializer.
+pub trait WorkerInit {
     /// Initialization failure.
     type Error;
 
@@ -88,7 +91,7 @@ impl<F> FnWorkerInit<F> {
 
 impl<E, F> WorkerInit for FnWorkerInit<F>
 where
-    F: Fn(&WorkerInfo) -> std::result::Result<(), E> + Send + Sync,
+    F: Fn(&WorkerInfo) -> std::result::Result<(), E>,
 {
     type Error = E;
 

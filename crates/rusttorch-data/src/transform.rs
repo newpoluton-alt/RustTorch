@@ -102,7 +102,10 @@ where
 }
 
 /// Constructs one transform for a serial iterator or worker.
-pub trait TransformFactory<Input>: Send + Sync {
+///
+/// Local factories and transforms may remain non-`Send` on the default serial
+/// loader. Selecting positive workers adds the thread-safety bounds.
+pub trait TransformFactory<Input> {
     /// Transform instance created by this factory.
     type Transform: Transform<Input>;
     /// Construction failure.
@@ -131,7 +134,7 @@ impl<F> FnTransformFactory<F> {
 impl<Input, T, E, F> TransformFactory<Input> for FnTransformFactory<F>
 where
     T: Transform<Input>,
-    F: Fn(Option<&WorkerInfo>) -> std::result::Result<T, E> + Send + Sync,
+    F: Fn(Option<&WorkerInfo>) -> std::result::Result<T, E>,
 {
     type Transform = T;
     type Error = E;
@@ -158,7 +161,7 @@ impl<T> CloneTransformFactory<T> {
 
 impl<Input, T> TransformFactory<Input> for CloneTransformFactory<T>
 where
-    T: Transform<Input> + Clone + Send + Sync,
+    T: Transform<Input> + Clone,
 {
     type Transform = T;
     type Error = Infallible;

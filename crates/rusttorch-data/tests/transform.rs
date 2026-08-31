@@ -11,8 +11,8 @@ use std::{
 use rand::RngCore;
 use rusttorch_core::RustTorchError;
 use rusttorch_data::{
-    DataLoader, Dataset, FnCollate, FnSampler, FnTransform, FnTransformFactory, LoaderError,
-    PipelineError, TaskContext, Transform, VecCollate, WorkerInfo, with_worker_info,
+    DataLoader, Dataset, FnCollate, FnTransform, FnTransformFactory, LoaderError, PipelineError,
+    TaskContext, Transform, VecCollate, WorkerInfo, with_worker_info,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -343,42 +343,6 @@ fn every_serial_stage_keeps_its_concrete_error_and_metadata() -> Result<(), Rust
         InitError,
     > = PipelineError::WorkerInit(InitError);
     assert!(matches!(init_error, PipelineError::WorkerInit(InitError)));
-    Ok(())
-}
-
-#[test]
-fn unsupported_workers_reject_before_sampler_factory_or_initializer() -> Result<(), RustTorchError>
-{
-    let sampler = FnSampler::new(Some(1), |_| -> std::vec::IntoIter<usize> {
-        panic!("sampler must not start")
-    });
-    let mut loader = DataLoader::builder(Rows(vec![1]))
-        .sampler(sampler)
-        .collate(VecCollate)
-        .transform_factory(FnTransformFactory::new(|_: Option<&WorkerInfo>| {
-            panic!("factory must not run");
-            #[allow(unreachable_code)]
-            Ok::<_, FactoryError>(rusttorch_data::IdentityTransform)
-        }))
-        .worker_init(rusttorch_data::FnWorkerInit::new(|_: &WorkerInfo| {
-            panic!("initializer must not run");
-            #[allow(unreachable_code)]
-            Ok::<_, InitError>(())
-        }))
-        .workers(1)
-        .build()?;
-
-    let mut iterator = loader.iter();
-    assert!(matches!(
-        iterator.next(),
-        Some(Err(LoaderError::Configuration(
-            RustTorchError::InvalidConfiguration {
-                field: "workers",
-                ..
-            }
-        )))
-    ));
-    assert!(iterator.next().is_none());
     Ok(())
 }
 

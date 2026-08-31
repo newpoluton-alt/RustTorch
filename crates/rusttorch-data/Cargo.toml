@@ -15,6 +15,7 @@ download-libtorch = ["rusttorch-core/download-libtorch"]
 doc-only = ["rusttorch-core/doc-only"]
 
 [dependencies]
+crossbeam-channel.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
 rusttorch-core.workspace = true

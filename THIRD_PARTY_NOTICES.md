@@ -122,7 +122,7 @@ installs or modifies them.
 Generated on 2026-08-30 from the complete locked, all-feature direct and
 transitive package set reported by
 `cargo metadata --locked --all-features --format-version 1`. All four RustTorch
-workspace packages are excluded. The resulting external inventory has 149
+workspace packages are excluded. The resulting external inventory has 150
 rows; duplicate crate versions are preserved.
 
 | Crate | Version | Declared license |
@@ -144,6 +144,7 @@ rows; duplicate crate versions are preserved.
 | `constant_time_eq` | `0.1.5` | `CC0-1.0` |
 | `cpufeatures` | `0.2.17` | `MIT OR Apache-2.0` |
 | `crc32fast` | `1.5.1` | `MIT OR Apache-2.0` |
+| `crossbeam-channel` | `0.5.16` | `MIT OR Apache-2.0` |
 | `crossbeam-utils` | `0.8.22` | `MIT OR Apache-2.0` |
 | `crunchy` | `0.2.4` | `MIT` |
 | `crypto-common` | `0.1.7` | `MIT OR Apache-2.0` |

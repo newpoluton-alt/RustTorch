@@ -60,3 +60,10 @@ fn main() {
 
 The `rusttorch::data` facade re-exports the same API and is the seamless
 default for applications already using `rusttorch`.
+
+Owned map loaders can select bounded Rust workers with `.workers(count)` and
+`.prefetch_factor(batches_per_worker)`. Map datasets are shared through
+`Arc`; workers fetch and transform in deterministic lanes, while collation
+runs on the coordinator. Results preserve sampler order unless
+`.in_order(false)` is selected. Timeout, persistent workers, pinning,
+streaming workers, and checkpointing are not implemented in this scope.

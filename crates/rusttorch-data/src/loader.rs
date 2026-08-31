@@ -1,8 +1,12 @@
-use std::{convert::Infallible, marker::PhantomData, num::NonZeroUsize, time::Duration};
+use std::{
+    collections::BTreeMap, convert::Infallible, marker::PhantomData, num::NonZeroUsize, sync::Arc,
+    time::Duration,
+};
 
 use rusttorch_core::{Result, RustTorchError};
 
 use crate::sampler::validate_batch_size;
+use crate::worker::{WorkerBatch, WorkerFailure, WorkerPool, WorkerPoolConfiguration, WorkerTask};
 use crate::{
     BatchSampler, BatchSource, CloneTransformFactory, Collate, Dataset, DefaultCollator,
     DefaultConverter, IdentityTransformFactory, LoaderError, NoWorkerInit, PipelineError,
@@ -15,6 +19,43 @@ use crate::{
 pub struct BuilderDatasetMarker {
     _private: (),
 }
+
+/// Default execution capability preserving fully local serial data types.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SerialExecution;
+
+/// Execution capability selected by [`DataLoaderBuilder::workers`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WorkerExecution;
+
+type TransformOutput<D, F> =
+    <<F as TransformFactory<<D as Dataset>::Sample>>::Transform as Transform<
+        <D as Dataset>::Sample,
+    >>::Output;
+type TransformFailure<D, F> =
+    <<F as TransformFactory<<D as Dataset>::Sample>>::Transform as Transform<
+        <D as Dataset>::Sample,
+    >>::Error;
+type PlanFailure<D, P, C, F> = <P as LoaderPlan<TransformOutput<D, F>, C>>::Error;
+type IterPipelineError<D, P, C, F, I> = PipelineError<
+    <D as Dataset>::Error,
+    TransformFailure<D, F>,
+    PlanFailure<D, P, C, F>,
+    <F as TransformFactory<<D as Dataset>::Sample>>::Error,
+    <I as WorkerInit>::Error,
+>;
+type IterError<D, P, C, F, I> = LoaderError<IterPipelineError<D, P, C, F, I>>;
+type IterResult<D, P, C, F, I> = std::result::Result<
+    <P as LoaderPlan<TransformOutput<D, F>, C>>::Batch,
+    IterError<D, P, C, F, I>,
+>;
+type CompletedBatch<D, F> = (usize, WorkerBatch<TransformOutput<D, F>>);
+type WorkerStageFailure<D, F, I> = WorkerFailure<
+    <D as Dataset>::Error,
+    TransformFailure<D, F>,
+    <F as TransformFactory<<D as Dataset>::Sample>>::Error,
+    <I as WorkerInit>::Error,
+>;
 
 impl Dataset for BuilderDatasetMarker {
     type Sample = ();
@@ -271,7 +312,14 @@ impl Default for LoaderConfiguration {
 }
 
 /// Builder for an owned, re-iterable map-style data loader.
-pub struct DataLoaderBuilder<D, P, C, F = IdentityTransformFactory, I = NoWorkerInit> {
+pub struct DataLoaderBuilder<
+    D,
+    P,
+    C,
+    F = IdentityTransformFactory,
+    I = NoWorkerInit,
+    X = SerialExecution,
+> {
     dataset: D,
     plan: P,
     collator: C,
@@ -279,6 +327,7 @@ pub struct DataLoaderBuilder<D, P, C, F = IdentityTransformFactory, I = NoWorker
     worker_init: I,
     configuration: LoaderConfiguration,
     explicit: ExplicitArguments,
+    execution: PhantomData<X>,
 }
 
 impl<D> DataLoaderBuilder<D, AutoBatch<SequentialSampler>, DefaultCollator>
@@ -299,15 +348,16 @@ where
             worker_init: NoWorkerInit,
             configuration: LoaderConfiguration::default(),
             explicit: ExplicitArguments::default(),
+            execution: PhantomData,
         }
     }
 }
 
-impl<D, P, C, F, I> DataLoaderBuilder<D, P, C, F, I> {
+impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
     fn map<P2, C2>(
         self,
         transform: impl FnOnce(P, C) -> (P2, C2),
-    ) -> DataLoaderBuilder<D, P2, C2, F, I> {
+    ) -> DataLoaderBuilder<D, P2, C2, F, I, X> {
         let (plan, collator) = transform(self.plan, self.collator);
         DataLoaderBuilder {
             dataset: self.dataset,
@@ -317,6 +367,7 @@ impl<D, P, C, F, I> DataLoaderBuilder<D, P, C, F, I> {
             worker_init: self.worker_init,
             configuration: self.configuration,
             explicit: self.explicit,
+            execution: PhantomData,
         }
     }
 
@@ -334,10 +385,24 @@ impl<D, P, C, F, I> DataLoaderBuilder<D, P, C, F, I> {
         self
     }
 
-    /// Stores the requested worker count.
-    pub fn workers(mut self, workers: usize) -> Self {
+    /// Selects bounded map-worker execution and its thread-safe capability.
+    ///
+    /// Positive counts share the map dataset through [`Arc`], fetch and
+    /// transform in deterministic worker lanes, and collate on the calling
+    /// thread. Passing zero keeps serial execution, but selecting this method
+    /// still requires worker-safe types at compile time.
+    pub fn workers(mut self, workers: usize) -> DataLoaderBuilder<D, P, C, F, I, WorkerExecution> {
         self.configuration.workers = workers;
-        self
+        DataLoaderBuilder {
+            dataset: self.dataset,
+            plan: self.plan,
+            collator: self.collator,
+            transform_factory: self.transform_factory,
+            worker_init: self.worker_init,
+            configuration: self.configuration,
+            explicit: self.explicit,
+            execution: PhantomData,
+        }
     }
 
     /// Sets the seed used by deterministic task and worker contexts.
@@ -362,7 +427,7 @@ impl<D, P, C, F, I> DataLoaderBuilder<D, P, C, F, I> {
     pub fn transform<T>(
         self,
         transform: T,
-    ) -> DataLoaderBuilder<D, P, C, CloneTransformFactory<T>, I> {
+    ) -> DataLoaderBuilder<D, P, C, CloneTransformFactory<T>, I, X> {
         DataLoaderBuilder {
             dataset: self.dataset,
             plan: self.plan,
@@ -371,11 +436,12 @@ impl<D, P, C, F, I> DataLoaderBuilder<D, P, C, F, I> {
             worker_init: self.worker_init,
             configuration: self.configuration,
             explicit: self.explicit,
+            execution: PhantomData,
         }
     }
 
     /// Replaces transform construction with an explicit typed factory.
-    pub fn transform_factory<F2>(self, factory: F2) -> DataLoaderBuilder<D, P, C, F2, I> {
+    pub fn transform_factory<F2>(self, factory: F2) -> DataLoaderBuilder<D, P, C, F2, I, X> {
         DataLoaderBuilder {
             dataset: self.dataset,
             plan: self.plan,
@@ -384,11 +450,12 @@ impl<D, P, C, F, I> DataLoaderBuilder<D, P, C, F, I> {
             worker_init: self.worker_init,
             configuration: self.configuration,
             explicit: self.explicit,
+            execution: PhantomData,
         }
     }
 
     /// Stores the initializer used by future positive-worker execution.
-    pub fn worker_init<I2>(self, worker_init: I2) -> DataLoaderBuilder<D, P, C, F, I2> {
+    pub fn worker_init<I2>(self, worker_init: I2) -> DataLoaderBuilder<D, P, C, F, I2, X> {
         DataLoaderBuilder {
             dataset: self.dataset,
             plan: self.plan,
@@ -397,6 +464,7 @@ impl<D, P, C, F, I> DataLoaderBuilder<D, P, C, F, I> {
             worker_init,
             configuration: self.configuration,
             explicit: self.explicit,
+            execution: PhantomData,
         }
     }
 
@@ -418,13 +486,24 @@ impl<D, P, C, F, I> DataLoaderBuilder<D, P, C, F, I> {
         self
     }
 
-    /// Requests recursive batch pinning when supported.
+    /// Selects sampler-order or completion-order delivery.
+    pub fn in_order(self, in_order: bool) -> Self {
+        self.ordered(in_order)
+    }
+
+    /// Records a future recursive batch-pinning request.
+    ///
+    /// Task 7 stores this setting but does not apply pinning; recursive
+    /// device-aware pinning is scheduled for Task 10.
     pub fn pin_memory(mut self) -> Self {
         self.configuration.pin_memory = true;
         self
     }
 
-    /// Sets batches prefetched per worker.
+    /// Sets bounded batches prefetched per worker.
+    ///
+    /// The worker count multiplied by this factor is checked before any
+    /// worker starts and is also the global outstanding-work credit limit.
     pub fn prefetch_factor(mut self, factor: usize) -> Self {
         self.configuration.prefetch_factor = Some(factor);
         self.explicit.prefetch_factor = true;
@@ -435,7 +514,7 @@ impl<D, P, C, F, I> DataLoaderBuilder<D, P, C, F, I> {
     pub fn batch_sampler<B>(
         mut self,
         batches: B,
-    ) -> DataLoaderBuilder<D, ExplicitBatches<B>, C, F, I> {
+    ) -> DataLoaderBuilder<D, ExplicitBatches<B>, C, F, I, X> {
         self.explicit.batch_sampler = true;
         self.map(|_, collator| (ExplicitBatches { batches }, collator))
     }
@@ -446,7 +525,7 @@ impl<D, P, C, F, I> DataLoaderBuilder<D, P, C, F, I> {
     ///
     /// Returns [`RustTorchError::InvalidConfiguration`] for incompatible
     /// PyTorch-style arguments or zero-valued size controls.
-    pub fn build(mut self) -> Result<OwnedDataLoader<D, P, C, F, I>>
+    pub fn build(mut self) -> Result<OwnedDataLoader<D, P, C, F, I, X>>
     where
         D: Dataset,
         P: LoaderPlanConfiguration,
@@ -464,30 +543,45 @@ impl<D, P, C, F, I> DataLoaderBuilder<D, P, C, F, I> {
             (_, Some(factor)) => NonZeroUsize::new(factor),
             (_, None) => NonZeroUsize::new(2),
         };
+        let outstanding_capacity = match (self.configuration.workers, effective_prefetch) {
+            (0, _) => None,
+            (workers, Some(factor)) => {
+                Some(workers.checked_mul(factor.get()).ok_or_else(|| {
+                    invalid_configuration(
+                        "prefetch_factor",
+                        "workers multiplied by prefetch_factor exceeds usize",
+                    )
+                })?)
+            }
+            (_, None) => unreachable!("positive workers always have an effective prefetch factor"),
+        };
         Ok(OwnedDataLoader {
-            dataset: self.dataset,
+            dataset: Arc::new(self.dataset),
             plan: self.plan,
             collator: self.collator,
-            transform_factory: self.transform_factory,
-            _worker_init: self.worker_init,
+            transform_factory: Arc::new(self.transform_factory),
+            worker_init: Arc::new(self.worker_init),
             workers: self.configuration.workers,
             persistent_workers: self.configuration.persistent_workers,
             timeout: self.configuration.timeout,
             ordered: self.configuration.ordered,
             pin_memory: self.configuration.pin_memory,
             effective_prefetch,
+            outstanding_capacity,
             loader_seed: self.configuration.loader_seed,
             rank: self.configuration.rank,
+            next_generation: 0,
+            execution: PhantomData,
         })
     }
 }
 
-impl<D, S, C, F, I> DataLoaderBuilder<D, AutoBatch<S>, C, F, I>
+impl<D, S, C, F, I, X> DataLoaderBuilder<D, AutoBatch<S>, C, F, I, X>
 where
     D: Dataset,
 {
     /// Replaces the current sampler.
-    pub fn sampler<S2>(mut self, sampler: S2) -> DataLoaderBuilder<D, AutoBatch<S2>, C, F, I> {
+    pub fn sampler<S2>(mut self, sampler: S2) -> DataLoaderBuilder<D, AutoBatch<S2>, C, F, I, X> {
         self.explicit.sampler = true;
         self.map(|plan, collator| {
             (
@@ -510,7 +604,7 @@ where
     pub fn shuffle(
         mut self,
         seed: u64,
-    ) -> Result<DataLoaderBuilder<D, AutoBatch<RandomSampler>, C, F, I>> {
+    ) -> Result<DataLoaderBuilder<D, AutoBatch<RandomSampler>, C, F, I, X>> {
         self.explicit.shuffle = true;
         let sampler = RandomSampler::new(self.dataset.len(), seed)?;
         Ok(self.map(|plan, collator| {
@@ -528,7 +622,7 @@ where
     /// Disables automatic batching and selects default conversion.
     pub fn without_batching(
         mut self,
-    ) -> DataLoaderBuilder<D, NoBatch<S, DefaultConverter>, C, F, I> {
+    ) -> DataLoaderBuilder<D, NoBatch<S, DefaultConverter>, C, F, I, X> {
         self.explicit.without_batching = true;
         self.map(|plan, collator| {
             (
@@ -542,17 +636,17 @@ where
     }
 
     /// Replaces the automatic-batch collator.
-    pub fn collate<C2>(self, collator: C2) -> DataLoaderBuilder<D, AutoBatch<S>, C2, F, I> {
+    pub fn collate<C2>(self, collator: C2) -> DataLoaderBuilder<D, AutoBatch<S>, C2, F, I, X> {
         self.map(|plan, _| (plan, collator))
     }
 }
 
-impl<D, B, C, F, I> DataLoaderBuilder<D, ExplicitBatches<B>, C, F, I>
+impl<D, B, C, F, I, X> DataLoaderBuilder<D, ExplicitBatches<B>, C, F, I, X>
 where
     D: Dataset,
 {
     /// Selects a sampler; build rejects its conflict with the earlier batch sampler.
-    pub fn sampler<S>(mut self, sampler: S) -> DataLoaderBuilder<D, AutoBatch<S>, C, F, I> {
+    pub fn sampler<S>(mut self, sampler: S) -> DataLoaderBuilder<D, AutoBatch<S>, C, F, I, X> {
         self.explicit.sampler = true;
         let batch_size =
             NonZeroUsize::new(self.configuration.batch_size).unwrap_or(NonZeroUsize::MIN);
@@ -578,7 +672,7 @@ where
     pub fn shuffle(
         mut self,
         seed: u64,
-    ) -> Result<DataLoaderBuilder<D, AutoBatch<RandomSampler>, C, F, I>> {
+    ) -> Result<DataLoaderBuilder<D, AutoBatch<RandomSampler>, C, F, I, X>> {
         self.explicit.shuffle = true;
         let sampler = RandomSampler::new(self.dataset.len(), seed)?;
         let batch_size =
@@ -599,7 +693,7 @@ where
     /// Disables batching; build rejects its conflict with the earlier batch sampler.
     pub fn without_batching(
         mut self,
-    ) -> DataLoaderBuilder<D, NoBatch<SequentialSampler, DefaultConverter>, C, F, I> {
+    ) -> DataLoaderBuilder<D, NoBatch<SequentialSampler, DefaultConverter>, C, F, I, X> {
         self.explicit.without_batching = true;
         let length = self.dataset.len();
         self.map(|_, collator| {
@@ -614,17 +708,20 @@ where
     }
 
     /// Replaces the explicit-batch collator.
-    pub fn collate<C2>(self, collator: C2) -> DataLoaderBuilder<D, ExplicitBatches<B>, C2, F, I> {
+    pub fn collate<C2>(
+        self,
+        collator: C2,
+    ) -> DataLoaderBuilder<D, ExplicitBatches<B>, C2, F, I, X> {
         self.map(|plan, _| (plan, collator))
     }
 }
 
-impl<D, S, V, C, F, I> DataLoaderBuilder<D, NoBatch<S, V>, C, F, I>
+impl<D, S, V, C, F, I, X> DataLoaderBuilder<D, NoBatch<S, V>, C, F, I, X>
 where
     D: Dataset,
 {
     /// Replaces the no-batching sampler.
-    pub fn sampler<S2>(mut self, sampler: S2) -> DataLoaderBuilder<D, NoBatch<S2, V>, C, F, I> {
+    pub fn sampler<S2>(mut self, sampler: S2) -> DataLoaderBuilder<D, NoBatch<S2, V>, C, F, I, X> {
         self.explicit.sampler = true;
         self.map(|plan, collator| {
             (
@@ -647,7 +744,7 @@ where
     pub fn shuffle(
         mut self,
         seed: u64,
-    ) -> Result<DataLoaderBuilder<D, NoBatch<RandomSampler, V>, C, F, I>> {
+    ) -> Result<DataLoaderBuilder<D, NoBatch<RandomSampler, V>, C, F, I, X>> {
         self.explicit.shuffle = true;
         let sampler = RandomSampler::new(self.dataset.len(), seed)?;
         Ok(self.map(|plan, collator| {
@@ -662,7 +759,7 @@ where
     }
 
     /// Replaces the no-batching converter.
-    pub fn convert<V2>(self, converter: V2) -> DataLoaderBuilder<D, NoBatch<S, V2>, C, F, I> {
+    pub fn convert<V2>(self, converter: V2) -> DataLoaderBuilder<D, NoBatch<S, V2>, C, F, I, X> {
         self.map(|plan, collator| {
             (
                 NoBatch {
@@ -676,23 +773,41 @@ where
 }
 
 /// An owned, re-iterable map-style data loader.
-pub struct OwnedDataLoader<D, P, C, F = IdentityTransformFactory, I = NoWorkerInit> {
-    dataset: D,
+///
+/// The default [`SerialExecution`] capability accepts local non-`Send` data.
+/// Calling [`DataLoaderBuilder::workers`] selects [`WorkerExecution`], where
+/// positive counts share the dataset through [`Arc`]. Each worker owns a
+/// bounded task lane and one transform instance; the coordinator alone owns
+/// ordering and collation. This differs from PyTorch's process-local dataset
+/// copies and worker-side collation while preserving bounded prefetch,
+/// deterministic routing, task-local randomness, and ordered delivery.
+pub struct OwnedDataLoader<
+    D,
+    P,
+    C,
+    F = IdentityTransformFactory,
+    I = NoWorkerInit,
+    X = SerialExecution,
+> {
+    dataset: Arc<D>,
     plan: P,
     collator: C,
-    transform_factory: F,
-    _worker_init: I,
+    transform_factory: Arc<F>,
+    worker_init: Arc<I>,
     workers: usize,
     persistent_workers: bool,
     timeout: Option<Duration>,
     ordered: bool,
     pin_memory: bool,
     effective_prefetch: Option<NonZeroUsize>,
+    outstanding_capacity: Option<usize>,
     loader_seed: u64,
     rank: usize,
+    next_generation: u64,
+    execution: PhantomData<X>,
 }
 
-impl<D, P, C, F, I> OwnedDataLoader<D, P, C, F, I>
+impl<D, P, C, F, I> OwnedDataLoader<D, P, C, F, I, SerialExecution>
 where
     D: Dataset,
     F: TransformFactory<D::Sample>,
@@ -701,19 +816,14 @@ where
 {
     /// Starts a fresh finite iteration for the configured epoch.
     pub fn iter(&mut self) -> LoaderIter<'_, D, P, C, F, I> {
-        let workers_unsupported = self.workers > 0;
-        let (transform, transform_error) = if workers_unsupported {
-            (None, None)
-        } else {
-            match self.transform_factory.create(None) {
-                Ok(transform) => (Some(transform), None),
-                Err(error) => (None, Some(error)),
-            }
+        let (transform, transform_error) = match self.transform_factory.create(None) {
+            Ok(transform) => (Some(transform), None),
+            Err(error) => (None, Some(error)),
         };
         let batches = transform.as_ref().map(|_| self.plan.iter());
         let epoch = self.plan.epoch();
         LoaderIter {
-            dataset: &self.dataset,
+            dataset: self.dataset.as_ref(),
             plan: &mut self.plan,
             collator: &mut self.collator,
             batches,
@@ -722,14 +832,21 @@ where
             next_batch: 0,
             next_logical_sample: 0,
             exhausted: false,
-            workers_unsupported,
             loader_seed: self.loader_seed,
             epoch,
             rank: self.rank,
             output: PhantomData,
         }
     }
+}
 
+impl<D, P, C, F, I, X> OwnedDataLoader<D, P, C, F, I, X>
+where
+    D: Dataset,
+    F: TransformFactory<D::Sample>,
+    P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
+    I: WorkerInit,
+{
     /// Returns the exact number of yielded items when the source is sized.
     pub fn len(&self) -> Option<usize> {
         self.plan.exact_len()
@@ -798,7 +915,6 @@ where
     next_batch: u64,
     next_logical_sample: u64,
     exhausted: bool,
-    workers_unsupported: bool,
     loader_seed: u64,
     epoch: u64,
     rank: usize,
@@ -828,13 +944,6 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         if self.exhausted {
             return None;
-        }
-        if self.workers_unsupported {
-            self.exhausted = true;
-            return Some(Err(LoaderError::Configuration(invalid_configuration(
-                "workers",
-                "positive-worker execution is scheduled for DataLoader Task 7",
-            ))));
         }
         if let Some(source) = self.transform_error.take() {
             self.exhausted = true;
@@ -918,6 +1027,452 @@ where
             self.exhausted = true;
         }
         Some(result)
+    }
+}
+
+/// One positive-worker iteration borrowed from an [`OwnedDataLoader`].
+pub struct WorkerLoaderIter<'a, D, P, C, F = IdentityTransformFactory, I = NoWorkerInit>
+where
+    D: Dataset,
+    F: TransformFactory<D::Sample>,
+    P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
+    I: WorkerInit,
+{
+    dataset: Arc<D>,
+    plan: &'a mut P,
+    collator: &'a mut C,
+    batches: Option<P::Iter>,
+    serial_transform: Option<F::Transform>,
+    serial_transform_error: Option<F::Error>,
+    pool: Option<WorkerPool<D, F, I>>,
+    completed: BTreeMap<u64, CompletedBatch<D, F>>,
+    pending_error: Option<IterError<D, P, C, F, I>>,
+    generation: u64,
+    workers: usize,
+    capacity: usize,
+    ordered: bool,
+    loader_seed: u64,
+    epoch: u64,
+    rank: usize,
+    next_submission: u64,
+    next_visible: u64,
+    next_logical_sample: u64,
+    outstanding: usize,
+    source_exhausted: bool,
+    submission_closed: bool,
+    exhausted: bool,
+}
+
+impl<D, P, C, F, I> OwnedDataLoader<D, P, C, F, I, WorkerExecution>
+where
+    D: Dataset + Send + Sync + 'static,
+    D::Sample: Send + 'static,
+    D::Error: Send + 'static,
+    F: TransformFactory<D::Sample> + Send + Sync + 'static,
+    F::Transform: Send + 'static,
+    <F::Transform as Transform<D::Sample>>::Output: Send + 'static,
+    <F::Transform as Transform<D::Sample>>::Error: Send + 'static,
+    F::Error: Send + 'static,
+    P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
+    I: WorkerInit + Send + Sync + 'static,
+    I::Error: Send + 'static,
+{
+    /// Starts a fresh bounded worker pool, or the explicit zero-worker path.
+    pub fn iter(&mut self) -> WorkerLoaderIter<'_, D, P, C, F, I> {
+        let epoch = self.plan.epoch();
+        let mut iterator = WorkerLoaderIter {
+            dataset: Arc::clone(&self.dataset),
+            plan: &mut self.plan,
+            collator: &mut self.collator,
+            batches: None,
+            serial_transform: None,
+            serial_transform_error: None,
+            pool: None,
+            completed: BTreeMap::new(),
+            pending_error: None,
+            generation: self.next_generation,
+            workers: self.workers,
+            capacity: self.outstanding_capacity.unwrap_or(0),
+            ordered: self.ordered,
+            loader_seed: self.loader_seed,
+            epoch,
+            rank: self.rank,
+            next_submission: 0,
+            next_visible: 0,
+            next_logical_sample: 0,
+            outstanding: 0,
+            source_exhausted: false,
+            submission_closed: false,
+            exhausted: false,
+        };
+
+        if self.workers == 0 {
+            match self.transform_factory.create(None) {
+                Ok(transform) => {
+                    iterator.serial_transform = Some(transform);
+                    iterator.batches = Some(iterator.plan.iter());
+                }
+                Err(error) => iterator.serial_transform_error = Some(error),
+            }
+            return iterator;
+        }
+        if self.timeout.is_some() {
+            iterator.pending_error = Some(LoaderError::Configuration(invalid_configuration(
+                "timeout",
+                "positive-worker timeout execution is scheduled for DataLoader Task 8",
+            )));
+            return iterator;
+        }
+        if self.persistent_workers {
+            iterator.pending_error = Some(LoaderError::Configuration(invalid_configuration(
+                "persistent_workers",
+                "persistent worker execution is scheduled for DataLoader Task 8",
+            )));
+            return iterator;
+        }
+        let Some(next_generation) = self.next_generation.checked_add(1) else {
+            iterator.pending_error = Some(LoaderError::Configuration(invalid_configuration(
+                "workers",
+                "iterator generation overflowed",
+            )));
+            return iterator;
+        };
+        self.next_generation = next_generation;
+        iterator.batches = Some(iterator.plan.iter());
+        let configuration = WorkerPoolConfiguration {
+            workers: self.workers,
+            prefetch_factor: self
+                .effective_prefetch
+                .expect("positive workers have a validated prefetch factor")
+                .get(),
+            result_capacity: iterator.capacity,
+            generation: iterator.generation,
+            loader_seed: self.loader_seed,
+            epoch,
+            rank: self.rank,
+        };
+        match WorkerPool::new(
+            Arc::clone(&self.dataset),
+            Arc::clone(&self.transform_factory),
+            Arc::clone(&self.worker_init),
+            configuration,
+        ) {
+            Ok(pool) => {
+                iterator.pool = Some(pool);
+                iterator.fill_available();
+            }
+            Err(error) => iterator.pending_error = Some(LoaderError::Configuration(error)),
+        }
+        iterator
+    }
+}
+
+impl<D, P, C, F, I> WorkerLoaderIter<'_, D, P, C, F, I>
+where
+    D: Dataset + Send + Sync + 'static,
+    D::Sample: Send + 'static,
+    D::Error: Send + 'static,
+    F: TransformFactory<D::Sample> + Send + Sync + 'static,
+    F::Transform: Send + 'static,
+    <F::Transform as Transform<D::Sample>>::Output: Send + 'static,
+    <F::Transform as Transform<D::Sample>>::Error: Send + 'static,
+    F::Error: Send + 'static,
+    P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
+    I: WorkerInit + Send + Sync + 'static,
+    I::Error: Send + 'static,
+{
+    fn fill_available(&mut self) {
+        while self.outstanding < self.capacity && !self.source_exhausted && !self.submission_closed
+        {
+            if !self.submit_one() {
+                break;
+            }
+        }
+    }
+
+    fn submit_one(&mut self) -> bool {
+        let Some(indices) = self.batches.as_mut().and_then(Iterator::next) else {
+            self.source_exhausted = true;
+            return false;
+        };
+        let batch_sequence = self.next_submission;
+        let Some(next_submission) = batch_sequence.checked_add(1) else {
+            self.pending_error = Some(LoaderError::Configuration(invalid_configuration(
+                "sampler",
+                "batch sequence overflowed",
+            )));
+            self.submission_closed = true;
+            return false;
+        };
+        let logical_start = self.next_logical_sample;
+        let Some(logical_end) = logical_start.checked_add(indices.len() as u64) else {
+            self.pending_error = Some(LoaderError::Configuration(invalid_configuration(
+                "sampler",
+                "logical sample identifier overflowed",
+            )));
+            self.submission_closed = true;
+            return false;
+        };
+        let logical_samples = (logical_start..logical_end).collect();
+        let worker = batch_sequence as usize % self.workers;
+        let task = WorkerTask {
+            generation: self.generation,
+            batch_sequence,
+            logical_samples,
+            indices,
+        };
+        if self
+            .pool
+            .as_ref()
+            .expect("submissions require an active worker pool")
+            .submit(worker, task)
+            .is_err()
+        {
+            self.submission_closed = true;
+            return false;
+        }
+        self.next_submission = next_submission;
+        self.next_logical_sample = logical_end;
+        self.outstanding += 1;
+        true
+    }
+
+    fn stop(&mut self) {
+        self.exhausted = true;
+        self.pool.take();
+        self.completed.clear();
+    }
+
+    fn next_serial(&mut self) -> Option<IterResult<D, P, C, F, I>> {
+        if let Some(source) = self.serial_transform_error.take() {
+            self.exhausted = true;
+            return Some(Err(LoaderError::Pipeline {
+                batch: None,
+                worker: None,
+                source: PipelineError::TransformInit(source),
+            }));
+        }
+        let indices = match self.batches.as_mut().and_then(Iterator::next) {
+            Some(indices) => indices,
+            None => {
+                self.exhausted = true;
+                return None;
+            }
+        };
+        let batch = self.next_visible;
+        let samples = match self.dataset.get_batch(&indices) {
+            Ok(samples) => samples,
+            Err(source) => {
+                self.exhausted = true;
+                return Some(Err(LoaderError::Pipeline {
+                    batch: Some(batch),
+                    worker: None,
+                    source: PipelineError::Dataset(source),
+                }));
+            }
+        };
+        if samples.len() != indices.len() {
+            self.exhausted = true;
+            return Some(Err(LoaderError::InvalidBatchCardinality {
+                batch,
+                worker: None,
+                expected: indices.len(),
+                actual: samples.len(),
+            }));
+        }
+        let mut transformed = Vec::with_capacity(samples.len());
+        for sample in samples {
+            let context = TaskContext {
+                loader_seed: self.loader_seed,
+                epoch: self.epoch,
+                rank: self.rank,
+                logical_sample: self.next_logical_sample,
+                stage: 0,
+            };
+            let transform = self
+                .serial_transform
+                .as_mut()
+                .expect("serial transform exists after successful construction");
+            match transform.transform(sample, &context) {
+                Ok(sample) => transformed.push(sample),
+                Err(source) => {
+                    self.exhausted = true;
+                    return Some(Err(LoaderError::Pipeline {
+                        batch: Some(batch),
+                        worker: None,
+                        source: PipelineError::Transform(source),
+                    }));
+                }
+            }
+            self.next_logical_sample += 1;
+        }
+        let result = self
+            .plan
+            .finish(self.collator, transformed)
+            .map_err(|source| LoaderError::Pipeline {
+                batch: Some(batch),
+                worker: None,
+                source: PipelineError::Collate(source),
+            });
+        if result.is_err() {
+            self.exhausted = true;
+        } else {
+            self.next_visible += 1;
+        }
+        Some(result)
+    }
+
+    fn publish(
+        &mut self,
+        worker: usize,
+        batch: WorkerBatch<<F::Transform as Transform<D::Sample>>::Output>,
+    ) -> IterResult<D, P, C, F, I> {
+        debug_assert_eq!(batch.generation, self.generation);
+        self.outstanding -= 1;
+        if self.ordered {
+            self.next_visible = self.next_visible.saturating_add(1);
+        }
+        let sequence = batch.batch_sequence;
+        let result = self
+            .plan
+            .finish(self.collator, batch.samples)
+            .map_err(|source| LoaderError::Pipeline {
+                batch: Some(sequence),
+                worker: None,
+                source: PipelineError::Collate(source),
+            });
+        if result.is_ok() {
+            self.fill_available();
+        } else {
+            self.stop();
+        }
+        let _ = worker;
+        result
+    }
+
+    fn map_failure(
+        &mut self,
+        worker: usize,
+        batch: Option<u64>,
+        failure: WorkerStageFailure<D, F, I>,
+    ) -> IterError<D, P, C, F, I> {
+        match failure {
+            WorkerFailure::Dataset(source) => LoaderError::Pipeline {
+                batch,
+                worker: Some(worker),
+                source: PipelineError::Dataset(source),
+            },
+            WorkerFailure::Transform(source) => LoaderError::Pipeline {
+                batch,
+                worker: Some(worker),
+                source: PipelineError::Transform(source),
+            },
+            WorkerFailure::TransformInit(source) => LoaderError::Pipeline {
+                batch,
+                worker: Some(worker),
+                source: PipelineError::TransformInit(source),
+            },
+            WorkerFailure::WorkerInit(source) => LoaderError::Pipeline {
+                batch,
+                worker: Some(worker),
+                source: PipelineError::WorkerInit(source),
+            },
+            WorkerFailure::InvalidBatchCardinality { expected, actual } => {
+                LoaderError::InvalidBatchCardinality {
+                    batch: batch.unwrap_or(self.next_visible),
+                    worker: Some(worker),
+                    expected,
+                    actual,
+                }
+            }
+            WorkerFailure::Panic => LoaderError::WorkerPanic { worker, batch },
+        }
+    }
+}
+
+impl<D, P, C, F, I> Iterator for WorkerLoaderIter<'_, D, P, C, F, I>
+where
+    D: Dataset + Send + Sync + 'static,
+    D::Sample: Send + 'static,
+    D::Error: Send + 'static,
+    F: TransformFactory<D::Sample> + Send + Sync + 'static,
+    F::Transform: Send + 'static,
+    <F::Transform as Transform<D::Sample>>::Output: Send + 'static,
+    <F::Transform as Transform<D::Sample>>::Error: Send + 'static,
+    F::Error: Send + 'static,
+    P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
+    I: WorkerInit + Send + Sync + 'static,
+    I::Error: Send + 'static,
+{
+    type Item = std::result::Result<
+        P::Batch,
+        LoaderError<
+            PipelineError<
+                D::Error,
+                <F::Transform as Transform<D::Sample>>::Error,
+                P::Error,
+                F::Error,
+                I::Error,
+            >,
+        >,
+    >;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.exhausted {
+            return None;
+        }
+        if let Some(error) = self.pending_error.take() {
+            self.stop();
+            return Some(Err(error));
+        }
+        if self.workers == 0 {
+            return self.next_serial();
+        }
+        loop {
+            if self.ordered
+                && let Some((worker, batch)) = self.completed.remove(&self.next_visible)
+            {
+                return Some(self.publish(worker, batch));
+            }
+            if self.outstanding == 0 && self.source_exhausted {
+                self.stop();
+                return None;
+            }
+            let completion = match self
+                .pool
+                .as_ref()
+                .expect("worker iteration has an active pool")
+                .receive()
+            {
+                Ok(completion) => completion,
+                Err(()) => {
+                    let batch = self.next_visible;
+                    self.stop();
+                    return Some(Err(LoaderError::ChannelClosed { batch }));
+                }
+            };
+            if completion.generation != self.generation {
+                continue;
+            }
+            match completion.result {
+                Err(failure) => {
+                    let error =
+                        self.map_failure(completion.worker, completion.batch_sequence, failure);
+                    self.stop();
+                    return Some(Err(error));
+                }
+                Ok(Some(batch)) if self.ordered && batch.batch_sequence != self.next_visible => {
+                    self.completed
+                        .insert(batch.batch_sequence, (completion.worker, batch));
+                }
+                Ok(Some(batch)) => return Some(self.publish(completion.worker, batch)),
+                Ok(None) => {
+                    let batch = self.next_visible;
+                    self.stop();
+                    return Some(Err(LoaderError::ChannelClosed { batch }));
+                }
+            }
+        }
     }
 }
 

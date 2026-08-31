@@ -201,8 +201,10 @@ surface; distributed training; quantization; replacement autograd;
 `torch.compile`; or custom-kernel framework. SafeTensors is the supported
 model-state format. Python pickle models, TorchScript, `torch.export`, and
 cross-language optimizer checkpoint resume are not exposed by the current API.
-Data loading is currently single-threaded; workers, prefetch, pinned memory,
-distributed sampling, and loader checkpoint/resume remain planned.
+Map datasets support bounded deterministic Rust worker threads and ordered or
+completion-order delivery. Worker timeouts, persistence, pinned memory,
+streaming workers, and loader checkpoint/resume remain planned; distributed
+sampling is available without distributed training orchestration.
 
 ## Contributing
 

@@ -13,6 +13,7 @@ mod error;
 mod loader;
 mod sampler;
 mod transform;
+mod worker;
 mod worker_context;
 
 pub use collate::{
@@ -26,7 +27,8 @@ pub use dataset::{
 pub use error::{LoaderError, PipelineError};
 pub use loader::{
     AutoBatch, BuilderDatasetMarker, DataLoaderBuilder, ExplicitBatches, LoaderIter, LoaderPlan,
-    LoaderPlanConfiguration, NoBatch, OwnedDataLoader,
+    LoaderPlanConfiguration, NoBatch, OwnedDataLoader, SerialExecution, WorkerExecution,
+    WorkerLoaderIter,
 };
 pub use sampler::{
     BatchSampler, BatchSource, DistributedSampler, FnBatchSource, FnSampler, RandomSampler,
