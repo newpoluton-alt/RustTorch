@@ -67,6 +67,22 @@ fn direct_package_and_facade_sampler_match() {
 }
 
 #[test]
+fn facade_exposes_the_owned_loader_builder() {
+    use rusttorch::data::VecCollate;
+
+    let mut loader = DataLoader::builder(CountingDataset::new(vec![2, 3, 5]))
+        .batch_size(2)
+        .collate(VecCollate)
+        .build()
+        .expect("owned loader configuration is valid");
+    let batches = loader
+        .iter()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("dataset and collation are infallible");
+    assert_eq!(batches, [vec![2, 3], vec![5]]);
+}
+
+#[test]
 fn facade_reexports_typed_collation_contracts() {
     use rusttorch::{
         Kind, Tensor,

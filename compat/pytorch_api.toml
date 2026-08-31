@@ -145,8 +145,8 @@ status = "supported"
 implementation = "rusttorch"
 scope = "Source-compatible batched map-dataset fetch with an ordered per-index default and one Dataset::get_batch call per DataLoader index batch; incorrect result cardinality is rejected before collation."
 source = "torch/utils/data/_utils/fetch.py"
-evidence = ["crates/rusttorch-data/tests/datasets.rs::loader_uses_one_batched_fetch_per_index_batch", "crates/rusttorch-data/tests/datasets.rs::loader_preserves_errors_from_a_short_dropped_tail", "crates/rusttorch-data/tests/datasets.rs::loader_rejects_wrong_batched_fetch_cardinality_before_collation"]
-notes = "Rust map indices are usize and do not reproduce Python negative indexing. The preserved borrowed loader path treats wrong cardinality as a trait-contract violation; ordinary dataset and collation failures remain recoverable."
+evidence = ["crates/rusttorch-data/tests/datasets.rs::loader_uses_one_batched_fetch_per_index_batch", "crates/rusttorch-data/tests/datasets.rs::loader_preserves_errors_from_a_short_dropped_tail", "crates/rusttorch-data/tests/datasets.rs::loader_rejects_wrong_batched_fetch_cardinality_before_collation", "crates/rusttorch-data/tests/loader_builder.rs::wrong_batch_cardinality_is_typed_and_precedes_collation"]
+notes = "Rust map indices are usize and do not reproduce Python negative indexing. The preserved borrowed loader path treats wrong cardinality as a trait-contract violation, while the owned loader returns LoaderError::InvalidBatchCardinality; ordinary dataset and collation failures remain recoverable."
 
 [[api]]
 id = "data.batches"
@@ -206,13 +206,13 @@ notes = "rusttorch-data owns the direct surface and rusttorch::data preserves it
 [[api]]
 id = "data.loader"
 python_symbols = ["torch.utils.data.DataLoader"]
-rust_symbols = ["rusttorch_data::DataLoader", "rusttorch::data::DataLoader"]
+rust_symbols = ["rusttorch_data::DataLoader", "rusttorch_data::DataLoaderBuilder", "rusttorch_data::OwnedDataLoader", "rusttorch_data::LoaderIter", "rusttorch_data::AutoBatch", "rusttorch_data::ExplicitBatches", "rusttorch_data::NoBatch", "rusttorch_data::LoaderError", "rusttorch::data::DataLoader", "rusttorch::data::DataLoaderBuilder", "rusttorch::data::OwnedDataLoader", "rusttorch::data::LoaderIter", "rusttorch::data::AutoBatch", "rusttorch::data::ExplicitBatches", "rusttorch::data::NoBatch", "rusttorch::data::LoaderError"]
 status = "supported"
 implementation = "rusttorch"
-scope = "Single-threaded map-dataset batching with a caller-provided index sampler, explicit nonzero batch size and drop-last behavior, owned Vec batches or fallible custom collation, and one-error-then-exhaust semantics."
+scope = "Preserved borrowed single-pass loading plus owned, fresh epoch-aware serial iteration with default or explicit typed collation, optional no-batch conversion, sampler or batch-source plans, optional exact length, checked batch cardinality, typed one-error-then-exhaust failures, and order-independent PyTorch argument exclusions."
 source = "torch/utils/data/dataloader.py"
-evidence = ["tests/data.rs::loader_keeps_a_short_tail", "tests/data.rs::loader_drops_a_short_tail", "tests/data.rs::loader_rejects_zero_batch_size_with_a_structured_error", "tests/data.rs::loader_applies_fallible_collation", "tests/data.rs::loader_moves_non_clone_samples_into_batches", "tests/data.rs::loader_discards_a_partial_batch_on_dataset_failure_then_exhausts", "tests/data.rs::loader_yields_a_collation_failure_once_then_exhausts"]
-notes = "rusttorch-data owns the direct loader and rusttorch::data preserves it. This claim is limited to the written Rust surface; worker processes, prefetch, memory pinning, and iterator checkpointing have separate planned rows."
+evidence = ["tests/data.rs::loader_keeps_a_short_tail", "tests/data.rs::loader_drops_a_short_tail", "tests/data.rs::loader_rejects_zero_batch_size_with_a_structured_error", "tests/data.rs::loader_applies_fallible_collation", "tests/data.rs::loader_moves_non_clone_samples_into_batches", "tests/data.rs::loader_discards_a_partial_batch_on_dataset_failure_then_exhausts", "tests/data.rs::loader_yields_a_collation_failure_once_then_exhausts", "tests/data.rs::facade_exposes_the_owned_loader_builder", "crates/rusttorch-data/tests/loader_builder.rs::defaults_batch_scalars_and_fresh_iterations_restart", "crates/rusttorch-data/tests/loader_builder.rs::batching_controls_custom_sources_and_collators", "crates/rusttorch-data/tests/loader_builder.rs::no_batching_uses_default_and_custom_conversion", "crates/rusttorch-data/tests/loader_builder.rs::optional_lengths_never_gate_iteration", "crates/rusttorch-data/tests/loader_builder.rs::set_epoch_forwards_through_every_plan", "crates/rusttorch-data/tests/loader_builder.rs::pipeline_failures_remain_typed_and_terminate_iteration", "crates/rusttorch-data/tests/loader_builder.rs::conflicts_are_order_independent"]
+notes = "rusttorch-data owns the direct loader and rusttorch::data preserves it. Owned loading defaults to batch size one, sequential sampling, zero workers, ordered output, no pinning, no timeout, and no persistence. Threaded execution, actual pinning, timeout enforcement, persistence, and checkpointing are not included in this supported serial scope."
 
 [[api]]
 id = "data.loader.checkpoint"
@@ -228,35 +228,35 @@ notes = "A future format requires versioning plus exact-resume tests across succ
 [[api]]
 id = "data.loader.pinning"
 python_symbols = ["torch.utils.data.DataLoader(pin_memory=...)"]
-rust_symbols = []
-status = "planned"
-implementation = "none"
-scope = "Pinned-host-memory transfer policy and device-aware recursive batch pinning are not implemented."
+rust_symbols = ["rusttorch_data::DataLoaderBuilder::pin_memory", "rusttorch_data::OwnedDataLoader::pin_memory_enabled", "rusttorch::data::DataLoaderBuilder::pin_memory", "rusttorch::data::OwnedDataLoader::pin_memory_enabled"]
+status = "partial"
+implementation = "rusttorch"
+scope = "The owned builder records and exposes a pin-memory request, but serial Task 5 performs no pinning and recursive device-aware batch pinning is not implemented."
 source = "torch/utils/data/dataloader.py"
-evidence = []
-notes = "Future support requires explicit backend scope and transfer benchmarks."
+evidence = ["crates/rusttorch-data/tests/loader_builder.rs::scalar_configuration_is_validated_and_prefetch_is_normalized"]
+notes = "This row does not claim that any memory is pinned. Future support requires recursive typed pinning, explicit backend scope, failure evidence, and transfer benchmarks."
 
 [[api]]
 id = "data.loader.prefetch"
 python_symbols = ["torch.utils.data.DataLoader(prefetch_factor=...)"]
-rust_symbols = []
-status = "planned"
-implementation = "none"
-scope = "Bounded background prefetch, ordering policy, backpressure, cancellation, and failure propagation are not implemented."
+rust_symbols = ["rusttorch_data::DataLoaderBuilder::prefetch_factor", "rusttorch_data::OwnedDataLoader::effective_prefetch_factor", "rusttorch::data::DataLoaderBuilder::prefetch_factor", "rusttorch::data::OwnedDataLoader::effective_prefetch_factor"]
+status = "partial"
+implementation = "rusttorch"
+scope = "Owned-loader configuration rejects zero or serial prefetch factors and normalizes positive-worker defaults to two batches per worker, but no background prefetch executes before Task 7."
 source = "torch/utils/data/dataloader.py"
-evidence = []
-notes = "A future implementation must remain bounded and prove clean shutdown on early drop and errors."
+evidence = ["crates/rusttorch-data/tests/loader_builder.rs::scalar_configuration_is_validated_and_prefetch_is_normalized", "crates/rusttorch-data/tests/loader_builder.rs::positive_workers_fail_explicitly_until_worker_execution_lands"]
+notes = "Positive-worker iteration fails once with a typed unsupported configuration error and never falls back to serial execution. Task 7 must add bounded queues, ordering, backpressure, cancellation, and failure propagation."
 
 [[api]]
 id = "data.loader.workers"
 python_symbols = ["torch.utils.data.DataLoader(num_workers=...)", "torch.utils.data.get_worker_info"]
-rust_symbols = []
-status = "planned"
-implementation = "none"
-scope = "Thread or process workers, persistent workers, worker initialization, timeout handling, and per-worker dataset sharding are not implemented."
+rust_symbols = ["rusttorch_data::DataLoaderBuilder::workers", "rusttorch_data::DataLoaderBuilder::persistent_workers", "rusttorch_data::DataLoaderBuilder::timeout", "rusttorch_data::OwnedDataLoader::workers", "rusttorch::data::DataLoaderBuilder::workers", "rusttorch::data::DataLoaderBuilder::persistent_workers", "rusttorch::data::DataLoaderBuilder::timeout", "rusttorch::data::OwnedDataLoader::workers"]
+status = "partial"
+implementation = "rusttorch"
+scope = "The owned builder validates and stores worker, persistence, and timeout configuration, while every positive-worker iteration returns one typed unsupported error and terminates; no worker thread starts."
 source = "torch/utils/data/dataloader.py"
-evidence = []
-notes = "Phase one is deliberately single-threaded and has no worker lifecycle to manage."
+evidence = ["crates/rusttorch-data/tests/loader_builder.rs::scalar_configuration_is_validated_and_prefetch_is_normalized", "crates/rusttorch-data/tests/loader_builder.rs::positive_workers_fail_explicitly_until_worker_execution_lands"]
+notes = "Task 5 deliberately provides no worker lifecycle and never silently executes configured workers on the serial path. Threads, initialization, timeout enforcement, persistence, and worker-aware sharding remain scheduled."
 
 [[api]]
 id = "data.random_split"

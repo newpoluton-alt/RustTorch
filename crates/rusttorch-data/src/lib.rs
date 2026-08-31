@@ -3,12 +3,14 @@
 #![deny(missing_docs)]
 #![doc = include_str!("../COMPATIBILITY.md")]
 
-use std::marker::PhantomData;
+use std::{convert::Infallible, marker::PhantomData};
 
 use rusttorch_core::{Result, RustTorchError};
 
 mod collate;
 mod dataset;
+mod error;
+mod loader;
 mod sampler;
 
 pub use collate::{
@@ -18,6 +20,11 @@ pub use collate::{
 pub use dataset::{
     ConcatDataset, SplitLength, StackDataset, StackTuple, Subset, TensorDataset, chain_datasets,
     random_split,
+};
+pub use error::LoaderError;
+pub use loader::{
+    AutoBatch, BuilderDatasetMarker, DataLoaderBuilder, ExplicitBatches, LoaderIter, LoaderPlan,
+    NoBatch, OwnedDataLoader,
 };
 pub use sampler::{
     BatchSampler, BatchSource, DistributedSampler, FnBatchSource, FnSampler, RandomSampler,
@@ -349,11 +356,58 @@ where
 ///     Ok(())
 /// }
 /// ```
-pub struct DataLoader<'a, D, S, C, B, E>
-where
+pub struct DataLoader<
+    'a,
+    D = BuilderDatasetMarker,
+    S = std::iter::Empty<usize>,
+    C = (),
+    B = (),
+    E = Infallible,
+> where
     D: Dataset,
 {
     batches: DatasetBatchIterator<'a, D, S, C, B, E>,
+}
+
+impl DataLoader<'static, BuilderDatasetMarker, std::iter::Empty<usize>, (), (), Infallible> {
+    /// Starts an owned, re-iterable loader builder for `dataset`.
+    ///
+    /// ```no_run
+    /// use std::convert::Infallible;
+    /// use rusttorch_core::Result;
+    /// use rusttorch_data::{DataLoader, Dataset, VecCollate};
+    ///
+    /// struct Rows(Vec<i64>);
+    ///
+    /// impl Dataset for Rows {
+    ///     type Sample = i64;
+    ///     type Error = Infallible;
+    ///
+    ///     fn len(&self) -> usize { self.0.len() }
+    ///     fn get(&self, index: usize) -> std::result::Result<i64, Infallible> {
+    ///         Ok(self.0[index])
+    ///     }
+    /// }
+    ///
+    /// fn main() -> Result<()> {
+    ///     let mut loader = DataLoader::builder(Rows(vec![1, 2, 3]))
+    ///         .batch_size(2)
+    ///         .collate(VecCollate)
+    ///         .build()?;
+    ///     let batches = loader.iter().collect::<std::result::Result<Vec<_>, _>>()
+    ///         .expect("the dataset and VecCollate are infallible");
+    ///     assert_eq!(batches, [vec![1, 2], vec![3]]);
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn builder<D>(
+        dataset: D,
+    ) -> DataLoaderBuilder<D, AutoBatch<SequentialSampler>, DefaultCollator>
+    where
+        D: Dataset,
+    {
+        DataLoaderBuilder::new(dataset)
+    }
 }
 
 impl<'a, D, S> DataLoader<'a, D, S, IdentityCollate<D::Sample, D::Error>, Vec<D::Sample>, D::Error>

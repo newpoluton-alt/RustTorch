@@ -23,8 +23,8 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **Implementation:** Implemented by RustTorch
 - **Scope:** Source-compatible batched map-dataset fetch with an ordered per-index default and one Dataset::get\_batch call per DataLoader index batch; incorrect result cardinality is rejected before collation.
 - **Pinned source:** [`torch/utils/data/_utils/fetch.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/_utils/fetch.py)
-- **Evidence:** [`crates/rusttorch-data/tests/datasets.rs::loader_uses_one_batched_fetch_per_index_batch`](../crates/rusttorch-data/tests/datasets.rs), [`crates/rusttorch-data/tests/datasets.rs::loader_preserves_errors_from_a_short_dropped_tail`](../crates/rusttorch-data/tests/datasets.rs), [`crates/rusttorch-data/tests/datasets.rs::loader_rejects_wrong_batched_fetch_cardinality_before_collation`](../crates/rusttorch-data/tests/datasets.rs)
-- **Notes:** Rust map indices are usize and do not reproduce Python negative indexing. The preserved borrowed loader path treats wrong cardinality as a trait-contract violation; ordinary dataset and collation failures remain recoverable.
+- **Evidence:** [`crates/rusttorch-data/tests/datasets.rs::loader_uses_one_batched_fetch_per_index_batch`](../crates/rusttorch-data/tests/datasets.rs), [`crates/rusttorch-data/tests/datasets.rs::loader_preserves_errors_from_a_short_dropped_tail`](../crates/rusttorch-data/tests/datasets.rs), [`crates/rusttorch-data/tests/datasets.rs::loader_rejects_wrong_batched_fetch_cardinality_before_collation`](../crates/rusttorch-data/tests/datasets.rs), [`crates/rusttorch-data/tests/loader_builder.rs::wrong_batch_cardinality_is_typed_and_precedes_collation`](../crates/rusttorch-data/tests/loader_builder.rs)
+- **Notes:** Rust map indices are usize and do not reproduce Python negative indexing. The preserved borrowed loader path treats wrong cardinality as a trait-contract violation, while the owned loader returns LoaderError::InvalidBatchCardinality; ordinary dataset and collation failures remain recoverable.
 
 ### `data.batches`
 
@@ -69,12 +69,12 @@ Each entry is independently scoped. Supported applies only to its written scope;
 ### `data.loader`
 
 - **PyTorch:** `torch.utils.data.DataLoader`
-- **RustTorch:** `rusttorch_data::DataLoader`, `rusttorch::data::DataLoader`
+- **RustTorch:** `rusttorch_data::DataLoader`, `rusttorch_data::DataLoaderBuilder`, `rusttorch_data::OwnedDataLoader`, `rusttorch_data::LoaderIter`, `rusttorch_data::AutoBatch`, `rusttorch_data::ExplicitBatches`, `rusttorch_data::NoBatch`, `rusttorch_data::LoaderError`, `rusttorch::data::DataLoader`, `rusttorch::data::DataLoaderBuilder`, `rusttorch::data::OwnedDataLoader`, `rusttorch::data::LoaderIter`, `rusttorch::data::AutoBatch`, `rusttorch::data::ExplicitBatches`, `rusttorch::data::NoBatch`, `rusttorch::data::LoaderError`
 - **Implementation:** Implemented by RustTorch
-- **Scope:** Single-threaded map-dataset batching with a caller-provided index sampler, explicit nonzero batch size and drop-last behavior, owned Vec batches or fallible custom collation, and one-error-then-exhaust semantics.
+- **Scope:** Preserved borrowed single-pass loading plus owned, fresh epoch-aware serial iteration with default or explicit typed collation, optional no-batch conversion, sampler or batch-source plans, optional exact length, checked batch cardinality, typed one-error-then-exhaust failures, and order-independent PyTorch argument exclusions.
 - **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
-- **Evidence:** [`tests/data.rs::loader_keeps_a_short_tail`](../tests/data.rs), [`tests/data.rs::loader_drops_a_short_tail`](../tests/data.rs), [`tests/data.rs::loader_rejects_zero_batch_size_with_a_structured_error`](../tests/data.rs), [`tests/data.rs::loader_applies_fallible_collation`](../tests/data.rs), [`tests/data.rs::loader_moves_non_clone_samples_into_batches`](../tests/data.rs), [`tests/data.rs::loader_discards_a_partial_batch_on_dataset_failure_then_exhausts`](../tests/data.rs), [`tests/data.rs::loader_yields_a_collation_failure_once_then_exhausts`](../tests/data.rs)
-- **Notes:** rusttorch-data owns the direct loader and rusttorch::data preserves it. This claim is limited to the written Rust surface; worker processes, prefetch, memory pinning, and iterator checkpointing have separate planned rows.
+- **Evidence:** [`tests/data.rs::loader_keeps_a_short_tail`](../tests/data.rs), [`tests/data.rs::loader_drops_a_short_tail`](../tests/data.rs), [`tests/data.rs::loader_rejects_zero_batch_size_with_a_structured_error`](../tests/data.rs), [`tests/data.rs::loader_applies_fallible_collation`](../tests/data.rs), [`tests/data.rs::loader_moves_non_clone_samples_into_batches`](../tests/data.rs), [`tests/data.rs::loader_discards_a_partial_batch_on_dataset_failure_then_exhausts`](../tests/data.rs), [`tests/data.rs::loader_yields_a_collation_failure_once_then_exhausts`](../tests/data.rs), [`tests/data.rs::facade_exposes_the_owned_loader_builder`](../tests/data.rs), [`crates/rusttorch-data/tests/loader_builder.rs::defaults_batch_scalars_and_fresh_iterations_restart`](../crates/rusttorch-data/tests/loader_builder.rs), [`crates/rusttorch-data/tests/loader_builder.rs::batching_controls_custom_sources_and_collators`](../crates/rusttorch-data/tests/loader_builder.rs), [`crates/rusttorch-data/tests/loader_builder.rs::no_batching_uses_default_and_custom_conversion`](../crates/rusttorch-data/tests/loader_builder.rs), [`crates/rusttorch-data/tests/loader_builder.rs::optional_lengths_never_gate_iteration`](../crates/rusttorch-data/tests/loader_builder.rs), [`crates/rusttorch-data/tests/loader_builder.rs::set_epoch_forwards_through_every_plan`](../crates/rusttorch-data/tests/loader_builder.rs), [`crates/rusttorch-data/tests/loader_builder.rs::pipeline_failures_remain_typed_and_terminate_iteration`](../crates/rusttorch-data/tests/loader_builder.rs), [`crates/rusttorch-data/tests/loader_builder.rs::conflicts_are_order_independent`](../crates/rusttorch-data/tests/loader_builder.rs)
+- **Notes:** rusttorch-data owns the direct loader and rusttorch::data preserves it. Owned loading defaults to batch size one, sequential sampling, zero workers, ordered output, no pinning, no timeout, and no persistence. Threaded execution, actual pinning, timeout enforcement, persistence, and checkpointing are not included in this supported serial scope.
 
 ### `data.random_split`
 
@@ -288,6 +288,36 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **Evidence:** [`crates/rusttorch-data/tests/collate.rs::tensors_stack_on_a_new_leading_dimension`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::numeric_scalars_use_their_exact_libtorch_kinds`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::strings_and_bytes_remain_records`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::tuples_collate_each_field_through_arity_eight`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::equal_vectors_transpose_before_recursive_collation`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::mismatched_vector_lengths_are_typed_errors`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::options_require_uniform_presence_and_recurse`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::maps_require_identical_keys_and_recurse_over_values`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::empty_batches_and_incompatible_tensors_return_errors`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::default_converter_preserves_leaves_and_recurses_without_transposing`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::default_converter_collate_requires_exactly_one_sample`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::custom_and_vector_collators_are_explicit_escape_hatches`](../crates/rusttorch-data/tests/collate.rs), [`tests/data.rs::facade_reexports_typed_collation_contracts`](../tests/data.rs)
 - **Notes:** RustTorch uses associated Rust types and a Bytes newtype instead of Python's runtime type registry. It does not support NumPy arrays/scalars, Python mappings/sequences/namedtuples, mutable registry extension, dynamic coercion between unrelated Rust types, or every Python scalar type. Tensor construction and stacking delegate fallibly to LibTorch; structural mismatches and checked allocation boundaries return non-exhaustive CollateError variants.
 
+### `data.loader.pinning`
+
+- **PyTorch:** `torch.utils.data.DataLoader(pin_memory=...)`
+- **RustTorch:** `rusttorch_data::DataLoaderBuilder::pin_memory`, `rusttorch_data::OwnedDataLoader::pin_memory_enabled`, `rusttorch::data::DataLoaderBuilder::pin_memory`, `rusttorch::data::OwnedDataLoader::pin_memory_enabled`
+- **Implementation:** Implemented by RustTorch
+- **Scope:** The owned builder records and exposes a pin-memory request, but serial Task 5 performs no pinning and recursive device-aware batch pinning is not implemented.
+- **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
+- **Evidence:** [`crates/rusttorch-data/tests/loader_builder.rs::scalar_configuration_is_validated_and_prefetch_is_normalized`](../crates/rusttorch-data/tests/loader_builder.rs)
+- **Notes:** This row does not claim that any memory is pinned. Future support requires recursive typed pinning, explicit backend scope, failure evidence, and transfer benchmarks.
+
+### `data.loader.prefetch`
+
+- **PyTorch:** `torch.utils.data.DataLoader(prefetch_factor=...)`
+- **RustTorch:** `rusttorch_data::DataLoaderBuilder::prefetch_factor`, `rusttorch_data::OwnedDataLoader::effective_prefetch_factor`, `rusttorch::data::DataLoaderBuilder::prefetch_factor`, `rusttorch::data::OwnedDataLoader::effective_prefetch_factor`
+- **Implementation:** Implemented by RustTorch
+- **Scope:** Owned-loader configuration rejects zero or serial prefetch factors and normalizes positive-worker defaults to two batches per worker, but no background prefetch executes before Task 7.
+- **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
+- **Evidence:** [`crates/rusttorch-data/tests/loader_builder.rs::scalar_configuration_is_validated_and_prefetch_is_normalized`](../crates/rusttorch-data/tests/loader_builder.rs), [`crates/rusttorch-data/tests/loader_builder.rs::positive_workers_fail_explicitly_until_worker_execution_lands`](../crates/rusttorch-data/tests/loader_builder.rs)
+- **Notes:** Positive-worker iteration fails once with a typed unsupported configuration error and never falls back to serial execution. Task 7 must add bounded queues, ordering, backpressure, cancellation, and failure propagation.
+
+### `data.loader.workers`
+
+- **PyTorch:** `torch.utils.data.DataLoader(num_workers=...)`, `torch.utils.data.get_worker_info`
+- **RustTorch:** `rusttorch_data::DataLoaderBuilder::workers`, `rusttorch_data::DataLoaderBuilder::persistent_workers`, `rusttorch_data::DataLoaderBuilder::timeout`, `rusttorch_data::OwnedDataLoader::workers`, `rusttorch::data::DataLoaderBuilder::workers`, `rusttorch::data::DataLoaderBuilder::persistent_workers`, `rusttorch::data::DataLoaderBuilder::timeout`, `rusttorch::data::OwnedDataLoader::workers`
+- **Implementation:** Implemented by RustTorch
+- **Scope:** The owned builder validates and stores worker, persistence, and timeout configuration, while every positive-worker iteration returns one typed unsupported error and terminates; no worker thread starts.
+- **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
+- **Evidence:** [`crates/rusttorch-data/tests/loader_builder.rs::scalar_configuration_is_validated_and_prefetch_is_normalized`](../crates/rusttorch-data/tests/loader_builder.rs), [`crates/rusttorch-data/tests/loader_builder.rs::positive_workers_fail_explicitly_until_worker_execution_lands`](../crates/rusttorch-data/tests/loader_builder.rs)
+- **Notes:** Task 5 deliberately provides no worker lifecycle and never silently executes configured workers on the serial path. Threads, initialization, timeout enforcement, persistence, and worker-aware sharding remain scheduled.
+
 ### `graph.ir`
 
 - **PyTorch:** `torch.fx.Graph`, `torch.fx.Node`
@@ -449,36 +479,6 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
 - **Evidence:** —
 - **Notes:** A future format requires versioning plus exact-resume tests across successful and failing iteration.
-
-### `data.loader.pinning`
-
-- **PyTorch:** `torch.utils.data.DataLoader(pin_memory=...)`
-- **RustTorch:** —
-- **Implementation:** Not implemented
-- **Scope:** Pinned-host-memory transfer policy and device-aware recursive batch pinning are not implemented.
-- **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
-- **Evidence:** —
-- **Notes:** Future support requires explicit backend scope and transfer benchmarks.
-
-### `data.loader.prefetch`
-
-- **PyTorch:** `torch.utils.data.DataLoader(prefetch_factor=...)`
-- **RustTorch:** —
-- **Implementation:** Not implemented
-- **Scope:** Bounded background prefetch, ordering policy, backpressure, cancellation, and failure propagation are not implemented.
-- **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
-- **Evidence:** —
-- **Notes:** A future implementation must remain bounded and prove clean shutdown on early drop and errors.
-
-### `data.loader.workers`
-
-- **PyTorch:** `torch.utils.data.DataLoader(num_workers=...)`, `torch.utils.data.get_worker_info`
-- **RustTorch:** —
-- **Implementation:** Not implemented
-- **Scope:** Thread or process workers, persistent workers, worker initialization, timeout handling, and per-worker dataset sharding are not implemented.
-- **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
-- **Evidence:** —
-- **Notes:** Phase one is deliberately single-threaded and has no worker lifecycle to manage.
 
 ### `distributed.c10d`
 

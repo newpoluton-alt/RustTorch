@@ -219,6 +219,12 @@ impl Error for CollateError {
     }
 }
 
+impl From<Infallible> for CollateError {
+    fn from(error: Infallible) -> Self {
+        match error {}
+    }
+}
+
 fn reserve_vec<T>(
     capacity: usize,
     context: &'static str,
