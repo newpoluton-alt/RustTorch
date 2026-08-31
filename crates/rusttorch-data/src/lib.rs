@@ -3,17 +3,20 @@
 #![deny(missing_docs)]
 #![doc = include_str!("../COMPATIBILITY.md")]
 
-use std::{marker::PhantomData, ops::Range, vec::IntoIter};
+use std::marker::PhantomData;
 
-use rand::{SeedableRng, seq::SliceRandom};
-use rand_chacha::ChaCha12Rng;
 use rusttorch_core::{Result, RustTorchError};
 
 mod dataset;
+mod sampler;
 
 pub use dataset::{
     ConcatDataset, SplitLength, StackDataset, StackTuple, Subset, TensorDataset, chain_datasets,
     random_split,
+};
+pub use sampler::{
+    BatchSource, FnBatchSource, FnSampler, RandomSampler, Sampler, SequentialSampler,
+    SubsetRandomSampler, WeightedRandomSampler,
 };
 
 /// A finite, indexable collection of samples.
@@ -80,63 +83,6 @@ where
         let index = self.next_index;
         self.next_index += 1;
         Some(self.dataset.get(index))
-    }
-}
-
-/// An allocation-free sampler that yields indices in ascending order.
-pub struct SequentialSampler {
-    indices: Range<usize>,
-}
-
-impl SequentialSampler {
-    /// Creates a sampler for indices `0..length`.
-    pub fn new(length: usize) -> Self {
-        Self { indices: 0..length }
-    }
-}
-
-impl Iterator for SequentialSampler {
-    type Item = usize;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.indices.next()
-    }
-}
-
-/// A seeded sampler that yields each index exactly once in shuffled order.
-///
-/// Shuffling uses a sampler-local ChaCha12 generator, so it does not alter
-/// LibTorch's global random state. The exact ordering is not a PyTorch RNG
-/// compatibility guarantee.
-pub struct RandomSampler {
-    indices: IntoIter<usize>,
-}
-
-impl RandomSampler {
-    /// Creates a reproducible shuffled sampler for `0..length`.
-    ///
-    /// Returns an error when `length` is zero.
-    pub fn new(length: usize, seed: u64) -> Result<Self> {
-        if length == 0 {
-            return Err(RustTorchError::InvalidConfiguration {
-                field: "length",
-                reason: "must be greater than zero".to_owned(),
-            });
-        }
-
-        let mut indices = (0..length).collect::<Vec<_>>();
-        indices.shuffle(&mut ChaCha12Rng::seed_from_u64(seed));
-        Ok(Self {
-            indices: indices.into_iter(),
-        })
-    }
-}
-
-impl Iterator for RandomSampler {
-    type Item = usize;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.indices.next()
     }
 }
 
