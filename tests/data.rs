@@ -60,6 +60,13 @@ fn sequential_sampler_yields_every_index_in_order() {
 }
 
 #[test]
+fn direct_package_and_facade_sampler_match() {
+    let direct = rusttorch_data::SequentialSampler::new(2).collect::<Vec<_>>();
+    let facade = rusttorch::data::SequentialSampler::new(2).collect::<Vec<_>>();
+    assert_eq!(direct, facade);
+}
+
+#[test]
 fn random_sampler_is_seeded_and_yields_a_permutation() {
     let first = RandomSampler::new(8, 42)
         .expect("positive length must be valid")

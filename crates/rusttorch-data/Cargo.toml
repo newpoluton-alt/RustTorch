@@ -1,0 +1,27 @@
+[package]
+name = "rusttorch-data"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Typed datasets, samplers, batching, and loading for RustTorch"
+readme = "README.md"
+publish = ["crates-io"]
+
+[features]
+default = []
+download-libtorch = ["rusttorch-core/download-libtorch"]
+doc-only = ["rusttorch-core/doc-only"]
+
+[dependencies]
+rand.workspace = true
+rand_chacha.workspace = true
+rusttorch-core.workspace = true
+
+[dev-dependencies]
+tch.workspace = true
+
+[package.metadata.docs.rs]
+no-default-features = true
+features = ["doc-only"]

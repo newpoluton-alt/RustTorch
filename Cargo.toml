@@ -41,6 +41,7 @@ thiserror = "2.0"
 rand = "0.8"
 rand_chacha = "0.3"
 rusttorch-core = { version = "=0.1.0", path = "crates/rusttorch-core", default-features = false }
+rusttorch-data = { version = "=0.1.0", path = "crates/rusttorch-data", default-features = false }
 
 [features]
 default = ["download-libtorch"]
@@ -48,9 +49,8 @@ download-libtorch = ["rusttorch-core/download-libtorch"]
 doc-only = ["rusttorch-core/doc-only"]
 
 [dependencies]
-rand.workspace = true
-rand_chacha.workspace = true
 rusttorch-core.workspace = true
+rusttorch-data.workspace = true
 tch.workspace = true
 thiserror.workspace = true
 
