@@ -212,9 +212,13 @@ implemented as a batch sampler rather than a second loader.
 
 ### Collation
 
-Default collation moves owned samples into a pre-sized `Vec`. A typed
-`Collate<Sample>` contract and ordinary fallible closure can instead produce
-tuples, structures, padded sequences, masks, or stacked tensors.
+Automatic batching defaults to typed `DefaultCollator`: it stacks tensors,
+converts numeric scalars into tensors, and recursively collates supported
+Rust structures. `VecCollate` remains an explicit source-compatible escape
+hatch that moves owned samples into a pre-sized `Vec`; an ordinary fallible
+collation closure can instead produce domain-specific padded sequences, masks,
+or structures. With automatic batching disabled, `DefaultConverter` performs
+typed recursive conversion without adding a batch dimension.
 
 RustTorch provides focused implementations for tensors, scalar primitives,
 options, vectors, tuples, and domain sample types. It does not reproduce
@@ -230,8 +234,9 @@ prefetch.
 `PinMemory` is a fallible recursive trait implemented for `Tensor`, supported
 containers, tuples, and domain batch structures. Tensor pinning delegates to
 LibTorch. Pinning runs after collation and before a batch becomes visible to
-the consumer. Unsupported devices and dtypes return contextual errors rather
-than silently copying through ordinary pageable memory.
+the consumer. Automatic pinning degrades to a visible disabled/no-op status
+when no supported accelerator exists, matching PyTorch loader behavior;
+explicitly requested unsupported devices and dtypes return contextual errors.
 
 ## Loader execution
 
@@ -249,19 +254,20 @@ stream source -> worker-aware shard -> typed records ------------┘
 
 ```rust
 let loader = DataLoader::builder(dataset)
-    .sampler(RandomSampler::seeded(42))
+    .shuffle(42)?
     .batch_size(64)
     .workers(4)
     .prefetch_factor(2)
-    .pin_memory(true)
+    .pin_memory()
     .build()?;
 ```
 
 - `workers(0)` uses the existing single-threaded path and allocates no worker
   pool or channels.
-- Positive worker counts use owned, joinable threads and bounded
-  multi-producer, multi-consumer queues. The dataset is shared through `Arc`
-  only on this path.
+- Positive worker counts use owned, joinable threads, one bounded task lane per
+  worker, and a bounded result queue. The dataset is shared through `Arc` only
+  on this path. Deterministic round-robin lane assignment gives stateful worker
+  transforms a reproducible history.
 - Queue capacity is derived from worker count and prefetch factor and is never
   unbounded.
 - Results are yielded in sampler order by default. Unordered completion is an
