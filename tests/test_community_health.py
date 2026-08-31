@@ -185,7 +185,13 @@ class CommunityHealthTests(unittest.TestCase):
             "      - name: Validate Python lock artifacts\n"
             f"        run: {PYTHON_LOCK_CHECK}\n"
         )
+        lock_policy_boundary = (
+            lock_policy_step
+            + "\n      - name: Set up UV\n"
+            + f"        uses: {SETUP_UV}\n"
+        )
         self.assertEqual(quality.count(lock_policy_step), 1)
+        self.assertEqual(quality.count(lock_policy_boundary), 1)
         self.assertEqual(quality.count("scripts/check-python-lock.py"), 1)
         self.assertEqual(normalized_quality.count(PYTHON_LOCK_CHECK), 1)
 
@@ -194,7 +200,7 @@ class CommunityHealthTests(unittest.TestCase):
         self.assertIn(path_export, quality)
         self.assertIn(environment_export, quality)
         setup_python_position = quality.index(f"uses: {SETUP_PYTHON}")
-        lock_policy_position = quality.index(lock_policy_step)
+        lock_policy_position = quality.index(lock_policy_boundary)
         setup_uv_position = quality.index(f"uses: {SETUP_UV}")
         lock_position = quality.index("uv lock --check --offline --no-cache")
         sync_position = quality.index("uv sync --frozen --no-cache")
@@ -594,6 +600,41 @@ class CommunityHealthTests(unittest.TestCase):
             ),
             "ignored artifact policy failure": text.replace(
                 PYTHON_LOCK_CHECK, f"{PYTHON_LOCK_CHECK} || true", 1
+            ),
+            "artifact policy continue on error": text.replace(
+                lock_policy_step,
+                lock_policy_step + "        continue-on-error: true\n",
+                1,
+            ),
+            "artifact policy false condition": text.replace(
+                lock_policy_step,
+                lock_policy_step + "        if: ${{ false }}\n",
+                1,
+            ),
+            "artifact policy neutralized shell": text.replace(
+                lock_policy_step,
+                lock_policy_step + "        shell: echo {0}\n",
+                1,
+            ),
+            "duplicate artifact policy neutralizer": text.replace(
+                lock_policy_step,
+                lock_policy_step
+                + "        continue-on-error: false\n"
+                + "        continue-on-error: true\n",
+                1,
+            ),
+            "flow artifact policy neutralizer": text.replace(
+                lock_policy_step,
+                "      - {name: Validate Python lock artifacts, "
+                f"run: {PYTHON_LOCK_CHECK}, continue-on-error: true}}\n",
+                1,
+            ),
+            "explicit artifact policy neutralizer": text.replace(
+                lock_policy_step,
+                lock_policy_step
+                + "        ? continue-on-error # neutralize validation\n"
+                + "        : true\n",
+                1,
             ),
             "quoted artifact policy key": text.replace(
                 f"        run: {PYTHON_LOCK_CHECK}",

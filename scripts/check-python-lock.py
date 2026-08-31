@@ -208,7 +208,7 @@ def validate_artifact(
     if SHA256.fullmatch(digest) is None:
         raise PythonLockError(f"{context} must use a lowercase SHA-256 digest")
     if "size" in artifact and (
-        not isinstance(artifact["size"], int) or artifact["size"] <= 0
+        type(artifact["size"]) is not int or artifact["size"] <= 0
     ):
         raise PythonLockError(f"{context} size must be a positive integer")
     if "upload-time" in artifact and (
