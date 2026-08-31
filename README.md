@@ -12,7 +12,7 @@ An unofficial, eager-first Rust frontend over LibTorch.
 [![MSRV](https://img.shields.io/crates/msrv/rusttorch.svg)](Cargo.toml)
 [![CI](https://github.com/newpoluton-alt/RustTorch/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/newpoluton-alt/RustTorch/actions/workflows/ci.yml)
 
-[Quick start](#quick-start) · [Capabilities](#current-capabilities) ·
+[Installation](#installation-and-example) · [Capabilities](#current-capabilities) ·
 [Runtime setup](#runtime-setup) · [Documentation](#documentation) ·
 [Contributing](#contributing) · [License](#license)
 
@@ -30,7 +30,7 @@ owns tensor storage, kernels, automatic differentiation, and backend execution.
 The project credo guides API and implementation choices; it is not an
 unqualified performance claim.
 
-## Quick start
+## Installation and Example
 
 `rusttorch-cli` is not published yet, so install both packages from the current
 Git source:
@@ -107,6 +107,25 @@ layer without the facade; it provides the same loader surface directly.
 The first setup may download a large official LibTorch artifact into Cargo
 build storage. RustTorch links LibTorch dynamically, so the platform loader
 must also be able to find its shared libraries at runtime.
+
+## Features
+
+The default `download-libtorch` feature lets `tch` acquire its compatible
+LibTorch 2.13.0 runtime. For checks and rustdoc without a runtime, use
+`doc-only` with default features disabled:
+
+```toml
+[dependencies]
+rusttorch = { version = "0.1", default-features = false, features = ["doc-only"] }
+```
+
+## Native runtime
+
+Executables need LibTorch/PyTorch 2.13.0, matching `tch` 0.26.0. The default
+feature uses the downloaded runtime; alternatively, disable default features
+and build with `LIBTORCH_USE_PYTORCH=1` against Python `torch` 2.13.0 or set
+`LIBTORCH=/absolute/path/to/libtorch`. The platform dynamic loader must find
+the selected shared libraries at runtime.
 
 ## Current capabilities
 

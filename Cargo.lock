@@ -745,7 +745,6 @@ dependencies = [
  "rusttorch-data",
  "serde_json",
  "tch",
- "thiserror 2.0.20",
 ]
 
 [[package]]

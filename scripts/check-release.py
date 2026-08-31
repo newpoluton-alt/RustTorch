@@ -241,7 +241,7 @@ def write_subjects(dist: Path, version: str, output: Path) -> str:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag", required=True, help="exact release tag, such as v0.2.0")
-    parser.add_argument("--dist", type=Path, help="directory containing both package archives")
+    parser.add_argument("--dist", type=Path, help="directory containing all workspace package archives")
     parser.add_argument("--subjects-output", type=Path, help="path for GNU SHA-256 subjects")
     return parser
 

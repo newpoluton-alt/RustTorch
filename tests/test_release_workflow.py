@@ -131,6 +131,12 @@ class ReleasePreflightTests(unittest.TestCase):
     def test_matching_tag_manifests_lock_changelog_and_ledger_pass(self) -> None:
         self.assertEqual(self.release.validate_release(self.root, "v0.1.0"), "0.1.0")
 
+    def test_dist_help_covers_all_workspace_package_archives(self) -> None:
+        self.assertIn(
+            "directory containing all workspace package archives",
+            self.release._parser().format_help(),
+        )
+
     def test_workspace_inherited_member_versions_resolve_from_the_root(self) -> None:
         for name, manifest in PACKAGE_MANIFESTS:
             with self.subTest(package=name):

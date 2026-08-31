@@ -42,6 +42,12 @@ WORKSPACE_PACKAGES = (
     "rusttorch",
     "rusttorch-cli",
 )
+PUBLISHABLE_PACKAGE_READMES = (
+    "README.md",
+    "crates/rusttorch-core/README.md",
+    "crates/rusttorch-data/README.md",
+    "crates/rusttorch-cli/README.md",
+)
 
 REQUIRED_FILES = (
     "CODE_OF_CONDUCT.md",
@@ -349,6 +355,21 @@ class CommunityHealthTests(unittest.TestCase):
                 package = tomllib.loads(self.read(manifest))["package"]
                 self.assertTrue(package["publish"])
                 self.assertIn("#![deny(missing_docs)]", self.read(library_root))
+
+    def test_publishable_package_readmes_cover_required_sections(self) -> None:
+        for relative in PUBLISHABLE_PACKAGE_READMES:
+            with self.subTest(readme=relative):
+                text = self.read(relative)
+                for heading in (
+                    "Installation",
+                    "Features",
+                    "Native runtime",
+                    "Example",
+                ):
+                    self.assertIn(heading, text)
+                self.assertIn("download-libtorch", text)
+                self.assertIn("doc-only", text)
+                self.assertIn("2.13.0", text)
 
     def test_dependabot_checks_cargo_and_actions_weekly(self) -> None:
         text = self.read(".github/dependabot.yml")
