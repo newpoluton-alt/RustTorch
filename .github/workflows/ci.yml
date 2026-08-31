@@ -69,6 +69,9 @@ jobs:
         with:
           python-version: "3.14"
 
+      - name: Validate Python lock artifacts
+        run: python3 scripts/check-python-lock.py
+
       - name: Set up UV
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:

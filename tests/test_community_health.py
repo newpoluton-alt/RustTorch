@@ -2,8 +2,7 @@ import re
 import subprocess
 import tomllib
 import unittest
-from pathlib import Path, PurePosixPath
-from urllib.parse import unquote, urlsplit
+from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +20,7 @@ SETUP_RUST = (
 SETUP_UV = (
     "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0"
 )
+PYTHON_LOCK_CHECK = "python3 scripts/check-python-lock.py"
 DEPENDENCY_REVIEW = (
     "actions/dependency-review-action@"
     "595b5aeba73380359d98a5e087f648dbb0edce1b # v4.7.3"
@@ -34,29 +34,6 @@ APPROVED_CI_ACTIONS = {
         SETUP_UV,
         DEPENDENCY_REVIEW,
     )
-}
-
-PYTHON_DEPENDENCIES = [
-    "numpy==2.5.2",
-    "safetensors==0.8.0",
-    "torch==2.13.0",
-]
-PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
-EXPECTED_TORCH_WHEEL_BASENAMES = {
-    "2.13.0": {
-        "torch-2.13.0-cp314-cp314-macosx_14_0_arm64.whl",
-        "torch-2.13.0-cp314-cp314t-macosx_14_0_arm64.whl",
-    },
-    "2.13.0+cpu": {
-        "torch-2.13.0+cpu-cp314-cp314-linux_s390x.whl",
-        "torch-2.13.0+cpu-cp314-cp314-manylinux_2_28_aarch64.whl",
-        "torch-2.13.0+cpu-cp314-cp314-manylinux_2_28_x86_64.whl",
-        "torch-2.13.0+cpu-cp314-cp314-win_amd64.whl",
-        "torch-2.13.0+cpu-cp314-cp314t-linux_s390x.whl",
-        "torch-2.13.0+cpu-cp314-cp314t-manylinux_2_28_aarch64.whl",
-        "torch-2.13.0+cpu-cp314-cp314t-manylinux_2_28_x86_64.whl",
-        "torch-2.13.0+cpu-cp314-cp314t-win_amd64.whl",
-    },
 }
 
 REQUIRED_FILES = (
@@ -175,148 +152,6 @@ class CommunityHealthTests(unittest.TestCase):
             else:
                 self.assertNotIn("permissions:", section)
 
-    def assert_python_tooling_contract(
-        self, pyproject_text: str, lock_text: str | None
-    ) -> None:
-        pyproject = tomllib.loads(pyproject_text)
-        self.assertEqual(set(pyproject), {"project", "tool"})
-        project = pyproject["project"]
-        self.assertEqual(
-            set(project), {"name", "version", "requires-python", "dependencies"}
-        )
-        self.assertEqual(project["name"], "rusttorch-tooling")
-        self.assertEqual(project["version"], "0.0.0")
-        self.assertEqual(project["requires-python"], ">=3.14,<3.15")
-        self.assertEqual(project["dependencies"], PYTHON_DEPENDENCIES)
-        self.assertNotIn("build-system", pyproject)
-
-        uv = pyproject["tool"]["uv"]
-        self.assertEqual(set(uv), {"package", "sources", "index"})
-        self.assertIs(uv["package"], False)
-        self.assertEqual(uv["sources"], {"torch": {"index": "pytorch-cpu"}})
-        self.assertEqual(
-            uv["index"],
-            [
-                {
-                    "name": "pytorch-cpu",
-                    "url": PYTORCH_CPU_INDEX,
-                    "explicit": True,
-                }
-            ],
-        )
-
-        self.assertIsNotNone(lock_text)
-        lock = tomllib.loads(lock_text)
-        self.assertEqual(lock["version"], 1)
-        self.assertEqual(lock["revision"], 3)
-        self.assertEqual(lock["requires-python"], "==3.14.*")
-        packages = lock["package"]
-        locked_versions: dict[str, set[str]] = {}
-        for package in packages:
-            locked_versions.setdefault(package["name"], set()).add(package["version"])
-        self.assertEqual(
-            locked_versions,
-            {
-                "filelock": {"3.32.4"},
-                "fsspec": {"2026.7.0"},
-                "jinja2": {"3.1.6"},
-                "markupsafe": {"3.0.3"},
-                "mpmath": {"1.3.0"},
-                "networkx": {"3.6.1"},
-                "numpy": {"2.5.2"},
-                "rusttorch-tooling": {"0.0.0"},
-                "safetensors": {"0.8.0"},
-                "setuptools": {"84.0.0"},
-                "sympy": {"1.14.0"},
-                "torch": {"2.13.0", "2.13.0+cpu"},
-                "typing-extensions": {"4.16.0"},
-            },
-        )
-        for name, version in (
-            ("numpy", "2.5.2"),
-            ("safetensors", "0.8.0"),
-        ):
-            with self.subTest(locked_package=name):
-                matches = [package for package in packages if package["name"] == name]
-                self.assertEqual([package["version"] for package in matches], [version])
-        torch_packages = [package for package in packages if package["name"] == "torch"]
-        self.assertEqual(
-            {package["version"] for package in torch_packages},
-            {"2.13.0", "2.13.0+cpu"},
-        )
-        for package in torch_packages:
-            self.assertEqual(package["source"], {"registry": PYTORCH_CPU_INDEX})
-
-        def iter_artifacts(value):
-            if isinstance(value, dict):
-                for key, nested in value.items():
-                    if key == "sdist":
-                        yield nested
-                    elif key == "wheels":
-                        yield from nested
-                    else:
-                        yield from iter_artifacts(nested)
-            elif isinstance(value, list):
-                for nested in value:
-                    yield from iter_artifacts(nested)
-
-        for package in packages:
-            expected_host = (
-                "download-r2.pytorch.org"
-                if package["name"] == "torch"
-                else "files.pythonhosted.org"
-            )
-            for artifact in iter_artifacts(package):
-                parsed_url = urlsplit(artifact["url"])
-                self.assertEqual(parsed_url.scheme, "https")
-                self.assertEqual(parsed_url.netloc, expected_host)
-                self.assertRegex(artifact["hash"], r"\Asha256:[0-9a-f]{64}\Z")
-        for package in torch_packages:
-            self.assertNotIn("sdist", package)
-            expected_wheels = EXPECTED_TORCH_WHEEL_BASENAMES[package["version"]]
-            wheel_basenames = [
-                unquote(PurePosixPath(urlsplit(wheel["url"]).path).name)
-                for wheel in package["wheels"]
-            ]
-            self.assertEqual(len(wheel_basenames), len(expected_wheels))
-            self.assertEqual(set(wheel_basenames), expected_wheels)
-            for wheel, basename in zip(package["wheels"], wheel_basenames):
-                self.assertEqual(
-                    PurePosixPath(urlsplit(wheel["url"]).path).parent.as_posix(),
-                    "/whl/cpu",
-                )
-                self.assertTrue(basename.startswith(f"torch-{package['version']}-"))
-        tooling = next(
-            package for package in packages if package["name"] == "rusttorch-tooling"
-        )
-        self.assertEqual(tooling["source"], {"virtual": "."})
-        locked_torch_dependencies = [
-            dependency
-            for dependency in tooling["dependencies"]
-            if dependency["name"] == "torch"
-        ]
-        self.assertEqual(len(locked_torch_dependencies), 2)
-        for dependency in locked_torch_dependencies:
-            self.assertEqual(dependency["source"], {"registry": PYTORCH_CPU_INDEX})
-        self.assertEqual(
-            {
-                (dependency["version"], dependency["marker"])
-                for dependency in locked_torch_dependencies
-            },
-            {
-                ("2.13.0", "sys_platform == 'darwin'"),
-                ("2.13.0+cpu", "sys_platform != 'darwin'"),
-            },
-        )
-        self.assertIn(
-            {
-                "name": "torch",
-                "specifier": "==2.13.0",
-                "index": PYTORCH_CPU_INDEX,
-            },
-            tooling["metadata"]["requires-dist"],
-        )
-
     def assert_python_ci_contract(self, text: str) -> None:
         quality = text.split("  quality:\n", 1)[1].split("\n  msrv:", 1)[0]
         normalized_text = re.sub(r"\\\r?\n[ \t]*", "", text)
@@ -346,15 +181,25 @@ class CommunityHealthTests(unittest.TestCase):
         self.assertNotRegex(normalized_text, r"(?i)\bpip\b")
         self.assertNotIn("python3 -m venv", quality)
 
+        lock_policy_step = (
+            "      - name: Validate Python lock artifacts\n"
+            f"        run: {PYTHON_LOCK_CHECK}\n"
+        )
+        self.assertEqual(quality.count(lock_policy_step), 1)
+        self.assertEqual(quality.count("scripts/check-python-lock.py"), 1)
+        self.assertEqual(normalized_quality.count(PYTHON_LOCK_CHECK), 1)
+
         path_export = 'echo "$PWD/.venv/bin" >> "$GITHUB_PATH"'
         environment_export = 'echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"'
         self.assertIn(path_export, quality)
         self.assertIn(environment_export, quality)
         setup_python_position = quality.index(f"uses: {SETUP_PYTHON}")
+        lock_policy_position = quality.index(lock_policy_step)
         setup_uv_position = quality.index(f"uses: {SETUP_UV}")
         lock_position = quality.index("uv lock --check --offline --no-cache")
         sync_position = quality.index("uv sync --frozen --no-cache")
-        self.assertLess(setup_python_position, setup_uv_position)
+        self.assertLess(setup_python_position, lock_policy_position)
+        self.assertLess(lock_policy_position, setup_uv_position)
         self.assertLess(setup_uv_position, lock_position)
         self.assertLess(lock_position, sync_position)
         self.assertLess(sync_position, quality.index(path_export))
@@ -443,113 +288,6 @@ class CommunityHealthTests(unittest.TestCase):
         ):
             with self.subTest(platform_scope=platform_scope):
                 self.assertIn(platform_scope, text)
-
-    def test_python_tooling_project_is_non_package_and_locked(self) -> None:
-        pyproject_path = ROOT / "pyproject.toml"
-        lock_path = ROOT / "uv.lock"
-        self.assertTrue(pyproject_path.is_file())
-        self.assertTrue(lock_path.is_file())
-        self.assertFalse((ROOT / "uv.toml").exists())
-        self.assert_python_tooling_contract(
-            pyproject_path.read_text(encoding="utf-8"),
-            lock_path.read_text(encoding="utf-8"),
-        )
-
-    def test_python_tooling_contract_rejects_manifest_and_lock_drift(self) -> None:
-        self.assertTrue((ROOT / "pyproject.toml").is_file())
-        self.assertTrue((ROOT / "uv.lock").is_file())
-        pyproject = self.read("pyproject.toml")
-        lock = self.read("uv.lock")
-        pyproject_mutations = {
-            "dependency pin": pyproject.replace("numpy==2.5.2", "numpy==2.5.3", 1),
-            "Python range": pyproject.replace(">=3.14,<3.15", ">=3.13,<3.15", 1),
-            "alternate index": pyproject.replace(
-                PYTORCH_CPU_INDEX, "https://pypi.org/simple", 1
-            ),
-            "implicit index": pyproject.replace(
-                "explicit = true", "explicit = false", 1
-            ),
-            "package mode": pyproject.replace("package = false", "package = true", 1),
-            "dependency group": pyproject
-            + '\n[dependency-groups]\ndev = ["requests==2.32.5"]\n',
-            "optional dependencies": pyproject
-            + '\n[project.optional-dependencies]\ndev = ["requests==2.32.5"]\n',
-        }
-        for name, mutation in pyproject_mutations.items():
-            with self.subTest(manifest_mutation=name):
-                self.assertNotEqual(mutation, pyproject)
-                with self.assertRaises((AssertionError, KeyError, StopIteration)):
-                    self.assert_python_tooling_contract(mutation, lock)
-
-        lock_mutations = {
-            "locked dependency pin": lock.replace(
-                'version = "2.13.0"', 'version = "2.13.1"', 1
-            ),
-            "locked torch index": lock.replace(
-                f'registry = "{PYTORCH_CPU_INDEX}"',
-                'registry = "https://pypi.org/simple"',
-                1,
-            ),
-            "transitive dependency drift": lock.replace(
-                'version = "3.32.4"', 'version = "3.32.5"', 1
-            ),
-            "malicious torch artifact origin and digest": lock.replace(
-                "https://download-r2.pytorch.org/whl/cpu/"
-                "torch-2.13.0%2Bcpu-cp314-cp314-manylinux_2_28_x86_64.whl\", "
-                'hash = "sha256:d20fa53ee744502fa4c69818a720b05ca0d37abd055d4f6e66cae155114bc691"',
-                "https://evil.example/whl/cpu/"
-                "torch-2.13.0%2Bcpu-cp314-cp314-manylinux_2_28_x86_64.whl\", "
-                f'hash = "sha256:{"0" * 64}"',
-                1,
-            ),
-            "malicious PyPI artifact origin": lock.replace(
-                "https://files.pythonhosted.org/",
-                "https://evil.example/",
-                1,
-            ),
-            "non-HTTPS artifact origin": lock.replace(
-                "https://files.pythonhosted.org/",
-                "http://files.pythonhosted.org/",
-                1,
-            ),
-            "artifact hash algorithm": lock.replace("sha256:", "sha512:", 1),
-            "artifact hash uppercase": lock.replace(
-                "sha256:2bde2e4cf732e0153406d8a7bc80620ecf5e621fe0d25e41143c4e3b4733ff30",
-                f'sha256:{"A" * 64}',
-                1,
-            ),
-            "torch sdist": lock.replace(
-                'name = "torch"\nversion = "2.13.0"\n',
-                'name = "torch"\nversion = "2.13.0"\n'
-                'sdist = { url = "https://download-r2.pytorch.org/whl/cpu/'
-                'torch-2.13.0.tar.gz", hash = "sha256:'
-                + "0" * 64
-                + '" }\n',
-                1,
-            ),
-            "altered torch wheel platform": lock.replace(
-                "torch-2.13.0%2Bcpu-cp314-cp314-manylinux_2_28_x86_64.whl",
-                "torch-2.13.0%2Bcpu-cp314-cp314-manylinux_2_28_ppc64le.whl",
-                1,
-            ),
-            "altered torch wheel CPU path": lock.replace(
-                "download-r2.pytorch.org/whl/cpu/torch-2.13.0-cp314",
-                "download-r2.pytorch.org/whl/cu126/torch-2.13.0-cp314",
-                1,
-            ),
-            "altered torch wheel version": lock.replace(
-                "torch-2.13.0-cp314-cp314-macosx_14_0_arm64.whl",
-                "torch-2.13.1-cp314-cp314-macosx_14_0_arm64.whl",
-                1,
-            ),
-        }
-        for name, mutation in lock_mutations.items():
-            with self.subTest(lock_mutation=name):
-                self.assertNotEqual(mutation, lock)
-                with self.assertRaises((AssertionError, KeyError, StopIteration)):
-                    self.assert_python_tooling_contract(pyproject, mutation)
-        with self.assertRaises(AssertionError):
-            self.assert_python_tooling_contract(pyproject, None)
 
     def test_uv_lock_is_current_without_network_or_cache(self) -> None:
         result = subprocess.run(
@@ -761,9 +499,23 @@ class CommunityHealthTests(unittest.TestCase):
         sync_step = '''      - name: Synchronize locked Python environment
         run: uv sync --frozen --no-cache
 '''
+        lock_policy_step = (
+            "      - name: Validate Python lock artifacts\n"
+            f"        run: {PYTHON_LOCK_CHECK}\n"
+        )
+        setup_uv_step = f'''      - name: Set up UV
+        uses: {SETUP_UV}
+        with:
+          version: "0.12.3"
+          enable-cache: false
+'''
         reordered = text.replace(python_step, "__PYTHON_STEP__", 1)
         reordered = reordered.replace(sync_step, python_step, 1)
         reordered = reordered.replace("__PYTHON_STEP__", sync_step, 1)
+        late_policy = text.replace(lock_policy_step, "", 1)
+        late_policy = late_policy.replace(
+            setup_uv_step, setup_uv_step + "\n" + lock_policy_step, 1
+        )
         mutations = {
             "floating setup action": text.replace(
                 SETUP_UV, "astral-sh/setup-uv@v9", 1
@@ -821,6 +573,39 @@ class CommunityHealthTests(unittest.TestCase):
                 1,
             ),
             "sync before Python": reordered,
+            "missing artifact policy": text.replace(lock_policy_step, "", 1),
+            "artifact policy after setup UV": late_policy,
+            "artifact policy through venv": text.replace(
+                PYTHON_LOCK_CHECK,
+                ".venv/bin/python scripts/check-python-lock.py",
+                1,
+            ),
+            "continued artifact policy": text.replace(
+                PYTHON_LOCK_CHECK,
+                "python3 scripts/check-python-\\\n          lock.py",
+                1,
+            ),
+            "aliased artifact policy": text.replace(
+                f"        run: {PYTHON_LOCK_CHECK}",
+                "        run: |\n"
+                "          alias python3=true\n"
+                f"          {PYTHON_LOCK_CHECK}",
+                1,
+            ),
+            "ignored artifact policy failure": text.replace(
+                PYTHON_LOCK_CHECK, f"{PYTHON_LOCK_CHECK} || true", 1
+            ),
+            "quoted artifact policy key": text.replace(
+                f"        run: {PYTHON_LOCK_CHECK}",
+                f'        "run": {PYTHON_LOCK_CHECK}',
+                1,
+            ),
+            "explicit artifact policy key": text.replace(
+                f"        run: {PYTHON_LOCK_CHECK}",
+                "        ? run # validate before environment creation\n"
+                f"        : {PYTHON_LOCK_CHECK}",
+                1,
+            ),
             "archive scanner removed": text.replace(
                 r"pyproject\.toml|uv\.lock", "metadata.toml", 1
             ),
