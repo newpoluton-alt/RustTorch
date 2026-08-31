@@ -8,6 +8,9 @@ use std::{
 use rusttorch_core::{RustTorchError, Tensor};
 
 /// Converts an owned group of samples into one batch.
+///
+/// See [`DefaultCollator`], [`DefaultConverter`], [`FnCollate`], and
+/// [`VecCollate`] for compiling examples of the built-in implementations.
 pub trait Collate<Sample> {
     /// Batch produced from the samples.
     type Batch;
@@ -20,6 +23,18 @@ pub trait Collate<Sample> {
 }
 
 /// Moves samples unchanged into their existing vector.
+///
+/// # Examples
+///
+/// ```
+/// use rusttorch_data::{Collate, VecCollate};
+///
+/// let mut collator = VecCollate;
+/// let batch = collator
+///     .collate(vec![String::from("first"), String::from("second")])
+///     .expect("VecCollate is infallible");
+/// assert_eq!(batch, ["first", "second"]);
+/// ```
 #[derive(Clone, Copy, Debug, Default)]
 pub struct VecCollate;
 
@@ -33,6 +48,21 @@ impl<Sample> Collate<Sample> for VecCollate {
 }
 
 /// Adapts an ordinary fallible closure to [`Collate`].
+///
+/// # Examples
+///
+/// ```
+/// use std::convert::Infallible;
+/// use rusttorch_data::{Collate, FnCollate};
+///
+/// # fn main() -> Result<(), Infallible> {
+/// let mut collator = FnCollate::new(|samples: Vec<Vec<i64>>| {
+///     Ok::<_, Infallible>(samples.into_iter().flatten().collect::<Vec<_>>())
+/// });
+/// assert_eq!(collator.collate(vec![vec![1, 2], vec![3]])?, [1, 2, 3]);
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub struct FnCollate<F> {
     collate: F,
@@ -61,10 +91,25 @@ where
 ///
 /// `Vec<u8>` remains available for equal-length sequence collation. Wrap a
 /// byte string in `Bytes` when each sample must remain one byte record.
+///
+/// # Examples
+///
+/// ```
+/// use rusttorch_data::{Bytes, Collate, DefaultCollator};
+///
+/// let mut collator = DefaultCollator;
+/// let records = collator
+///     .collate(vec![Bytes(vec![1, 2]), Bytes(vec![3])])
+///     .expect("byte records collate");
+/// assert_eq!(records, [Bytes(vec![1, 2]), Bytes(vec![3])]);
+/// ```
 #[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Bytes(pub Vec<u8>);
 
 /// An error produced by built-in collation or conversion.
+///
+/// The [`DefaultCollator`] and [`DefaultConverter`] examples show the public
+/// operations that return this error.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum CollateError {
@@ -210,6 +255,9 @@ fn backend_error(source: impl Into<RustTorchError>) -> CollateError {
 /// `Float`, `f64` → `Double`, and `bool` → `Bool`. Strings and [`Bytes`]
 /// remain records. Options, equal-length vectors, tuples of arity two through
 /// eight, and `BTreeMap` values recurse through this trait.
+///
+/// Use this trait through [`DefaultCollator`], whose example demonstrates
+/// numeric, Tensor, and typed recursive output.
 pub trait DefaultCollate: Sized {
     /// Batch produced from a vector of this sample type.
     type Batch;
@@ -219,6 +267,34 @@ pub trait DefaultCollate: Sized {
 }
 
 /// Applies [`DefaultCollate`] to an owned group of samples.
+///
+/// # Examples
+///
+/// ```
+/// use rusttorch_core::{Kind, Tensor};
+/// use rusttorch_data::{Bytes, Collate, CollateError, DefaultCollator};
+///
+/// # fn main() -> Result<(), CollateError> {
+/// let mut collator = DefaultCollator;
+/// let numbers: Tensor = collator.collate(vec![1_i64, 2])?;
+/// assert_eq!(numbers.kind(), Kind::Int64);
+/// assert_eq!(numbers.size(), [2]);
+///
+/// let tensors = collator.collate(vec![
+///     Tensor::from_slice(&[1_i64, 2]),
+///     Tensor::from_slice(&[3_i64, 4]),
+/// ])?;
+/// assert_eq!(tensors.size(), [2, 2]);
+///
+/// let nested: (Tensor, Vec<Bytes>) = collator.collate(vec![
+///     (1_i64, Bytes(vec![1, 2])),
+///     (2_i64, Bytes(vec![3])),
+/// ])?;
+/// assert_eq!(nested.0.size(), [2]);
+/// assert_eq!(nested.1, [Bytes(vec![1, 2]), Bytes(vec![3])]);
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DefaultCollator;
 
@@ -411,6 +487,9 @@ where
 /// Options, vectors, tuples of arity two through eight, and `BTreeMap` values
 /// are converted recursively. Unlike [`DefaultCollate`], vectors are not
 /// transposed.
+///
+/// Use this trait through [`DefaultConverter`], whose example demonstrates
+/// recursive conversion without automatic batching.
 pub trait DefaultConvert: Sized {
     /// Output produced from this sample type.
     type Output;
@@ -420,6 +499,25 @@ pub trait DefaultConvert: Sized {
 }
 
 /// Applies [`DefaultConvert`] in no-auto-batching mode.
+///
+/// # Examples
+///
+/// ```
+/// use rusttorch_data::{Bytes, Collate, CollateError, DefaultConverter};
+///
+/// # fn main() -> Result<(), CollateError> {
+/// let mut converter = DefaultConverter;
+/// assert_eq!(converter.convert(vec![1_i64, 2])?, [1, 2]);
+/// assert_eq!(
+///     converter.convert(Some(Bytes(vec![3, 4])))?,
+///     Some(Bytes(vec![3, 4])),
+/// );
+///
+/// // The `Collate` adapter accepts the loader's one-sample no-batch group.
+/// assert_eq!(converter.collate(vec![vec![5_i64, 6]])?, [5, 6]);
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DefaultConverter;
 

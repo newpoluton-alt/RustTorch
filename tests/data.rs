@@ -67,6 +67,46 @@ fn direct_package_and_facade_sampler_match() {
 }
 
 #[test]
+fn facade_reexports_typed_collation_contracts() {
+    use rusttorch::{
+        Kind, Tensor,
+        data::{
+            Bytes, Collate, CollateError, DefaultCollate, DefaultCollator, DefaultConvert,
+            DefaultConverter, FnCollate, VecCollate,
+        },
+    };
+
+    fn accepts_default_collate<T: DefaultCollate>() {}
+    fn accepts_default_convert<T: DefaultConvert>() {}
+    accepts_default_collate::<i64>();
+    accepts_default_convert::<i64>();
+
+    let mut default = DefaultCollator;
+    let numbers: Result<Tensor, CollateError> = default.collate(vec![1_i64, 2]);
+    let numbers = numbers.expect("facade default collation succeeds");
+    assert_eq!(numbers.kind(), Kind::Int64);
+
+    let records = default
+        .collate(vec![Bytes(vec![1, 2]), Bytes(vec![3])])
+        .expect("facade byte records collate");
+    assert_eq!(records, [Bytes(vec![1, 2]), Bytes(vec![3])]);
+
+    let mut converter = DefaultConverter;
+    assert_eq!(
+        converter
+            .convert(vec![1_i64, 2])
+            .expect("facade conversion succeeds"),
+        [1, 2]
+    );
+
+    let mut custom = FnCollate::new(|samples: Vec<i64>| Ok::<_, Infallible>(samples.len()));
+    assert_eq!(custom.collate(vec![1, 2]), Ok(2));
+
+    let mut vector = VecCollate;
+    assert_eq!(vector.collate(vec![1_i64, 2]), Ok(vec![1, 2]));
+}
+
+#[test]
 fn random_sampler_is_seeded_and_yields_a_permutation() {
     let first = RandomSampler::new(8, 42)
         .expect("positive length must be valid")
