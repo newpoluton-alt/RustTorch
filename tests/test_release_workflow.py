@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import io
 import re
+import shlex
 import tarfile
 import tempfile
 import unittest
@@ -451,10 +452,15 @@ class ReleaseWorkflowTests(unittest.TestCase):
         build = jobs["build"]
         normalized_build = re.sub(r"\\\r?\n[ \t]*", "", build)
         self.assertEqual(normalized_build.count("cargo package --workspace --locked"), 1)
-        self.assertNotRegex(
-            normalized_build,
-            r"cargo\s+package\s+-p\s+[^\s]+\s+--locked(?!\s+--list)",
-        )
+        for line in normalized_build.splitlines():
+            if "cargo package" not in line:
+                continue
+            command = re.split(
+                r"[|;&]", line[line.index("cargo package") :], maxsplit=1
+            )[0]
+            arguments = shlex.split(command)
+            if "-p" in arguments:
+                self.assertIn("--list", arguments, command)
         self.assertEqual(build.count(lock_policy_step), 1)
         self.assertEqual(build.count(lock_policy_boundary), 1)
         self.assertEqual(build.count("scripts/check-python-lock.py"), 1)
@@ -600,8 +606,16 @@ class ReleaseWorkflowTests(unittest.TestCase):
             '= "true"'
         )
         self.assertIn(draft_check, release)
-        upload = 'gh release upload "$GITHUB_REF_NAME" dist/*.crate --clobber'
-        self.assertIn(upload, release)
+        upload = (
+            'gh release upload "$GITHUB_REF_NAME" '
+            '"dist/rusttorch-core-$VERSION.crate" '
+            '"dist/rusttorch-data-$VERSION.crate" '
+            '"dist/rusttorch-cli-$VERSION.crate" '
+            '"dist/rusttorch-$VERSION.crate" --clobber'
+        )
+        normalized_release = re.sub(r"\\\r?\n[ \t]*", "", release)
+        self.assertEqual(normalized_release.count(upload), 1)
+        self.assertNotIn("dist/*.crate", release)
         self.assertIn(".assets[].name", release)
         for asset in (
             *(f"{package}-$VERSION.crate" for package, _ in PACKAGE_MANIFESTS),
@@ -610,9 +624,15 @@ class ReleaseWorkflowTests(unittest.TestCase):
             self.assertIn(asset, release)
         self.assertIn('test "$actual_assets" = "$expected_assets"', release)
         publish = 'gh release edit "$GITHUB_REF_NAME" --draft=false'
-        self.assertLess(release.index(draft_check), release.index(upload))
-        self.assertLess(release.index(upload), release.index("actual_assets="))
-        self.assertLess(release.index("actual_assets="), release.index(publish))
+        self.assertLess(
+            normalized_release.index(draft_check), normalized_release.index(upload)
+        )
+        self.assertLess(
+            normalized_release.index(upload), normalized_release.index("actual_assets=")
+        )
+        self.assertLess(
+            normalized_release.index("actual_assets="), normalized_release.index(publish)
+        )
         self.assertEqual(text.rstrip().splitlines()[-1].strip(), publish)
 
     def test_release_security_contract_fails_closed_on_workflow_drift(self) -> None:
@@ -774,6 +794,11 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "individual package build": text.replace(
                 "cargo package --workspace --locked",
                 "cargo package -p rusttorch --locked",
+                1,
+            ),
+            "reordered individual package build": text.replace(
+                "cargo package --workspace --locked",
+                "cargo package --locked -p rusttorch",
                 1,
             ),
             "second GitHub release": text.replace(

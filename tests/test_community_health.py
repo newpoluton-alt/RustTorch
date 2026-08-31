@@ -1,4 +1,5 @@
 import re
+import shlex
 import subprocess
 import tomllib
 import unittest
@@ -242,10 +243,15 @@ class CommunityHealthTests(unittest.TestCase):
             normalized_quality.count("cargo package --workspace --locked"),
             1,
         )
-        self.assertNotRegex(
-            normalized_quality,
-            r"cargo\s+package\s+-p\s+[^\s]+\s+--locked(?!\s+--list)",
-        )
+        for line in normalized_quality.splitlines():
+            if "cargo package" not in line:
+                continue
+            command = re.split(
+                r"[|;&]", line[line.index("cargo package") :], maxsplit=1
+            )[0]
+            arguments = shlex.split(command)
+            if "-p" in arguments:
+                self.assertIn("--list", arguments, command)
 
     def test_required_files_exist(self) -> None:
         for relative in REQUIRED_FILES:
@@ -749,14 +755,15 @@ class CommunityHealthTests(unittest.TestCase):
     def test_ci_workspace_packaging_policy_rejects_individual_archive_builds(self) -> None:
         text = self.read(".github/workflows/ci.yml")
         self.assert_workspace_package_policy(text)
-        mutation = text.replace(
-            "cargo package --workspace --locked",
+        for command in (
             "cargo package -p rusttorch --locked",
-            1,
-        )
-        self.assertNotEqual(mutation, text)
-        with self.assertRaises(AssertionError):
-            self.assert_workspace_package_policy(mutation)
+            "cargo package --locked -p rusttorch",
+        ):
+            with self.subTest(command=command):
+                mutation = text.replace("cargo package --workspace --locked", command, 1)
+                self.assertNotEqual(mutation, text)
+                with self.assertRaises(AssertionError):
+                    self.assert_workspace_package_policy(mutation)
 
     def test_required_ci_result_handles_pr_only_skips_explicitly(self) -> None:
         text = self.read(".github/workflows/ci.yml")

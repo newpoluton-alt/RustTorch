@@ -78,7 +78,7 @@ class CompatibilityScriptTests(unittest.TestCase):
         (self.root / "Cargo.toml").write_text(
             '[package]\nname = "rusttorch"\nversion = "9.9.9"\n\n'
             '[lib]\nname = "rusttorch"\n\n'
-            '[dependencies]\ntch = "0.26.0"\n',
+            '[dependencies]\ntch = "=0.26.0"\n',
             encoding="utf-8",
         )
 
@@ -224,6 +224,60 @@ class CompatibilityScriptTests(unittest.TestCase):
                 ledger = self.ledger()
                 ledger[field] = replacement
                 self.assert_error_contains(ledger, fragment)
+
+    def test_workspace_inherited_manifest_metadata_is_valid(self) -> None:
+        (self.root / "Cargo.toml").write_text(
+            '[package]\nname = "rusttorch"\nversion.workspace = true\n\n'
+            '[lib]\nname = "rusttorch"\n\n'
+            '[workspace.package]\nversion = "0.1.0"\n\n'
+            '[workspace.dependencies]\n'
+            'tch = { version = "=0.26.0", default-features = false }\n\n'
+            '[dependencies]\ntch.workspace = true\n',
+            encoding="utf-8",
+        )
+
+        self.assertEqual(self.errors(self.ledger()), [])
+
+    def test_workspace_inherited_manifest_metadata_fails_closed(self) -> None:
+        valid = (
+            '[package]\nname = "rusttorch"\nversion.workspace = true\n\n'
+            '[lib]\nname = "rusttorch"\n\n'
+            '[workspace.package]\nversion = "0.1.0"\n\n'
+            '[workspace.dependencies]\n'
+            'tch = { version = "=0.26.0", default-features = false }\n\n'
+            '[dependencies]\ntch.workspace = true\n'
+        )
+        mutations = {
+            "missing workspace package version": valid.replace(
+                'version = "0.1.0"', "", 1
+            ),
+            "non-string workspace package version": valid.replace(
+                'version = "0.1.0"', "version = 1", 1
+            ),
+            "conflicting package inheritance": valid.replace(
+                "version.workspace = true",
+                'version = { workspace = true, value = "0.1.0" }',
+                1,
+            ),
+            "missing workspace tch": valid.replace(
+                'tch = { version = "=0.26.0", default-features = false }',
+                "",
+                1,
+            ),
+            "non-string workspace tch": valid.replace(
+                'version = "=0.26.0"', "version = 26", 1
+            ),
+            "unbounded workspace tch": valid.replace("=0.26.0", "0.26.0", 1),
+            "conflicting dependency inheritance": valid.replace(
+                "tch.workspace = true",
+                'tch = { workspace = true, version = "=0.26.0" }',
+                1,
+            ),
+        }
+        for name, manifest in mutations.items():
+            with self.subTest(mutation=name):
+                (self.root / "Cargo.toml").write_text(manifest, encoding="utf-8")
+                self.assert_error_contains(self.ledger(), "Cargo.toml")
 
     def test_release_version_is_not_part_of_compatibility_validation(self) -> None:
         self.assertEqual(self.errors(self.ledger()), [])

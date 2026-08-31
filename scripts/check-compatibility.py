@@ -179,21 +179,59 @@ def _validate_manifest(root: Path, ledger: dict[str, Any]) -> list[str]:
         return [f"Cargo.toml: cannot read metadata: {error}"]
 
     errors: list[str] = []
-    package_name = manifest.get("package", {}).get("name")
+    package = manifest.get("package", {})
+    package_name = package.get("name")
     if package_name != ledger.get("package"):
         errors.append(
             f"package: ledger value {ledger.get('package')!r} does not match Cargo package {package_name!r}"
         )
+    package_version = package.get("version")
+    if package_version == {"workspace": True}:
+        workspace = manifest.get("workspace")
+        workspace_package = workspace.get("package") if isinstance(workspace, dict) else None
+        package_version = (
+            workspace_package.get("version")
+            if isinstance(workspace_package, dict)
+            else None
+        )
+    if not isinstance(package_version, str):
+        errors.append("Cargo.toml: package version must be a string or valid workspace inheritance")
     crate_name = manifest.get("lib", {}).get("name")
     if crate_name != ledger.get("crate"):
         errors.append(
             f"crate: ledger value {ledger.get('crate')!r} does not match Cargo library {crate_name!r}"
         )
     dependency = manifest.get("dependencies", {}).get("tch")
-    dependency_version = dependency.get("version") if isinstance(dependency, dict) else dependency
-    if dependency_version != ledger.get("tch"):
+    if dependency == {"workspace": True}:
+        workspace = manifest.get("workspace")
+        workspace_dependencies = (
+            workspace.get("dependencies") if isinstance(workspace, dict) else None
+        )
+        workspace_dependency = (
+            workspace_dependencies.get("tch")
+            if isinstance(workspace_dependencies, dict)
+            else None
+        )
+        dependency_version = (
+            workspace_dependency.get("version")
+            if isinstance(workspace_dependency, dict)
+            else None
+        )
+    elif isinstance(dependency, str):
+        dependency_version = dependency
+    elif isinstance(dependency, dict) and "workspace" not in dependency:
+        dependency_version = dependency.get("version")
+    else:
+        dependency_version = None
+    if dependency_version != "=0.26.0":
         errors.append(
-            f"tch: ledger value {ledger.get('tch')!r} does not match Cargo dependency {dependency_version!r}"
+            "Cargo.toml: tch dependency requirement must be exactly '=0.26.0', "
+            f"found {dependency_version!r}"
+        )
+    elif dependency_version.removeprefix("=") != ledger.get("tch"):
+        errors.append(
+            f"tch: ledger value {ledger.get('tch')!r} does not match Cargo dependency "
+            f"{dependency_version.removeprefix('=')!r}"
         )
     return errors
 

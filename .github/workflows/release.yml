@@ -175,7 +175,11 @@ jobs:
         run: |
           set -euo pipefail
           test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = "true"
-          gh release upload "$GITHUB_REF_NAME" dist/*.crate --clobber
+          gh release upload "$GITHUB_REF_NAME" \
+            "dist/rusttorch-core-$VERSION.crate" \
+            "dist/rusttorch-data-$VERSION.crate" \
+            "dist/rusttorch-cli-$VERSION.crate" \
+            "dist/rusttorch-$VERSION.crate" --clobber
           actual_assets="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)"
           expected_assets="$(printf '%s\n' "rusttorch-core-$VERSION.crate" \
             "rusttorch-data-$VERSION.crate" "rusttorch-cli-$VERSION.crate" \
