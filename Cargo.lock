@@ -743,6 +743,7 @@ version = "0.1.0"
 dependencies = [
  "rand",
  "rand_chacha",
+ "rusttorch-core",
  "serde_json",
  "tch",
  "thiserror 2.0.20",
@@ -754,6 +755,14 @@ version = "0.1.0"
 dependencies = [
  "tempfile",
  "toml_edit",
+]
+
+[[package]]
+name = "rusttorch-core"
+version = "0.1.0"
+dependencies = [
+ "tch",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

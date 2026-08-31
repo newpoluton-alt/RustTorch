@@ -1,0 +1,23 @@
+[package]
+name = "rusttorch-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Shared runtime, device, tensor, and error contracts for RustTorch"
+readme = "README.md"
+publish = ["crates-io"]
+
+[features]
+default = []
+download-libtorch = ["tch/download-libtorch"]
+doc-only = ["tch/doc-only"]
+
+[dependencies]
+tch.workspace = true
+thiserror.workspace = true
+
+[package.metadata.docs.rs]
+no-default-features = true
+features = ["doc-only"]

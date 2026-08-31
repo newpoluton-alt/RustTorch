@@ -1,12 +1,12 @@
 [package]
 name = "rusttorch-cli"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.88"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Managed LibTorch setup for RustTorch projects"
-repository = "https://github.com/newpoluton-alt/RustTorch"
+repository.workspace = true
 readme = "README.md"
-license = "MIT OR Apache-2.0"
+license.workspace = true
 publish = ["crates-io"]
 
 [[bin]]
