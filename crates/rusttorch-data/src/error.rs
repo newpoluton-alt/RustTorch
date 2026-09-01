@@ -44,6 +44,14 @@ pub enum LoaderError<E> {
         /// Logical batch when known.
         batch: Option<u64>,
     },
+    /// Coordinator-owned user code panicked.
+    #[error("coordinator {stage} panicked (batch {batch:?})")]
+    CoordinatorPanic {
+        /// User-code stage that panicked.
+        stage: &'static str,
+        /// Logical batch when known.
+        batch: Option<u64>,
+    },
     /// Waiting for a batch exceeded the configured timeout.
     #[error("timed out waiting for batch {batch}")]
     Timeout {

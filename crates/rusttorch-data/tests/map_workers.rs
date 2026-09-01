@@ -4,6 +4,7 @@ use std::{
     convert::Infallible,
     error::Error,
     fmt,
+    panic::{AssertUnwindSafe, catch_unwind},
     rc::Rc,
     sync::{
         Arc, Barrier, Condvar, Mutex,
@@ -15,8 +16,9 @@ use std::{
 
 use rusttorch_core::RustTorchError;
 use rusttorch_data::{
-    DataLoader, Dataset, FnCollate, FnSampler, FnTransform, FnTransformFactory, FnWorkerInit,
-    LoaderError, PipelineError, TaskContext, Transform, VecCollate, WorkerInfo, get_worker_info,
+    DataLoader, Dataset, FnBatchSource, FnCollate, FnSampler, FnTransform, FnTransformFactory,
+    FnWorkerInit, LoaderError, PipelineError, Sampler, TaskContext, Transform, VecCollate,
+    WorkerInfo, get_worker_info,
 };
 
 struct ConcurrentRows {
@@ -303,6 +305,37 @@ fn global_outstanding_work_uses_default_and_explicit_checked_credits() -> Result
     Ok(())
 }
 
+#[test]
+fn unallocatable_bounded_capacities_are_typed_before_worker_side_effects() {
+    for factor in [usize::MAX, usize::MAX / 2] {
+        let side_effects = Arc::new(AtomicUsize::new(0));
+        let factory_effects = Arc::clone(&side_effects);
+        let init_effects = Arc::clone(&side_effects);
+        let result = DataLoader::builder(PlainRows(1))
+            .workers(1)
+            .prefetch_factor(factor)
+            .transform_factory(FnTransformFactory::new(move |_: Option<&WorkerInfo>| {
+                factory_effects.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, TestError>(rusttorch_data::IdentityTransform)
+            }))
+            .worker_init(FnWorkerInit::new(move |_: &WorkerInfo| {
+                init_effects.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, TestError>(())
+            }))
+            .collate(VecCollate)
+            .build();
+
+        assert!(matches!(
+            result,
+            Err(RustTorchError::InvalidConfiguration {
+                field: "prefetch_factor",
+                ..
+            })
+        ));
+        assert_eq!(side_effects.load(Ordering::SeqCst), 0);
+    }
+}
+
 struct PlainRows(usize);
 
 impl Dataset for PlainRows {
@@ -316,6 +349,168 @@ impl Dataset for PlainRows {
     fn get(&self, index: usize) -> Result<Self::Sample, Self::Error> {
         Ok(index)
     }
+}
+
+#[test]
+fn initial_sampler_and_batch_source_panics_are_typed_without_starting_workers()
+-> Result<(), RustTorchError> {
+    let factory_calls = Arc::new(AtomicUsize::new(0));
+    let calls = Arc::clone(&factory_calls);
+    let mut sampler_loader = DataLoader::builder(PlainRows(1))
+        .sampler(FnSampler::new(Some(1), |_| -> std::ops::Range<usize> {
+            panic!("initial sampler panic")
+        }))
+        .workers(1)
+        .transform_factory(FnTransformFactory::new(move |_: Option<&WorkerInfo>| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, TestError>(rusttorch_data::IdentityTransform)
+        }))
+        .collate(VecCollate)
+        .build()?;
+    let sampler_outcome = catch_unwind(AssertUnwindSafe(|| {
+        let mut iterator = sampler_loader.iter();
+        let typed = matches!(
+            iterator.next(),
+            Some(Err(LoaderError::CoordinatorPanic {
+                stage: "sampler creation",
+                batch: None,
+            }))
+        );
+        (typed, iterator.next().is_none())
+    }));
+    assert!(sampler_outcome.is_ok(), "sampler panic escaped the loader");
+    let (sampler_typed, sampler_done) = sampler_outcome.unwrap();
+    assert!(sampler_typed);
+    assert!(sampler_done);
+    assert_eq!(factory_calls.load(Ordering::SeqCst), 0);
+
+    let mut batch_loader = DataLoader::builder(PlainRows(1))
+        .batch_sampler(FnBatchSource::new(
+            Some(1),
+            |_| -> std::vec::IntoIter<Vec<usize>> { panic!("initial batch source panic") },
+        ))
+        .workers(1)
+        .collate(VecCollate)
+        .build()?;
+    let batch_outcome = catch_unwind(AssertUnwindSafe(|| {
+        let mut iterator = batch_loader.iter();
+        let typed = matches!(
+            iterator.next(),
+            Some(Err(LoaderError::CoordinatorPanic {
+                stage: "sampler creation",
+                batch: None,
+            }))
+        );
+        (typed, iterator.next().is_none())
+    }));
+    assert!(
+        batch_outcome.is_ok(),
+        "batch-source panic escaped the loader"
+    );
+    let (batch_typed, batch_done) = batch_outcome.unwrap();
+    assert!(batch_typed);
+    assert!(batch_done);
+    Ok(())
+}
+
+struct PanicAfterTwoIndices {
+    next: usize,
+}
+
+struct PanicEpochSampler;
+
+impl Sampler for PanicEpochSampler {
+    type Iter = std::ops::Range<usize>;
+
+    fn iter(&self) -> Self::Iter {
+        0..1
+    }
+
+    fn epoch(&self) -> u64 {
+        panic!("sampler epoch panic")
+    }
+
+    fn set_epoch(&mut self, _epoch: u64) {}
+}
+
+#[test]
+fn sampler_epoch_panic_is_typed_without_starting_workers() -> Result<(), RustTorchError> {
+    let factory_calls = Arc::new(AtomicUsize::new(0));
+    let calls = Arc::clone(&factory_calls);
+    let mut loader = DataLoader::builder(PlainRows(1))
+        .sampler(PanicEpochSampler)
+        .workers(1)
+        .transform_factory(FnTransformFactory::new(move |_: Option<&WorkerInfo>| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, TestError>(rusttorch_data::IdentityTransform)
+        }))
+        .collate(VecCollate)
+        .build()?;
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        let mut iterator = loader.iter();
+        let typed = matches!(
+            iterator.next(),
+            Some(Err(LoaderError::CoordinatorPanic {
+                stage: "sampler epoch",
+                batch: None,
+            }))
+        );
+        (typed, iterator.next().is_none())
+    }));
+
+    assert!(outcome.is_ok(), "sampler epoch panic escaped the loader");
+    let (typed, done) = outcome.unwrap();
+    assert!(typed);
+    assert!(done);
+    assert_eq!(factory_calls.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+impl Iterator for PanicAfterTwoIndices {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next == 2 {
+            panic!("refill sampler panic");
+        }
+        let index = self.next;
+        self.next += 1;
+        Some(index)
+    }
+}
+
+#[test]
+fn refill_sampler_panic_is_typed_once_after_completed_batches() -> Result<(), RustTorchError> {
+    let mut loader = DataLoader::builder(PlainRows(3))
+        .sampler(FnSampler::new(Some(3), |_| PanicAfterTwoIndices {
+            next: 0,
+        }))
+        .workers(1)
+        .prefetch_factor(1)
+        .collate(VecCollate)
+        .build()?;
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        let mut iterator = loader.iter();
+        let first = iterator.next().unwrap().unwrap();
+        let second = iterator.next().unwrap().unwrap();
+        let typed = matches!(
+            iterator.next(),
+            Some(Err(LoaderError::CoordinatorPanic {
+                stage: "sampler refill",
+                batch: Some(2),
+            }))
+        );
+        let done = iterator.next().is_none();
+        (first, second, typed, done)
+    }));
+
+    assert!(outcome.is_ok(), "refill sampler panic escaped the loader");
+    let (first, second, typed, done) = outcome.unwrap();
+    assert_eq!(first, [0]);
+    assert_eq!(second, [1]);
+    assert!(typed);
+    assert!(done);
+    Ok(())
 }
 
 #[test]
@@ -737,6 +932,22 @@ fn timeout_and_persistence_reject_before_any_worker_side_effect() -> Result<(), 
         ));
     }
     assert_eq!(creates.load(Ordering::SeqCst), 0);
+
+    let mut loader = DataLoader::builder(PlainRows(1))
+        .sampler(PanicEpochSampler)
+        .workers(1)
+        .timeout(Duration::from_millis(1))
+        .collate(VecCollate)
+        .build()?;
+    assert!(matches!(
+        loader.iter().next(),
+        Some(Err(LoaderError::Configuration(
+            RustTorchError::InvalidConfiguration {
+                field: "timeout",
+                ..
+            }
+        )))
+    ));
     Ok(())
 }
 
@@ -806,6 +1017,38 @@ fn early_drop_disconnects_saturated_work_and_joins_every_worker() -> Result<(), 
     *release.0.lock().unwrap() = true;
     release.1.notify_all();
     drop(iterator);
+    assert_eq!(dropped.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+#[test]
+fn collator_panic_is_typed_once_and_joins_every_worker() -> Result<(), RustTorchError> {
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let mut loader = DataLoader::builder(PlainRows(2))
+        .workers(2)
+        .prefetch_factor(1)
+        .transform(DropTransform(Arc::clone(&dropped)))
+        .collate(FnCollate::new(
+            |_: Vec<usize>| -> Result<Vec<usize>, TestError> { panic!("collator panic") },
+        ))
+        .build()?;
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        let mut iterator = loader.iter();
+        let typed = matches!(
+            iterator.next(),
+            Some(Err(LoaderError::CoordinatorPanic {
+                stage: "collation",
+                batch: Some(0),
+            }))
+        );
+        let done = iterator.next().is_none();
+        (typed, done)
+    }));
+
+    assert!(outcome.is_ok(), "collator panic escaped the loader");
+    let (typed, done) = outcome.unwrap();
+    assert!(typed);
+    assert!(done);
     assert_eq!(dropped.load(Ordering::SeqCst), 2);
     Ok(())
 }

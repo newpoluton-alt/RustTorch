@@ -1,5 +1,10 @@
 use std::{
-    collections::BTreeMap, convert::Infallible, marker::PhantomData, num::NonZeroUsize, sync::Arc,
+    collections::BTreeMap,
+    convert::Infallible,
+    marker::PhantomData,
+    num::NonZeroUsize,
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::Arc,
     time::Duration,
 };
 
@@ -56,6 +61,15 @@ type WorkerStageFailure<D, F, I> = WorkerFailure<
     <F as TransformFactory<<D as Dataset>::Sample>>::Error,
     <I as WorkerInit>::Error,
 >;
+
+// A bounded loader queues each outstanding batch in a task lane and in the
+// result/reassembly path. Reserve conservative allowances per credit and per
+// worker (channel state plus coordinator vectors) so caller-controlled counts
+// cannot reach crossbeam's infallible eager allocation with an impossible
+// size.
+const QUEUE_METADATA_BYTES_PER_CREDIT: usize = 256;
+const WORKER_BOOKKEEPING_BYTES: usize = 4 * 1024;
+const MAX_WORKER_QUEUE_METADATA_BYTES: usize = 64 * 1024 * 1024;
 
 impl Dataset for BuilderDatasetMarker {
     type Sample = ();
@@ -504,6 +518,8 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
     ///
     /// The worker count multiplied by this factor is checked before any
     /// worker starts and is also the global outstanding-work credit limit.
+    /// Capacities that overflow crossbeam's ring arithmetic or exceed the
+    /// loader's checked queue-metadata budget are rejected during build.
     pub fn prefetch_factor(mut self, factor: usize) -> Self {
         self.configuration.prefetch_factor = Some(factor);
         self.explicit.prefetch_factor = true;
@@ -555,6 +571,15 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
             }
             (_, None) => unreachable!("positive workers always have an effective prefetch factor"),
         };
+        if let Some(capacity) = outstanding_capacity {
+            validate_worker_queue_capacity(
+                self.configuration.workers,
+                effective_prefetch
+                    .expect("positive workers have a prefetch factor")
+                    .get(),
+                capacity,
+            )?;
+        }
         Ok(OwnedDataLoader {
             dataset: Arc::new(self.dataset),
             plan: self.plan,
@@ -1079,7 +1104,29 @@ where
 {
     /// Starts a fresh bounded worker pool, or the explicit zero-worker path.
     pub fn iter(&mut self) -> WorkerLoaderIter<'_, D, P, C, F, I> {
-        let epoch = self.plan.epoch();
+        let unsupported = if self.workers > 0 && self.timeout.is_some() {
+            Some(invalid_configuration(
+                "timeout",
+                "positive-worker timeout execution is scheduled for DataLoader Task 8",
+            ))
+        } else if self.workers > 0 && self.persistent_workers {
+            Some(invalid_configuration(
+                "persistent_workers",
+                "persistent worker execution is scheduled for DataLoader Task 8",
+            ))
+        } else {
+            None
+        };
+        let (epoch, epoch_panicked) = if unsupported.is_some() {
+            (0, false)
+        } else if self.workers == 0 {
+            (self.plan.epoch(), false)
+        } else {
+            match catch_unwind(AssertUnwindSafe(|| self.plan.epoch())) {
+                Ok(epoch) => (epoch, false),
+                Err(_) => (0, true),
+            }
+        };
         let mut iterator = WorkerLoaderIter {
             dataset: Arc::clone(&self.dataset),
             plan: &mut self.plan,
@@ -1106,6 +1153,17 @@ where
             exhausted: false,
         };
 
+        if let Some(error) = unsupported {
+            iterator.pending_error = Some(LoaderError::Configuration(error));
+            return iterator;
+        }
+        if epoch_panicked {
+            iterator.pending_error = Some(LoaderError::CoordinatorPanic {
+                stage: "sampler epoch",
+                batch: None,
+            });
+            return iterator;
+        }
         if self.workers == 0 {
             match self.transform_factory.create(None) {
                 Ok(transform) => {
@@ -1116,20 +1174,6 @@ where
             }
             return iterator;
         }
-        if self.timeout.is_some() {
-            iterator.pending_error = Some(LoaderError::Configuration(invalid_configuration(
-                "timeout",
-                "positive-worker timeout execution is scheduled for DataLoader Task 8",
-            )));
-            return iterator;
-        }
-        if self.persistent_workers {
-            iterator.pending_error = Some(LoaderError::Configuration(invalid_configuration(
-                "persistent_workers",
-                "persistent worker execution is scheduled for DataLoader Task 8",
-            )));
-            return iterator;
-        }
         let Some(next_generation) = self.next_generation.checked_add(1) else {
             iterator.pending_error = Some(LoaderError::Configuration(invalid_configuration(
                 "workers",
@@ -1137,8 +1181,17 @@ where
             )));
             return iterator;
         };
+        iterator.batches = match catch_unwind(AssertUnwindSafe(|| iterator.plan.iter())) {
+            Ok(batches) => Some(batches),
+            Err(_) => {
+                iterator.pending_error = Some(LoaderError::CoordinatorPanic {
+                    stage: "sampler creation",
+                    batch: None,
+                });
+                return iterator;
+            }
+        };
         self.next_generation = next_generation;
-        iterator.batches = Some(iterator.plan.iter());
         let configuration = WorkerPoolConfiguration {
             workers: self.workers,
             prefetch_factor: self
@@ -1191,7 +1244,20 @@ where
     }
 
     fn submit_one(&mut self) -> bool {
-        let Some(indices) = self.batches.as_mut().and_then(Iterator::next) else {
+        let next_batch = catch_unwind(AssertUnwindSafe(|| {
+            self.batches.as_mut().and_then(Iterator::next)
+        }));
+        let Some(indices) = (match next_batch {
+            Ok(indices) => indices,
+            Err(_) => {
+                self.pending_error = Some(LoaderError::CoordinatorPanic {
+                    stage: "sampler refill",
+                    batch: Some(self.next_submission),
+                });
+                self.submission_closed = true;
+                return false;
+            }
+        }) else {
             self.source_exhausted = true;
             return false;
         };
@@ -1333,14 +1399,19 @@ where
             self.next_visible = self.next_visible.saturating_add(1);
         }
         let sequence = batch.batch_sequence;
-        let result = self
-            .plan
-            .finish(self.collator, batch.samples)
-            .map_err(|source| LoaderError::Pipeline {
+        let result = match catch_unwind(AssertUnwindSafe(|| {
+            self.plan.finish(self.collator, batch.samples)
+        })) {
+            Ok(result) => result.map_err(|source| LoaderError::Pipeline {
                 batch: Some(sequence),
                 worker: None,
                 source: PipelineError::Collate(source),
-            });
+            }),
+            Err(_) => Err(LoaderError::CoordinatorPanic {
+                stage: "collation",
+                batch: Some(sequence),
+            }),
+        };
         if result.is_ok() {
             self.fill_available();
         } else {
@@ -1548,4 +1619,55 @@ fn invalid_configuration(field: &'static str, reason: impl Into<String>) -> Rust
         field,
         reason: reason.into(),
     }
+}
+
+fn validate_worker_queue_capacity(
+    workers: usize,
+    prefetch_factor: usize,
+    outstanding: usize,
+) -> Result<()> {
+    for capacity in [prefetch_factor, outstanding] {
+        let mark_bit = capacity
+            .checked_add(1)
+            .and_then(usize::checked_next_power_of_two)
+            .ok_or_else(|| {
+                invalid_configuration(
+                    "prefetch_factor",
+                    "bounded channel capacity exceeds crossbeam's representable ring",
+                )
+            })?;
+        mark_bit.checked_mul(2).ok_or_else(|| {
+            invalid_configuration(
+                "prefetch_factor",
+                "bounded channel capacity exceeds crossbeam's representable ring",
+            )
+        })?;
+    }
+
+    let worker_vector_bytes = workers
+        .checked_mul(WORKER_BOOKKEEPING_BYTES)
+        .ok_or_else(|| {
+            invalid_configuration(
+                "workers",
+                "worker bookkeeping capacity exceeds Rust allocation limits",
+            )
+        })?;
+    let queue_bytes = outstanding
+        .checked_mul(QUEUE_METADATA_BYTES_PER_CREDIT)
+        .and_then(|bytes| bytes.checked_add(worker_vector_bytes))
+        .ok_or_else(|| {
+            invalid_configuration(
+                "prefetch_factor",
+                "bounded queue capacity exceeds Rust allocation limits",
+            )
+        })?;
+    if queue_bytes > MAX_WORKER_QUEUE_METADATA_BYTES {
+        return Err(invalid_configuration(
+            "prefetch_factor",
+            format!(
+                "bounded queue metadata requires {queue_bytes} bytes, above the {MAX_WORKER_QUEUE_METADATA_BYTES}-byte safety ceiling"
+            ),
+        ));
+    }
+    Ok(())
 }

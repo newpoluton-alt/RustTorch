@@ -1,6 +1,7 @@
 use std::{
+    mem::{MaybeUninit, size_of},
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::Arc,
+    sync::{Arc, atomic::AtomicUsize},
     thread::{self, JoinHandle},
 };
 
@@ -52,6 +53,8 @@ type Completion<D, F, I> = WorkerCompletion<
     <I as WorkerInit>::Error,
 >;
 
+const MAX_CHANNEL_STORAGE_BYTES: usize = 64 * 1024 * 1024;
+
 pub(crate) struct WorkerPool<D, F, I>
 where
     D: Dataset,
@@ -99,26 +102,48 @@ where
         initializer: Arc<I>,
         configuration: WorkerPoolConfiguration,
     ) -> Result<Self> {
-        let infos = (0..configuration.workers)
-            .map(|id| {
-                WorkerInfo::from_loader_seed(
-                    id,
-                    configuration.workers,
-                    configuration.loader_seed,
-                    configuration.rank,
-                    configuration.generation,
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let (result_sender, result_receiver) = bounded(configuration.result_capacity);
+        validate_channel_storage::<WorkerTask>(
+            configuration.prefetch_factor,
+            configuration.result_capacity,
+        )?;
+        validate_channel_storage::<Completion<D, F, I>>(
+            configuration.result_capacity,
+            configuration.result_capacity,
+        )?;
+
+        let mut infos = Vec::new();
+        reserve_exact(&mut infos, configuration.workers, "workers")?;
+        for id in 0..configuration.workers {
+            infos.push(WorkerInfo::from_loader_seed(
+                id,
+                configuration.workers,
+                configuration.loader_seed,
+                configuration.rank,
+                configuration.generation,
+            )?);
+        }
+
+        let (result_sender, result_receiver) =
+            bounded_checked(configuration.result_capacity, "worker result channel")?;
+        let mut lanes = Vec::new();
+        reserve_exact(&mut lanes, configuration.workers, "worker task channels")?;
+        for _ in 0..configuration.workers {
+            lanes.push(bounded_checked(
+                configuration.prefetch_factor,
+                "worker task channel",
+            )?);
+        }
+        let mut tasks = Vec::new();
+        reserve_exact(&mut tasks, configuration.workers, "worker task senders")?;
+        let mut handles = Vec::new();
+        reserve_exact(&mut handles, configuration.workers, "worker thread handles")?;
         let mut pool = Self {
-            tasks: Vec::with_capacity(configuration.workers),
+            tasks,
             results: Some(result_receiver),
-            handles: Vec::with_capacity(configuration.workers),
+            handles,
         };
 
-        for worker in infos {
-            let (task_sender, task_receiver) = bounded(configuration.prefetch_factor);
+        for (worker, (task_sender, task_receiver)) in infos.into_iter().zip(lanes) {
             pool.tasks.push(task_sender);
             let dataset = Arc::clone(&dataset);
             let factory = Arc::clone(&factory);
@@ -162,6 +187,54 @@ where
             .expect("worker result receiver is present while the pool is active")
             .recv()
             .map_err(|_| ())
+    }
+}
+
+fn validate_channel_storage<T>(lane_capacity: usize, total_capacity: usize) -> Result<()> {
+    let mark_bit = lane_capacity
+        .checked_add(1)
+        .and_then(usize::checked_next_power_of_two)
+        .and_then(|mark_bit| mark_bit.checked_mul(2))
+        .ok_or_else(|| capacity_error("bounded channel ring arithmetic overflowed"))?;
+    let _ = mark_bit;
+
+    let slot_size = size_of::<(AtomicUsize, MaybeUninit<T>)>();
+    let bytes = total_capacity
+        .checked_mul(slot_size)
+        .ok_or_else(|| capacity_error("bounded channel storage exceeds Rust allocation limits"))?;
+    if bytes > MAX_CHANNEL_STORAGE_BYTES {
+        return Err(capacity_error(format!(
+            "bounded channel storage requires {bytes} bytes, above the {MAX_CHANNEL_STORAGE_BYTES}-byte safety ceiling"
+        )));
+    }
+
+    let mut reservation: Vec<MaybeUninit<(AtomicUsize, MaybeUninit<T>)>> = Vec::new();
+    reservation
+        .try_reserve_exact(total_capacity)
+        .map_err(|error| {
+            capacity_error(format!("bounded channel storage is unavailable: {error}"))
+        })?;
+    Ok(())
+}
+
+fn reserve_exact<T>(values: &mut Vec<T>, capacity: usize, label: &'static str) -> Result<()> {
+    values
+        .try_reserve_exact(capacity)
+        .map_err(|error| capacity_error(format!("{label} capacity is unavailable: {error}")))
+}
+
+fn bounded_checked<T>(capacity: usize, label: &'static str) -> Result<(Sender<T>, Receiver<T>)> {
+    catch_unwind(AssertUnwindSafe(|| bounded(capacity))).map_err(|_| {
+        capacity_error(format!(
+            "{label} rejected the validated capacity {capacity}"
+        ))
+    })
+}
+
+fn capacity_error(reason: impl Into<String>) -> RustTorchError {
+    RustTorchError::InvalidConfiguration {
+        field: "prefetch_factor",
+        reason: reason.into(),
     }
 }
 
