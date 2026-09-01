@@ -226,7 +226,16 @@ pub trait CheckpointPlan<Sample, C>: LoaderPlan<Sample, C> {
     type State;
     type CoordinatorState;
 
+    const AUTOMATIC_BATCHING: bool = false;
+
     fn checkpoint_identity(&self) -> PlanCheckpointIdentity;
+    fn checkpoint_identity_with_batch_options(
+        &self,
+        _batch_size: NonZeroUsize,
+        _drop_last: bool,
+    ) -> PlanCheckpointIdentity {
+        self.checkpoint_identity()
+    }
     fn checkpoint_state(&self, next_batch: u64, next_logical_sample: u64) -> Result<Self::State>;
     fn validate_checkpoint_state(
         &self,
@@ -235,6 +244,17 @@ pub trait CheckpointPlan<Sample, C>: LoaderPlan<Sample, C> {
         next_batch: u64,
         next_logical_sample: u64,
     ) -> Result<()>;
+    fn validate_checkpoint_state_with_batch_options(
+        &self,
+        state: &Self::State,
+        epoch: u64,
+        next_batch: u64,
+        next_logical_sample: u64,
+        _batch_size: NonZeroUsize,
+        _drop_last: bool,
+    ) -> Result<()> {
+        self.validate_checkpoint_state(state, epoch, next_batch, next_logical_sample)
+    }
     fn restore_checkpoint_iter_validated(&mut self, state: &Self::State) -> Self::Iter;
     fn save_coordinator(&self, collator: &C) -> Self::CoordinatorState;
     fn validate_coordinator(&self, collator: &C, state: &Self::CoordinatorState) -> Result<()>;
@@ -304,10 +324,25 @@ where
     type State = S::State;
     type CoordinatorState = C::State;
 
+    const AUTOMATIC_BATCHING: bool = true;
+
     fn checkpoint_identity(&self) -> PlanCheckpointIdentity {
         PlanCheckpointIdentity {
             batch_size: Some(self.batch_size.get()),
             drop_last: self.drop_last,
+            sampler_kind: self.sampler.kind().to_owned(),
+            distributed: self.sampler.distributed_configuration(),
+        }
+    }
+
+    fn checkpoint_identity_with_batch_options(
+        &self,
+        batch_size: NonZeroUsize,
+        drop_last: bool,
+    ) -> PlanCheckpointIdentity {
+        PlanCheckpointIdentity {
+            batch_size: Some(batch_size.get()),
+            drop_last,
             sampler_kind: self.sampler.kind().to_owned(),
             distributed: self.sampler.distributed_configuration(),
         }
@@ -331,10 +366,30 @@ where
         next_batch: u64,
         next_logical_sample: u64,
     ) -> Result<()> {
-        validate_auto_batch_boundary(
-            self.sampler.exact_len(),
+        <Self as CheckpointPlan<Sample, C>>::validate_checkpoint_state_with_batch_options(
+            self,
+            state,
+            epoch,
+            next_batch,
+            next_logical_sample,
             self.batch_size,
             self.drop_last,
+        )
+    }
+
+    fn validate_checkpoint_state_with_batch_options(
+        &self,
+        state: &Self::State,
+        epoch: u64,
+        next_batch: u64,
+        next_logical_sample: u64,
+        batch_size: NonZeroUsize,
+        drop_last: bool,
+    ) -> Result<()> {
+        validate_auto_batch_boundary(
+            self.sampler.exact_len(),
+            batch_size,
+            drop_last,
             next_batch,
             next_logical_sample,
         )?;
@@ -1335,20 +1390,30 @@ where
         validate_exact_builder(&self.configuration, self.explicit, &requested_identity)?;
         let pin_memory_status = resolve_pin_request(self.configuration.pin_memory)?;
         let batch_size = validate_batch_size(self.configuration.batch_size)?;
-        self.plan
-            .apply_batch_options(batch_size, self.configuration.drop_last);
-        let plan_identity = self.plan.checkpoint_identity();
+        validate_static_loader_state_envelope(
+            &state,
+            &requested_identity,
+            &self.configuration,
+            pin_memory_status,
+            <P as CheckpointPlan<TransformOutput<D, F>, C>>::AUTOMATIC_BATCHING,
+        )?;
+
+        let plan_identity = self
+            .plan
+            .checkpoint_identity_with_batch_options(batch_size, self.configuration.drop_last);
         validate_distributed_rank(&plan_identity, self.configuration.rank)?;
         let expected_configuration =
             checkpoint_configuration(&plan_identity, &self.configuration, pin_memory_status)?;
-        validate_loader_state_envelope(&state, &requested_identity, &expected_configuration)?;
+        validate_plan_loader_state_envelope(&state, &expected_configuration)?;
 
         self.dataset.validate_dataset_state(&state.dataset)?;
-        self.plan.validate_checkpoint_state(
+        self.plan.validate_checkpoint_state_with_batch_options(
             &state.sampler,
             state.epoch,
             state.next_batch,
             state.next_logical_sample,
+            batch_size,
+            self.configuration.drop_last,
         )?;
         let mut transform = self
             .transform_factory
@@ -1359,6 +1424,8 @@ where
             .validate_coordinator(&self.collator, &state.collate)?;
 
         self.dataset.restore_dataset_validated(&state.dataset);
+        self.plan
+            .apply_batch_options(batch_size, self.configuration.drop_last);
         let batches = self.plan.restore_checkpoint_iter_validated(&state.sampler);
         transform.restore_validated(&state.transform);
         self.plan
@@ -2958,28 +3025,8 @@ fn checkpoint_configuration(
             ),
             None => (1, None, None, None),
         };
-    let pin_request = match builder.pin_memory {
-        PinRequest::Disabled => CheckpointPinRequest::Disabled,
-        PinRequest::Auto => CheckpointPinRequest::Auto,
-        PinRequest::Explicit(Device::Cuda(index)) => CheckpointPinRequest::ExplicitCuda { index },
-        PinRequest::Explicit(device) => {
-            return Err(invalid_configuration(
-                "pin_memory",
-                format!("unsupported checkpoint pin device {device:?}"),
-            ));
-        }
-    };
-    let pin_status = match pin_status {
-        PinMemoryStatus::Disabled => CheckpointPinStatus::Disabled,
-        PinMemoryStatus::DisabledNoAccelerator => CheckpointPinStatus::DisabledNoAccelerator,
-        PinMemoryStatus::Enabled(Device::Cuda(index)) => CheckpointPinStatus::Cuda { index },
-        PinMemoryStatus::Enabled(device) => {
-            return Err(invalid_configuration(
-                "pin_memory",
-                format!("unsupported effective checkpoint pin device {device:?}"),
-            ));
-        }
-    };
+    let pin_request = checkpoint_pin_request(builder.pin_memory)?;
+    let pin_status = checkpoint_pin_status(pin_status)?;
     Ok(crate::LoaderConfiguration {
         batch_size: identity.batch_size,
         drop_last: identity.drop_last,
@@ -2998,11 +3045,46 @@ fn checkpoint_configuration(
     })
 }
 
-fn validate_loader_state_envelope<D, S, T, C>(
+fn checkpoint_pin_request(request: PinRequest) -> Result<CheckpointPinRequest> {
+    Ok(match request {
+        PinRequest::Disabled => CheckpointPinRequest::Disabled,
+        PinRequest::Auto => CheckpointPinRequest::Auto,
+        PinRequest::Explicit(Device::Cuda(index)) => CheckpointPinRequest::ExplicitCuda { index },
+        PinRequest::Explicit(device) => {
+            return Err(invalid_configuration(
+                "pin_memory",
+                format!("unsupported checkpoint pin device {device:?}"),
+            ));
+        }
+    })
+}
+
+fn checkpoint_pin_status(status: PinMemoryStatus) -> Result<CheckpointPinStatus> {
+    Ok(match status {
+        PinMemoryStatus::Disabled => CheckpointPinStatus::Disabled,
+        PinMemoryStatus::DisabledNoAccelerator => CheckpointPinStatus::DisabledNoAccelerator,
+        PinMemoryStatus::Enabled(Device::Cuda(index)) => CheckpointPinStatus::Cuda { index },
+        PinMemoryStatus::Enabled(device) => {
+            return Err(invalid_configuration(
+                "pin_memory",
+                format!("unsupported effective checkpoint pin device {device:?}"),
+            ));
+        }
+    })
+}
+
+fn validate_static_loader_state_envelope<D, S, T, C>(
     state: &LoaderState<D, S, T, C>,
     identity: &str,
-    expected: &crate::LoaderConfiguration,
+    builder: &BuilderConfiguration,
+    pin_status: PinMemoryStatus,
+    automatic_batching: bool,
 ) -> Result<()> {
+    let expected_batch_size = automatic_batching.then_some(builder.batch_size);
+    let expected_drop_last = automatic_batching && builder.drop_last;
+    let expected_pin_request = checkpoint_pin_request(builder.pin_memory)?;
+    let expected_pin_status = checkpoint_pin_status(pin_status)?;
+
     require_checkpoint_equal(
         "schema_version",
         state.schema_version,
@@ -3027,26 +3109,42 @@ fn validate_loader_state_envelope<D, S, T, C>(
     require_checkpoint_equal(
         "batch_size",
         state.configuration.batch_size,
-        expected.batch_size,
+        expected_batch_size,
     )?;
     require_checkpoint_equal(
         "drop_last",
         state.configuration.drop_last,
-        expected.drop_last,
+        expected_drop_last,
     )?;
-    require_checkpoint_equal("workers", state.configuration.workers, expected.workers)?;
+    require_checkpoint_equal("workers", state.configuration.workers, builder.workers)?;
     require_checkpoint_equal(
         "prefetch_factor",
         state.configuration.prefetch_factor,
-        expected.prefetch_factor,
+        builder.prefetch_factor,
     )?;
-    require_checkpoint_equal("in_order", state.configuration.in_order, expected.in_order)?;
+    require_checkpoint_equal("in_order", state.configuration.in_order, builder.ordered)?;
     require_checkpoint_equal(
         "loader_seed",
         state.configuration.loader_seed,
-        expected.loader_seed,
+        builder.loader_seed,
     )?;
-    require_checkpoint_equal("rank", state.configuration.rank, expected.rank)?;
+    require_checkpoint_equal("rank", state.configuration.rank, builder.rank)?;
+    require_checkpoint_equal(
+        "pin_request",
+        &state.configuration.pin_request,
+        &expected_pin_request,
+    )?;
+    require_checkpoint_equal(
+        "pin_status",
+        &state.configuration.pin_status,
+        &expected_pin_status,
+    )
+}
+
+fn validate_plan_loader_state_envelope<D, S, T, C>(
+    state: &LoaderState<D, S, T, C>,
+    expected: &crate::LoaderConfiguration,
+) -> Result<()> {
     require_checkpoint_equal("replicas", state.configuration.replicas, expected.replicas)?;
     require_checkpoint_equal(
         "distributed_shuffle",
@@ -3067,16 +3165,6 @@ fn validate_loader_state_envelope<D, S, T, C>(
         "sampler_kind",
         state.configuration.sampler_kind.as_str(),
         expected.sampler_kind.as_str(),
-    )?;
-    require_checkpoint_equal(
-        "pin_request",
-        &state.configuration.pin_request,
-        &expected.pin_request,
-    )?;
-    require_checkpoint_equal(
-        "pin_status",
-        &state.configuration.pin_status,
-        &expected.pin_status,
     )
 }
 

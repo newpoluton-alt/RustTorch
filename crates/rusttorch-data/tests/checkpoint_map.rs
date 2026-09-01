@@ -661,6 +661,193 @@ fn transactional_dataset_restores_serial_fetch_state() -> Result<()> {
     Ok(())
 }
 
+#[derive(Default)]
+struct PlanObservations {
+    kind_calls: Cell<usize>,
+    distributed_calls: Cell<usize>,
+    epoch_applies: Cell<usize>,
+    cursor_applies: Cell<usize>,
+}
+
+impl PlanObservations {
+    fn reset(&self) {
+        self.kind_calls.set(0);
+        self.distributed_calls.set(0);
+        self.epoch_applies.set(0);
+        self.cursor_applies.set(0);
+    }
+
+    fn assert_untouched(&self, case: &str) {
+        assert_eq!(self.kind_calls.get(), 0, "{case}: sampler kind callback");
+        assert_eq!(
+            self.distributed_calls.get(),
+            0,
+            "{case}: sampler distributed callback"
+        );
+        assert_eq!(self.epoch_applies.get(), 0, "{case}: sampler epoch apply");
+        assert_eq!(self.cursor_applies.get(), 0, "{case}: sampler cursor apply");
+    }
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+struct ObservableSamplerState {
+    epoch: u64,
+    position: u64,
+}
+
+#[derive(Clone)]
+struct ObservableSampler {
+    epoch: u64,
+    observations: Rc<PlanObservations>,
+}
+
+impl Sampler for ObservableSampler {
+    type Iter = std::vec::IntoIter<usize>;
+
+    fn iter(&self) -> Self::Iter {
+        vec![0, 1, 2].into_iter()
+    }
+
+    fn exact_len(&self) -> Option<usize> {
+        Some(3)
+    }
+
+    fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    fn set_epoch(&mut self, epoch: u64) {
+        self.observations
+            .epoch_applies
+            .set(self.observations.epoch_applies.get() + 1);
+        self.epoch = epoch;
+    }
+}
+
+impl SamplerCheckpoint for ObservableSampler {
+    type State = ObservableSamplerState;
+
+    fn kind(&self) -> &'static str {
+        self.observations
+            .kind_calls
+            .set(self.observations.kind_calls.get() + 1);
+        "test-observable"
+    }
+
+    fn checkpoint_state(&self, position: u64) -> Result<Self::State> {
+        Ok(ObservableSamplerState {
+            epoch: self.epoch,
+            position,
+        })
+    }
+
+    fn validate_checkpoint_state(
+        &self,
+        state: &Self::State,
+        epoch: u64,
+        position: u64,
+    ) -> Result<()> {
+        if state.epoch != epoch || state.position != position || position > 3 {
+            return Err(RustTorchError::InvalidConfiguration {
+                field: "sampler",
+                reason: "observable sampler state does not match its cursor".to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    fn restore_checkpoint_iter_validated(&mut self, state: &Self::State) -> Self::Iter {
+        self.observations
+            .cursor_applies
+            .set(self.observations.cursor_applies.get() + 1);
+        self.epoch = state.epoch;
+        vec![0, 1, 2]
+            .into_iter()
+            .skip(usize::try_from(state.position).expect("validated test cursor"))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    fn distributed_configuration(&self) -> Option<rusttorch_data::DistributedConfiguration> {
+        self.observations
+            .distributed_calls
+            .set(self.observations.distributed_calls.get() + 1);
+        None
+    }
+}
+
+#[test]
+fn static_envelope_rejects_before_public_plan_callbacks_or_mutation() -> Result<()> {
+    type State = LoaderState<(), ObservableSamplerState>;
+    type Corrupt = fn(&mut State);
+
+    let observations = Rc::new(PlanObservations::default());
+    let mut source = DataLoader::builder(replay_rows(&[1, 2, 3]))
+        .sampler(ObservableSampler {
+            epoch: 0,
+            observations: Rc::clone(&observations),
+        })
+        .batch_size(2)
+        .seed(17)
+        .rank(0)
+        .collate(VecCollate)
+        .dataset_identity("observable-envelope".to_owned())
+        .build()?;
+    let state = source.iter().checkpoint().unwrap();
+
+    let corruptions: [(&str, Corrupt); 14] = [
+        ("schema", |state| state.schema_version += 1),
+        ("identity", |state| {
+            state.dataset_identity.push_str("-wrong")
+        }),
+        ("generation", |state| state.iterator_generation += 1),
+        ("rng derivation", |state| state.rng_derivation_version += 1),
+        ("worker seed derivation", |state| {
+            state.worker_seed_derivation_version += 1;
+        }),
+        ("batch size", |state| {
+            state.configuration.batch_size = Some(3)
+        }),
+        ("drop last", |state| state.configuration.drop_last = true),
+        ("workers", |state| state.configuration.workers = 1),
+        ("prefetch", |state| {
+            state.configuration.prefetch_factor = Some(2);
+        }),
+        ("ordering", |state| state.configuration.in_order = false),
+        ("loader seed", |state| state.configuration.loader_seed += 1),
+        ("rank", |state| state.configuration.rank += 1),
+        ("pin request", |state| {
+            state.configuration.pin_request = CheckpointPinRequest::Auto;
+        }),
+        ("pin status", |state| {
+            state.configuration.pin_status = CheckpointPinStatus::DisabledNoAccelerator;
+        }),
+    ];
+
+    for (case, corrupt) in corruptions {
+        let mut wrong = state.clone();
+        corrupt(&mut wrong);
+        let builder = DataLoader::builder(replay_rows(&[1, 2, 3]))
+            .sampler(ObservableSampler {
+                epoch: 0,
+                observations: Rc::clone(&observations),
+            })
+            .batch_size(2)
+            .seed(17)
+            .rank(0)
+            .collate(VecCollate)
+            .dataset_identity("observable-envelope".to_owned())
+            .resume_from(wrong);
+        observations.reset();
+        let result = builder.build();
+
+        assert!(result.is_err(), "{case}: malformed state must reject");
+        observations.assert_untouched(case);
+    }
+
+    Ok(())
+}
+
 #[derive(Clone)]
 struct CountedRows {
     validates: Rc<Cell<usize>>,
