@@ -83,6 +83,44 @@ fn facade_exposes_the_owned_loader_builder() {
 }
 
 #[test]
+fn facade_exposes_explicit_stream_worker_contracts() {
+    use rusttorch::data::{
+        LogicalSampleId, SequenceId, StreamDataLoaderBuilder, VecCollate, WorkerContext,
+        WorkerRecord, WorkerSourceFactory,
+    };
+
+    struct OneShard;
+
+    impl WorkerSourceFactory for OneShard {
+        type Sample = usize;
+        type Error = Infallible;
+        type Source = std::vec::IntoIter<Result<WorkerRecord<usize>, Infallible>>;
+
+        fn create(&self, worker: WorkerContext) -> Result<Self::Source, Self::Error> {
+            Ok(vec![Ok(WorkerRecord {
+                sequence: Some(SequenceId::new(0)),
+                logical_id: LogicalSampleId::new(worker.info.id as u64),
+                sample: 7,
+            })]
+            .into_iter())
+        }
+
+        fn exact_len(&self) -> Option<usize> {
+            Some(1)
+        }
+    }
+
+    let mut loader = StreamDataLoaderBuilder::new(OneShard)
+        .collate(VecCollate)
+        .build()
+        .expect("stream configuration is valid");
+    assert_eq!(
+        loader.iter().next().unwrap().expect("source is infallible"),
+        vec![7]
+    );
+}
+
+#[test]
 fn facade_reexports_task_transform_and_worker_context_contracts() {
     use rusttorch::data::{
         CancellationToken, Deadline, FnTransform, PipelineError, TaskContext, Transform,

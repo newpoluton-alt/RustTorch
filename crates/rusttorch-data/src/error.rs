@@ -4,6 +4,9 @@ use rusttorch_core::RustTorchError;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum PipelineError<DE, TE, CE, FE, IE> {
+    /// Explicit streaming source creation or iteration failed.
+    #[error("stream source failed: {0}")]
+    Source(#[source] DE),
     /// Dataset fetch failed.
     #[error("dataset fetch failed: {0}")]
     Dataset(#[source] DE),
@@ -36,6 +39,23 @@ pub enum LoaderError<E> {
         #[source]
         source: E,
     },
+    /// An explicitly sharded stream stage failed.
+    #[error(
+        "stream pipeline failed (batch {batch:?}, worker {worker}, sequence {sequence:?}, logical sample {logical_id:?}): {source}"
+    )]
+    StreamPipeline {
+        /// Logical batch when known.
+        batch: Option<u64>,
+        /// Worker identifier.
+        worker: usize,
+        /// Stream sequence when known.
+        sequence: Option<u64>,
+        /// Stable logical sample identifier when known.
+        logical_id: Option<u64>,
+        /// Preserved pipeline error.
+        #[source]
+        source: E,
+    },
     /// A worker thread panicked.
     #[error("worker {worker} panicked while loading batch {batch:?}")]
     WorkerPanic {
@@ -43,6 +63,20 @@ pub enum LoaderError<E> {
         worker: usize,
         /// Logical batch when known.
         batch: Option<u64>,
+    },
+    /// An explicitly sharded stream worker panicked.
+    #[error(
+        "stream worker {worker} panicked (batch {batch:?}, sequence {sequence:?}, logical sample {logical_id:?})"
+    )]
+    StreamWorkerPanic {
+        /// Worker identifier.
+        worker: usize,
+        /// Logical batch when known.
+        batch: Option<u64>,
+        /// Stream sequence when known.
+        sequence: Option<u64>,
+        /// Stable logical sample identifier when known.
+        logical_id: Option<u64>,
     },
     /// Coordinator-owned user code panicked.
     #[error("coordinator {stage} panicked (batch {batch:?})")]

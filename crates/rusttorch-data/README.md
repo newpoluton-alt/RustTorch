@@ -78,5 +78,17 @@ their threads, initial worker seeds, initializer calls, and transforms across
 iterator generations, but remain owned and joined by the loader. Iterator drop
 cancels and quiesces its generation; owner drop shuts down the pool. Rust
 cannot force-cancel an arbitrary blocking `Dataset::get`, system call, or
-native decoder, so drop waits until non-cooperative work returns. Pinning,
-streaming workers, and checkpointing are not implemented in this scope.
+native decoder, so drop waits until non-cooperative work returns.
+
+`StreamDataLoaderBuilder` is the positive-worker path for streaming data. A
+`WorkerSourceFactory` creates one independently owned shard iterator per worker
+and generation. Ordered records carry one global, zero-based contiguous
+`SequenceId`; unordered records may omit it but still carry a stable
+`LogicalSampleId` for deterministic task randomness. Per-worker credits and a
+bounded global result/reassembly budget prevent a fast shard from starving the
+worker holding the next ordered record. The coordinator merges records before
+collation and drops at most one global tail. Persistent stream pools recreate
+sources with fresh generation cancellation and seeds while retaining their
+threads, initializer calls, and transform state.
+
+Pinning and checkpoint/resume are not implemented in this scope.

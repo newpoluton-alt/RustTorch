@@ -136,7 +136,7 @@ the selected shared libraries at runtime.
 | Devices | Explicit CPU, CUDA, and MPS requests plus checked automatic selection |
 | State interchange | Strict, non-strict, mapped, and dry-run SafeTensors loading |
 | Graphs | Optional named-input graph API with branching, validation, summaries, and DOT output |
-| Data loading | Fallible map datasets and streams, seeded local sampling, batching, and custom collation |
+| Data loading | Fallible map datasets and explicitly sharded streams, bounded workers, seeded transforms, batching, and custom collation |
 | Runtime | Project-local managed CPU or CUDA 12.6 setup over official LibTorch artifacts |
 
 The machine-readable [compatibility ledger](compat/pytorch_api.toml) is the
@@ -201,12 +201,14 @@ surface; distributed training; quantization; replacement autograd;
 `torch.compile`; or custom-kernel framework. SafeTensors is the supported
 model-state format. Python pickle models, TorchScript, `torch.export`, and
 cross-language optimizer checkpoint resume are not exposed by the current API.
-Map datasets support bounded deterministic Rust worker threads, cooperative
-per-batch timeouts and cancellation, loader-owned persistent worker pools, and
-ordered or completion-order delivery. Rust cannot force-cancel a blocking
-foreign or native call, so drop waits for non-cooperative work to return.
-Pinned memory, streaming workers, and loader checkpoint/resume remain planned;
-distributed sampling is available without distributed training orchestration.
+Map datasets and explicitly sharded stream factories support bounded Rust
+worker threads, cooperative per-batch timeouts and cancellation, loader-owned
+persistent worker pools, and ordered or completion-order delivery. Stream
+records merge globally before batching, so `drop_last` removes at most one
+global tail. Rust cannot force-cancel a blocking foreign or native call, so
+drop waits for non-cooperative work to return. Pinned memory and loader
+checkpoint/resume remain planned; distributed sampling is available without
+distributed training orchestration.
 
 ## Contributing
 

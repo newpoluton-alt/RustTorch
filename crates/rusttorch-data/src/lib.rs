@@ -12,6 +12,7 @@ mod dataset;
 mod error;
 mod loader;
 mod sampler;
+mod stream;
 mod transform;
 mod worker;
 mod worker_context;
@@ -33,6 +34,10 @@ pub use loader::{
 pub use sampler::{
     BatchSampler, BatchSource, DistributedSampler, FnBatchSource, FnSampler, RandomSampler,
     Sampler, SequentialSampler, SubsetRandomSampler, WeightedRandomSampler,
+};
+pub use stream::{
+    LogicalSampleId, SequenceId, StreamDataLoader, StreamDataLoaderBuilder, StreamLoaderIter,
+    WorkerRecord, WorkerSourceFactory,
 };
 pub use transform::{
     CloneTransformFactory, FnTransform, FnTransformFactory, IdentityTransform,

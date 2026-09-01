@@ -362,6 +362,9 @@ fn every_serial_stage_keeps_its_concrete_error_and_metadata() -> Result<(), Rust
 #[test]
 fn pipeline_error_generic_positions_are_distinct() {
     let errors = [
+        PipelineError::<FetchError, TransformError, CollateFailure, FactoryError, InitError>::Source(
+            FetchError,
+        ),
         PipelineError::<FetchError, TransformError, CollateFailure, FactoryError, InitError>::Dataset(
             FetchError,
         ),
@@ -370,17 +373,18 @@ fn pipeline_error_generic_positions_are_distinct() {
         PipelineError::TransformInit(FactoryError),
         PipelineError::WorkerInit(InitError),
     ];
-    assert!(matches!(errors[0], PipelineError::Dataset(FetchError)));
+    assert!(matches!(errors[0], PipelineError::Source(FetchError)));
+    assert!(matches!(errors[1], PipelineError::Dataset(FetchError)));
     assert!(matches!(
-        errors[1],
+        errors[2],
         PipelineError::Transform(TransformError)
     ));
-    assert!(matches!(errors[2], PipelineError::Collate(CollateFailure)));
+    assert!(matches!(errors[3], PipelineError::Collate(CollateFailure)));
     assert!(matches!(
-        errors[3],
+        errors[4],
         PipelineError::TransformInit(FactoryError)
     ));
-    assert!(matches!(errors[4], PipelineError::WorkerInit(InitError)));
+    assert!(matches!(errors[5], PipelineError::WorkerInit(InitError)));
 }
 
 #[test]
@@ -388,6 +392,7 @@ fn every_pipeline_variant_preserves_the_standard_error_source_chain() {
     let errors: Vec<
         PipelineError<FetchError, TransformError, CollateFailure, FactoryError, InitError>,
     > = vec![
+        PipelineError::Source(FetchError),
         PipelineError::Dataset(FetchError),
         PipelineError::Transform(TransformError),
         PipelineError::Collate(CollateFailure),
@@ -396,6 +401,7 @@ fn every_pipeline_variant_preserves_the_standard_error_source_chain() {
     ];
 
     let stage_names = [
+        "stream source failed",
         "dataset fetch failed",
         "transform failed",
         "collation failed",
@@ -416,10 +422,11 @@ fn every_pipeline_variant_preserves_the_standard_error_source_chain() {
             .expect("PipelineError exposes its typed stage error");
         let concrete_type_is_preserved = match stage {
             0 => leaf.downcast_ref::<FetchError>().is_some(),
-            1 => leaf.downcast_ref::<TransformError>().is_some(),
-            2 => leaf.downcast_ref::<CollateFailure>().is_some(),
-            3 => leaf.downcast_ref::<FactoryError>().is_some(),
-            4 => leaf.downcast_ref::<InitError>().is_some(),
+            1 => leaf.downcast_ref::<FetchError>().is_some(),
+            2 => leaf.downcast_ref::<TransformError>().is_some(),
+            3 => leaf.downcast_ref::<CollateFailure>().is_some(),
+            4 => leaf.downcast_ref::<FactoryError>().is_some(),
+            5 => leaf.downcast_ref::<InitError>().is_some(),
             _ => unreachable!(),
         };
         assert!(concrete_type_is_preserved);
