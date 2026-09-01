@@ -2,6 +2,10 @@
 
 Implementation under review: `eafbefc0524abbb65fb5410fad706e68714e7068`
 
+> Correction: the aggregate described in this report omitted crossbeam's
+> per-channel heap control blocks. `task-7-fix3-report.md` supersedes that
+> allocation claim and documents the final conservative aggregate.
+
 ## Result
 
 Addressed every finding in `task-7-fix-review.md` without implementing Task 8
@@ -11,10 +15,11 @@ or changing the local zero-worker execution capability.
   crossbeam ring, and concrete queue-allocation validation before applying
   batch options or calling sampler/batch-source `set_epoch`.
 - The build and `WorkerPool` defensive path share one generic validator. It
-  instantiates the actual `Completion<D, F, I>` channel slot, combines every
-  task slot and completion slot for the checked global credit count, adds
-  concrete worker/vector endpoint bookkeeping, and checks that single
-  aggregate against 64 MiB. Every multiplication and addition is checked.
+  instantiates the actual `Completion<D, F, I>` channel slot and combines every
+  task slot, completion slot, and worker/vector endpoint. As corrected in the
+  final fix, the conservative aggregate also includes one control-block
+  allowance per channel before checking 64 MiB. Every caller-controlled
+  multiplication and addition is checked.
   WorkerPool still performs fallible concrete slot and vector reservations
   before constructing threads.
 - Positive-worker timeout and persistence requests now return their typed
@@ -64,11 +69,12 @@ serial coverage remain green.
 
 ## Allocation ceiling documentation
 
-The `prefetch_factor` rustdoc, `crates/rusttorch-data/README.md`, and canonical
-compatibility entry now document that build checks one concrete aggregate of
-task slots, completion slots, and worker/vector bookkeeping against a 64 MiB
-queue-allocation ceiling before sampler or batch-source callbacks. Generated
-coverage and package compatibility documentation were regenerated.
+The final `prefetch_factor` rustdoc, `crates/rusttorch-data/README.md`, and
+canonical compatibility entry document a conservative aggregate of concrete
+task/completion slots, worker/vector bookkeeping, and per-channel control-block
+allowances against a 64 MiB queue-allocation ceiling before sampler or
+batch-source callbacks. Generated coverage and package compatibility
+documentation were regenerated.
 
 This ceiling covers eagerly allocated transport/coordinator bookkeeping, not
 arbitrary sample payload bytes. Payload memory permits remain Task 10.

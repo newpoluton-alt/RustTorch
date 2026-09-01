@@ -56,6 +56,13 @@ type Completion<D, F, I> = WorkerCompletion<
 
 const MAX_WORKER_QUEUE_ALLOCATION_BYTES: usize = 64 * 1024 * 1024;
 
+// Locked crossbeam-channel 0.5.16 allocates one
+// Counter<flavors::array::Channel<T>> per bounded channel. Its supported
+// target cache padding is at most 256 bytes, so 2 KiB conservatively covers
+// both padded atomics plus the counter fields, buffer descriptor, ring
+// metadata, two empty SyncWakers, allocator metadata, and alignment padding.
+const CROSSBEAM_CHANNEL_CONTROL_BLOCK_ALLOWANCE_BYTES: usize = 2 * 1024;
+
 #[allow(dead_code)]
 #[repr(C)]
 struct ChannelSlot<T> {
@@ -234,16 +241,26 @@ where
         .and_then(|bytes| bytes.checked_add(size_of::<Sender<WorkerTask>>()))
         .and_then(|bytes| bytes.checked_add(size_of::<JoinHandle<()>>()))
         .ok_or_else(|| capacity_error("worker bookkeeping size exceeds usize"))?;
-    let fixed_bookkeeping = (4 * size_of::<Vec<()>>())
-        .checked_add(size_of::<Sender<Completion<D, F, I>>>())
+    let fixed_bookkeeping = size_of::<Vec<()>>()
+        .checked_mul(4)
+        .and_then(|bytes| bytes.checked_add(size_of::<Sender<Completion<D, F, I>>>()))
         .and_then(|bytes| bytes.checked_add(size_of::<Receiver<Completion<D, F, I>>>()));
     let vector_bytes = workers
         .checked_mul(per_worker_bookkeeping)
         .and_then(|bytes| fixed_bookkeeping.and_then(|fixed| bytes.checked_add(fixed)))
         .ok_or_else(|| capacity_error("worker vector storage exceeds Rust allocation limits"))?;
-    let aggregate_bytes = channel_bytes.checked_add(vector_bytes).ok_or_else(|| {
-        capacity_error("aggregate worker queue storage exceeds Rust allocation limits")
-    })?;
+    let control_block_bytes = workers
+        .checked_add(1)
+        .and_then(|channels| channels.checked_mul(CROSSBEAM_CHANNEL_CONTROL_BLOCK_ALLOWANCE_BYTES))
+        .ok_or_else(|| {
+            capacity_error("channel control-block storage exceeds Rust allocation limits")
+        })?;
+    let aggregate_bytes = channel_bytes
+        .checked_add(vector_bytes)
+        .and_then(|bytes| bytes.checked_add(control_block_bytes))
+        .ok_or_else(|| {
+            capacity_error("aggregate worker queue storage exceeds Rust allocation limits")
+        })?;
     if aggregate_bytes > MAX_WORKER_QUEUE_ALLOCATION_BYTES {
         return Err(capacity_error(format!(
             "aggregate worker queue storage requires {aggregate_bytes} bytes, above the {MAX_WORKER_QUEUE_ALLOCATION_BYTES}-byte safety ceiling"

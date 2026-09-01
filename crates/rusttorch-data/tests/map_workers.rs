@@ -475,6 +475,41 @@ fn concrete_completion_storage_is_rejected_at_build_before_sampler_callbacks() {
 }
 
 #[test]
+fn channel_control_blocks_are_counted_before_many_worker_callbacks() {
+    let rejected_calls = Arc::new(AtomicUsize::new(0));
+    let rejected = DataLoader::builder(PlainRows(1))
+        .sampler(SetEpochSampler {
+            calls: Arc::clone(&rejected_calls),
+            panic_on_set: false,
+        })
+        .workers(250_000)
+        .prefetch_factor(1)
+        .collate(VecCollate)
+        .build();
+    assert!(matches!(
+        rejected,
+        Err(RustTorchError::InvalidConfiguration {
+            field: "prefetch_factor",
+            ..
+        })
+    ));
+    assert_eq!(rejected_calls.load(Ordering::SeqCst), 0);
+
+    let accepted_calls = Arc::new(AtomicUsize::new(0));
+    let accepted = DataLoader::builder(PlainRows(1))
+        .sampler(SetEpochSampler {
+            calls: Arc::clone(&accepted_calls),
+            panic_on_set: false,
+        })
+        .workers(4)
+        .prefetch_factor(1)
+        .collate(VecCollate)
+        .build();
+    assert!(accepted.is_ok());
+    assert_eq!(accepted_calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn unsupported_worker_options_reject_at_build_before_sampler_callbacks() {
     use std::time::Duration;
 

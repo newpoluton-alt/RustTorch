@@ -536,9 +536,10 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
     ///
     /// The worker count multiplied by this factor is checked before any
     /// worker starts and is also the global outstanding-work credit limit.
-    /// Capacities that overflow crossbeam's ring arithmetic or whose concrete
-    /// task, completion, and worker bookkeeping exceed the checked 64 MiB
-    /// queue-allocation ceiling are rejected during build.
+    /// Capacities that overflow crossbeam's ring arithmetic or whose
+    /// conservative aggregate of concrete task/completion slots, worker
+    /// bookkeeping, and channel control-block allowances exceeds the checked
+    /// 64 MiB queue-allocation ceiling are rejected during build.
     pub fn prefetch_factor(mut self, factor: usize) -> Self {
         self.configuration.prefetch_factor = Some(factor);
         self.explicit.prefetch_factor = true;
