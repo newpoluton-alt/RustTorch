@@ -8,6 +8,15 @@
 //! identity. Records are merged before coordinator batching, so `drop_last`
 //! drops at most one global tail rather than one tail per shard.
 //!
+//! Ordered reassembly retains at most `workers * prefetch_factor` records. If
+//! that entire validated window contains higher IDs while the next ID is
+//! absent, no worker credit remains with which a shard could advance, so the
+//! iterator reports a protocol error instead of waiting for an unreachable end
+//! marker. A source that emits a lower ID after more than this global window of
+//! higher IDs must increase the factor or shard the lower ID onto a worker that
+//! keeps an independent credit available. A worker already producing the
+//! missing low ID holds its credit outside reassembly and is allowed to finish.
+//!
 //! ```
 //! use std::convert::Infallible;
 //! use rusttorch_data::{
@@ -215,6 +224,13 @@ where
     Closed,
 }
 
+enum ReadyFirst<T> {
+    Completion(T),
+    Timeout,
+    Cancelled,
+    Closed,
+}
+
 const MAX_STREAM_QUEUE_ALLOCATION_BYTES: usize = 64 * 1024 * 1024;
 const CHANNEL_CONTROL_BLOCK_ALLOWANCE_BYTES: usize = 2 * 1024;
 
@@ -225,11 +241,20 @@ struct CapacitySlot<T> {
     message: MaybeUninit<T>,
 }
 
+#[allow(dead_code)]
+#[repr(C)]
+struct ReassemblyNodeAllowance<T> {
+    key: u64,
+    record: BufferedRecord<T>,
+    links_and_metadata: [usize; 4],
+}
+
 fn validate_stream_capacity<S, F, I>(
     workers: usize,
     prefetch_factor: usize,
     outstanding: usize,
     batch_size: usize,
+    ordered: bool,
 ) -> Result<()>
 where
     S: WorkerSourceFactory,
@@ -263,7 +288,15 @@ where
         .ok_or_else(|| capacity_error("stream control storage exceeds usize"))?;
     let batch_bytes = batch_size
         .checked_mul(size_of::<TransformOutput<S, F>>())
+        .and_then(|bytes| bytes.checked_mul(2))
         .ok_or_else(|| capacity_error("stream batch storage exceeds usize"))?;
+    let reassembly_bytes = if ordered {
+        outstanding
+            .checked_mul(size_of::<ReassemblyNodeAllowance<TransformOutput<S, F>>>())
+            .ok_or_else(|| capacity_error("ordered stream reassembly exceeds usize"))?
+    } else {
+        0
+    };
     let per_worker = size_of::<WorkerInfo>()
         .checked_add(size_of::<(Sender<()>, Receiver<()>)>())
         .and_then(|bytes| {
@@ -288,6 +321,7 @@ where
         .checked_add(result_bytes)
         .and_then(|bytes| bytes.checked_add(control_bytes))
         .and_then(|bytes| bytes.checked_add(batch_bytes))
+        .and_then(|bytes| bytes.checked_add(reassembly_bytes))
         .and_then(|bytes| bytes.checked_add(bookkeeping))
         .and_then(|bytes| bytes.checked_add(channel_bytes))
         .ok_or_else(|| capacity_error("aggregate stream queue storage exceeds usize"))?;
@@ -300,6 +334,12 @@ where
     preflight_channel_storage::<StreamControl>(workers)?;
     preflight_channel_storage::<StreamCompletionFor<S, F, I>>(outstanding)?;
     preflight_vec::<TransformOutput<S, F>>(batch_size, "stream batch")?;
+    if ordered {
+        preflight_vec::<ReassemblyNodeAllowance<TransformOutput<S, F>>>(
+            outstanding,
+            "ordered stream reassembly",
+        )?;
+    }
     Ok(())
 }
 
@@ -363,6 +403,7 @@ where
             configuration.prefetch_factor,
             outstanding,
             configuration.batch_size,
+            configuration.ordered,
         )?;
 
         let (result_sender, result_receiver) =
@@ -490,37 +531,11 @@ where
             .results
             .as_ref()
             .expect("stream result receiver exists before shutdown");
-        match results.try_recv() {
-            Ok(completion) => return StreamReceive::Completion(completion),
-            Err(TryRecvError::Disconnected) => return StreamReceive::Closed,
-            Err(TryRecvError::Empty) => {}
-        }
-        if let Some(timeout) = timeout {
-            let timer = after(timeout);
-            select! {
-                recv(results) -> result => map_stream_receive(result),
-                recv(context.cancellation.signal()) -> _ => match results.try_recv() {
-                    Ok(completion) => StreamReceive::Completion(completion),
-                    Err(TryRecvError::Empty) => StreamReceive::Cancelled,
-                    Err(TryRecvError::Disconnected) => StreamReceive::Closed,
-                },
-                recv(self.shutdown.signal()) -> _ => StreamReceive::Closed,
-                recv(timer) -> _ => match results.try_recv() {
-                    Ok(completion) => StreamReceive::Completion(completion),
-                    Err(TryRecvError::Empty) => StreamReceive::Timeout,
-                    Err(TryRecvError::Disconnected) => StreamReceive::Closed,
-                },
-            }
-        } else {
-            select! {
-                recv(results) -> result => map_stream_receive(result),
-                recv(context.cancellation.signal()) -> _ => match results.try_recv() {
-                    Ok(completion) => StreamReceive::Completion(completion),
-                    Err(TryRecvError::Empty) => StreamReceive::Cancelled,
-                    Err(TryRecvError::Disconnected) => StreamReceive::Closed,
-                },
-                recv(self.shutdown.signal()) -> _ => StreamReceive::Closed,
-            }
+        match receive_ready_first(results, context, &self.shutdown, timeout) {
+            ReadyFirst::Completion(completion) => StreamReceive::Completion(completion),
+            ReadyFirst::Timeout => StreamReceive::Timeout,
+            ReadyFirst::Cancelled => StreamReceive::Cancelled,
+            ReadyFirst::Closed => StreamReceive::Closed,
         }
     }
 
@@ -632,17 +647,50 @@ where
     }
 }
 
-fn map_stream_receive<S, F, I>(
-    result: std::result::Result<StreamCompletionFor<S, F, I>, RecvError>,
-) -> StreamReceive<S, F, I>
-where
-    S: WorkerSourceFactory,
-    F: TransformFactory<S::Sample>,
-    I: WorkerInit,
-{
+fn receive_ready_first<T>(
+    results: &Receiver<T>,
+    context: &WorkerRunContext,
+    shutdown: &CancellationToken,
+    timeout: Option<Duration>,
+) -> ReadyFirst<T> {
+    match results.try_recv() {
+        Ok(completion) => return ReadyFirst::Completion(completion),
+        Err(TryRecvError::Disconnected) => return ReadyFirst::Closed,
+        Err(TryRecvError::Empty) => {}
+    }
+    if let Some(timeout) = timeout {
+        let timer = after(timeout);
+        select! {
+            recv(results) -> result => map_ready_receive(result),
+            recv(context.cancellation.signal()) -> _ => match results.try_recv() {
+                Ok(completion) => ReadyFirst::Completion(completion),
+                Err(TryRecvError::Empty) => ReadyFirst::Cancelled,
+                Err(TryRecvError::Disconnected) => ReadyFirst::Closed,
+            },
+            recv(shutdown.signal()) -> _ => ReadyFirst::Closed,
+            recv(timer) -> _ => match results.try_recv() {
+                Ok(completion) => ReadyFirst::Completion(completion),
+                Err(TryRecvError::Empty) => ReadyFirst::Timeout,
+                Err(TryRecvError::Disconnected) => ReadyFirst::Closed,
+            },
+        }
+    } else {
+        select! {
+            recv(results) -> result => map_ready_receive(result),
+            recv(context.cancellation.signal()) -> _ => match results.try_recv() {
+                Ok(completion) => ReadyFirst::Completion(completion),
+                Err(TryRecvError::Empty) => ReadyFirst::Cancelled,
+                Err(TryRecvError::Disconnected) => ReadyFirst::Closed,
+            },
+            recv(shutdown.signal()) -> _ => ReadyFirst::Closed,
+        }
+    }
+}
+
+fn map_ready_receive<T>(result: std::result::Result<T, RecvError>) -> ReadyFirst<T> {
     match result {
-        Ok(completion) => StreamReceive::Completion(completion),
-        Err(_) => StreamReceive::Closed,
+        Ok(completion) => ReadyFirst::Completion(completion),
+        Err(_) => ReadyFirst::Closed,
     }
 }
 
@@ -803,7 +851,8 @@ fn run_stream_generation<S, F, I>(
     );
     let mut source = match source_factory.create(context.clone()) {
         Ok(source) if context.check().is_ok() => source,
-        Ok(_) => {
+        Ok(source) => {
+            drop(source);
             send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, false);
             return;
         }
@@ -831,11 +880,13 @@ fn run_stream_generation<S, F, I>(
             recv(shutdown.signal()) -> _ => return,
         };
         if !acquired {
+            drop(source);
             send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, false);
             return;
         }
         active.as_mut().expect("active stream generation").3 = true;
         if context.check().is_err() {
+            drop(source);
             send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, true);
             active.as_mut().expect("active stream generation").3 = false;
             return;
@@ -844,6 +895,7 @@ fn run_stream_generation<S, F, I>(
         let record = match source.next() {
             Some(Ok(record)) => {
                 if context.check().is_err() {
+                    drop(source);
                     send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, true);
                     active.as_mut().expect("active stream generation").3 = false;
                     return;
@@ -851,11 +903,13 @@ fn run_stream_generation<S, F, I>(
                 record
             }
             None => {
+                drop(source);
                 send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, true);
                 active.as_mut().expect("active stream generation").3 = false;
                 return;
             }
             Some(Err(error)) => {
+                drop(source);
                 send_stream_failure(
                     results,
                     shutdown,
@@ -891,11 +945,13 @@ fn run_stream_generation<S, F, I>(
         let sample = match transform.transform(record.sample, &task_context) {
             Ok(sample) if context.check().is_ok() => sample,
             Ok(_) => {
+                drop(source);
                 send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, true);
                 active.as_mut().expect("active stream generation").3 = false;
                 return;
             }
             Err(error) => {
+                drop(source);
                 send_stream_failure(
                     results,
                     shutdown,
@@ -935,6 +991,7 @@ fn run_stream_generation<S, F, I>(
             active.2 = None;
             active.3 = false;
         } else {
+            drop(source);
             send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, true);
             active.as_mut().expect("active stream generation").3 = false;
             return;
@@ -1096,6 +1153,9 @@ impl<S, C, F, I> StreamDataLoaderBuilder<S, C, F, I> {
     }
 
     /// Sets bounded unpublished records permitted per worker.
+    ///
+    /// In ordered mode, filling the complete global reassembly window with
+    /// higher IDs before the next ID is observable is a stream protocol error.
     pub fn prefetch_factor(mut self, factor: usize) -> Self {
         self.configuration.prefetch_factor = factor;
         self
@@ -1240,6 +1300,7 @@ impl<S, C, F, I> StreamDataLoaderBuilder<S, C, F, I> {
             self.configuration.prefetch_factor,
             outstanding_capacity,
             self.configuration.batch_size,
+            self.configuration.ordered,
         )?;
         let exact_len = self.factory.exact_len();
         Ok(StreamDataLoader {
@@ -1465,6 +1526,7 @@ where
             batch_size: self.configuration.batch_size,
             drop_last: self.configuration.drop_last,
             expected_records: self.exact_len,
+            reassembly_capacity: self.outstanding_capacity,
             completed: BTreeMap::new(),
             partial,
             next_sequence: 0,
@@ -1494,6 +1556,7 @@ where
     batch_size: usize,
     drop_last: bool,
     expected_records: Option<usize>,
+    reassembly_capacity: usize,
     completed: BTreeMap<u64, BufferedRecord<TransformOutput<S, F>>>,
     partial: Vec<TransformOutput<S, F>>,
     next_sequence: u64,
@@ -1526,15 +1589,10 @@ where
 
     fn close(&mut self, poisoned: bool) {
         self.exhausted = true;
+        self.run_context.cancellation.cancel();
         let mut credit_failed = false;
-        let workers = self
-            .completed
-            .values()
-            .map(|buffered| buffered.worker)
-            .collect::<Vec<_>>();
-        self.completed.clear();
-        for worker in workers {
-            credit_failed |= self.return_credit(worker).is_err();
+        while let Some((_, buffered)) = self.completed.pop_first() {
+            credit_failed |= self.return_credit(buffered.worker).is_err();
         }
         if let Some(mut pool) = self.pool.take() {
             let persistent = pool.is_persistent();
@@ -1563,25 +1621,37 @@ where
         &mut self,
         buffered: BufferedRecord<TransformOutput<S, F>>,
     ) -> std::result::Result<bool, StreamLoaderError<S, C, F, I>> {
-        if self.return_credit(buffered.worker).is_err() {
-            self.close(true);
-            return Err(LoaderError::ChannelClosed {
-                batch: self.next_batch,
-            });
-        }
-        if self.ordered {
+        let next_sequence = if self.ordered {
             let Some(next) = buffered
                 .record
                 .sequence
                 .expect("ordered records are validated")
                 .checked_next()
             else {
+                self.run_context.cancellation.cancel();
+                if self.return_credit(buffered.worker).is_err() {
+                    self.close(true);
+                    return Err(LoaderError::ChannelClosed {
+                        batch: self.next_batch,
+                    });
+                }
                 return Err(self.protocol_error(
                     Some(self.next_sequence),
                     "stream sequence identifier overflowed",
                 ));
             };
-            self.next_sequence = next.get();
+            Some(next.get())
+        } else {
+            None
+        };
+        if self.return_credit(buffered.worker).is_err() {
+            self.close(true);
+            return Err(LoaderError::ChannelClosed {
+                batch: self.next_batch,
+            });
+        }
+        if let Some(next_sequence) = next_sequence {
+            self.next_sequence = next_sequence;
         }
         self.partial.push(buffered.record.sample);
         Ok(self.partial.len() == self.batch_size)
@@ -1717,16 +1787,19 @@ where
                 }
             }
 
-            // A worker can observe the generation deadline and publish its end
-            // marker before the coordinator's timed receive wakes. A completed
-            // record still wins above, but an end marker must not turn an
-            // expired generation into ordinary exhaustion.
-            if deadline_armed && self.run_context.deadline.is_expired() {
-                let batch = self.next_batch;
-                self.run_context.cancellation.cancel();
-                self.disarm_deadline();
-                self.close(false);
-                return Some(Err(LoaderError::Timeout { batch }));
+            if self.ordered && self.completed.len() == self.reassembly_capacity {
+                let expected = self.next_sequence;
+                let found = self
+                    .completed
+                    .first_key_value()
+                    .map(|(&sequence, _)| sequence)
+                    .expect("a full ordered reassembly window is nonempty");
+                return Some(Err(self.protocol_error(
+                    Some(expected),
+                    format!(
+                        "missing sequence {expected}; bounded reassembly window is full before buffered sequence {found}"
+                    ),
+                )));
             }
 
             if self
@@ -1810,6 +1883,7 @@ where
 
             match completion.result {
                 Err(failure) => {
+                    self.run_context.cancellation.cancel();
                     let fatal = matches!(
                         &failure,
                         StreamFailure::TransformInit(_)
@@ -1868,6 +1942,7 @@ where
                         continue;
                     }
                     let Some(sequence) = buffered.record.sequence else {
+                        self.run_context.cancellation.cancel();
                         if self.return_credit(buffered.worker).is_err() {
                             self.close(true);
                             return Some(Err(LoaderError::ChannelClosed {
@@ -1881,6 +1956,7 @@ where
                     };
                     let sequence = sequence.get();
                     if sequence < self.next_sequence {
+                        self.run_context.cancellation.cancel();
                         if self.return_credit(buffered.worker).is_err() {
                             self.close(true);
                             return Some(Err(LoaderError::ChannelClosed {
@@ -1896,6 +1972,7 @@ where
                         )));
                     }
                     if self.completed.contains_key(&sequence) {
+                        self.run_context.cancellation.cancel();
                         if self.return_credit(buffered.worker).is_err() {
                             self.close(true);
                             return Some(Err(LoaderError::ChannelClosed {
@@ -1922,17 +1999,13 @@ where
     I: WorkerInit,
 {
     fn drop(&mut self) {
-        let workers = self
-            .completed
-            .values()
-            .map(|buffered| buffered.worker)
-            .collect::<Vec<_>>();
-        self.completed.clear();
+        self.run_context.cancellation.cancel();
         let mut failed = false;
-        if let Some(pool) = self.pool.as_ref() {
-            for worker in workers {
-                failed |= pool.pool().return_credit(worker).is_err();
-            }
+        while let Some((_, buffered)) = self.completed.pop_first() {
+            failed |= self
+                .pool
+                .as_ref()
+                .is_none_or(|pool| pool.pool().return_credit(buffered.worker).is_err());
         }
         if let Some(mut pool) = self.pool.take()
             && pool.is_persistent()
@@ -1947,5 +2020,53 @@ fn invalid_configuration(field: &'static str, reason: impl Into<String>) -> Rust
     RustTorchError::InvalidConfiguration {
         field,
         reason: reason.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::convert::Infallible;
+
+    use super::*;
+
+    type TestCompletion = StreamCompletion<usize, Infallible, Infallible, Infallible, Infallible>;
+
+    fn ready_completion(
+        result: std::result::Result<
+            StreamMessage<usize>,
+            StreamFailure<Infallible, Infallible, Infallible, Infallible>,
+        >,
+    ) -> TestCompletion {
+        StreamCompletion {
+            worker: 0,
+            generation: 0,
+            sequence: None,
+            logical_id: None,
+            holds_credit: false,
+            result,
+        }
+    }
+
+    fn receive_after_expiry(completion: TestCompletion) -> TestCompletion {
+        let (sender, receiver) = bounded(1);
+        sender.send(completion).unwrap();
+        let context = WorkerRunContext::new(0, 0, 0);
+        context.deadline.arm(Duration::ZERO);
+        let shutdown = CancellationToken::new();
+        match receive_ready_first(&receiver, &context, &shutdown, Some(Duration::ZERO)) {
+            ReadyFirst::Completion(completion) => completion,
+            ReadyFirst::Timeout => panic!("ready completion lost to expired deadline"),
+            ReadyFirst::Cancelled => panic!("ready completion lost to cancellation"),
+            ReadyFirst::Closed => panic!("ready completion lost to channel close"),
+        }
+    }
+
+    #[test]
+    fn queued_error_and_end_beat_an_expired_receive_deadline() {
+        let error = receive_after_expiry(ready_completion(Err(StreamFailure::Panic)));
+        assert!(matches!(error.result, Err(StreamFailure::Panic)));
+
+        let end = receive_after_expiry(ready_completion(Ok(StreamMessage::End)));
+        assert!(matches!(end.result, Ok(StreamMessage::End)));
     }
 }

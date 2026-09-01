@@ -91,4 +91,13 @@ collation and drops at most one global tail. Persistent stream pools recreate
 sources with fresh generation cancellation and seeds while retaining their
 threads, initializer calls, and transform state.
 
+Ordered reassembly supports delayed IDs while some worker credit remains
+outside the reassembly window. If all `workers * prefetch_factor` credits are
+held by higher IDs and the next global ID is absent, the loader reports a typed
+protocol error: no shard can advance to discover another record or its end.
+Increase the factor or ensure the missing lower ID is produced by a shard with
+an independently available credit when a source intentionally emits a wider
+out-of-order window. Ready records, failures, and end markers take precedence
+over an expiring per-`next` deadline.
+
 Pinning and checkpoint/resume are not implemented in this scope.

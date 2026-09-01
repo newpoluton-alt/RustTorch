@@ -15,8 +15,8 @@ use rusttorch_core::RustTorchError;
 use rusttorch_data::{
     CancellationToken, FnCollate, FnTransform, FnTransformFactory, FnWorkerInit, IdentityTransform,
     LoaderError, LogicalSampleId, PipelineError, SequenceId, StreamDataLoaderBuilder, TaskContext,
-    Transform, TransformFactory, VecCollate, WaitOutcome, WorkerContext, WorkerRecord,
-    WorkerSourceFactory, batches, batches_with_collate,
+    Transform, TransformFactory, VecCollate, WorkerContext, WorkerRecord, WorkerSourceFactory,
+    batches, batches_with_collate,
 };
 
 #[derive(Clone)]
@@ -237,6 +237,247 @@ fn ordered_sequence_protocol_rejects_every_gap_and_duplicate_shape_once() {
         Some(2),
     );
     assert_protocol_once(records_factory(vec![vec![(None, 0, 0)]], Some(1)), None);
+}
+
+#[test]
+fn ordered_full_credit_window_reports_first_gap_instead_of_timing_out() {
+    let mut loader = StreamDataLoaderBuilder::new(records_factory(
+        vec![vec![(Some(1), 1, 1), (Some(2), 2, 2)]],
+        Some(3),
+    ))
+    .prefetch_factor(2)
+    .timeout(Duration::from_millis(50))
+    .collate(VecCollate)
+    .build()
+    .unwrap();
+    let mut iterator = loader.iter();
+    assert!(matches!(
+        iterator.next(),
+        Some(Err(LoaderError::StreamProtocol {
+            sequence: Some(0),
+            ..
+        }))
+    ));
+    assert!(iterator.next().is_none());
+}
+
+#[test]
+fn ordered_internal_gap_beyond_same_worker_quota_is_protocol_error() {
+    let mut loader = StreamDataLoaderBuilder::new(records_factory(
+        vec![vec![(Some(0), 0, 0), (Some(2), 2, 2), (Some(3), 3, 3)]],
+        Some(4),
+    ))
+    .prefetch_factor(2)
+    .timeout(Duration::from_millis(50))
+    .collate(VecCollate)
+    .build()
+    .unwrap();
+    let mut iterator = loader.iter();
+    assert_eq!(iterator.next().unwrap().unwrap(), vec![0]);
+    assert!(matches!(
+        iterator.next(),
+        Some(Err(LoaderError::StreamProtocol {
+            sequence: Some(1),
+            ..
+        }))
+    ));
+    assert!(iterator.next().is_none());
+}
+
+#[derive(Clone)]
+struct TeardownWindowFactory {
+    window: usize,
+    state: Arc<(Mutex<FailureTeardownState>, Condvar)>,
+}
+
+struct TeardownWindowSource {
+    next: usize,
+    window: usize,
+    state: Arc<(Mutex<FailureTeardownState>, Condvar)>,
+}
+
+#[derive(Default)]
+struct FailureTeardownState {
+    extra_call_entered: bool,
+    failure_returned: bool,
+    release_extra_call: bool,
+}
+
+impl Iterator for TeardownWindowSource {
+    type Item = Result<WorkerRecord<usize>, Infallible>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next > self.window {
+            let mut state = self.state.0.lock().unwrap();
+            state.extra_call_entered = true;
+            self.state.1.notify_all();
+            while !state.release_extra_call {
+                state = self.state.1.wait(state).unwrap();
+            }
+            return None;
+        }
+        let value = self.next;
+        self.next += 1;
+        Some(Ok(WorkerRecord {
+            sequence: Some(SequenceId::new(value as u64)),
+            logical_id: LogicalSampleId::new(value as u64),
+            sample: value,
+        }))
+    }
+}
+
+impl WorkerSourceFactory for TeardownWindowFactory {
+    type Sample = usize;
+    type Error = Infallible;
+    type Source = TeardownWindowSource;
+
+    fn create(&self, _worker: WorkerContext) -> Result<Self::Source, Self::Error> {
+        Ok(TeardownWindowSource {
+            next: 1,
+            window: self.window,
+            state: Arc::clone(&self.state),
+        })
+    }
+
+    fn exact_len(&self) -> Option<usize> {
+        Some(self.window)
+    }
+}
+
+#[test]
+fn first_protocol_failure_cancels_before_releasing_reassembly_credits() {
+    const WINDOW: usize = 4_096;
+    let state = Arc::new((Mutex::new(FailureTeardownState::default()), Condvar::new()));
+    let worker_state = Arc::clone(&state);
+    let handle = thread::spawn(move || {
+        let mut loader = StreamDataLoaderBuilder::new(TeardownWindowFactory {
+            window: WINDOW,
+            state: Arc::clone(&worker_state),
+        })
+        .prefetch_factor(WINDOW)
+        .timeout(Duration::from_secs(1))
+        .collate(VecCollate)
+        .build()
+        .unwrap();
+        let mut iterator = loader.iter();
+        assert!(matches!(
+            iterator.next(),
+            Some(Err(LoaderError::StreamProtocol {
+                sequence: Some(0),
+                ..
+            }))
+        ));
+        assert!(iterator.next().is_none());
+        let mut state = worker_state.0.lock().unwrap();
+        state.failure_returned = true;
+        worker_state.1.notify_all();
+    });
+
+    let mut observed = state.0.lock().unwrap();
+    while !observed.failure_returned && !observed.extra_call_entered {
+        observed = state.1.wait(observed).unwrap();
+    }
+    let failure_won = observed.failure_returned && !observed.extra_call_entered;
+    observed.release_extra_call = true;
+    state.1.notify_all();
+    drop(observed);
+    handle.join().unwrap();
+    assert!(
+        failure_won,
+        "worker entered another source call before protocol teardown cancelled"
+    );
+}
+
+#[derive(Clone)]
+struct DropTeardownFactory {
+    window: usize,
+    high_produced: Arc<(Mutex<usize>, Condvar)>,
+    calls_after_window: Arc<AtomicUsize>,
+}
+
+struct DropTeardownSource {
+    worker: usize,
+    next: usize,
+    window: usize,
+    high_produced: Arc<(Mutex<usize>, Condvar)>,
+    calls_after_window: Arc<AtomicUsize>,
+}
+
+impl Iterator for DropTeardownSource {
+    type Item = Result<WorkerRecord<usize>, Infallible>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.worker == 1 {
+            if self.next > 0 {
+                return None;
+            }
+            let mut produced = self.high_produced.0.lock().unwrap();
+            while *produced < self.window {
+                produced = self.high_produced.1.wait(produced).unwrap();
+            }
+            self.next = 1;
+            return Some(Ok(WorkerRecord {
+                sequence: Some(SequenceId::new(0)),
+                logical_id: LogicalSampleId::new(0),
+                sample: 0,
+            }));
+        }
+        if self.next > self.window {
+            self.calls_after_window.fetch_add(1, Ordering::SeqCst);
+            return None;
+        }
+        let value = self.next;
+        self.next += 1;
+        let mut produced = self.high_produced.0.lock().unwrap();
+        *produced += 1;
+        self.high_produced.1.notify_all();
+        drop(produced);
+        Some(Ok(WorkerRecord {
+            sequence: Some(SequenceId::new(value as u64)),
+            logical_id: LogicalSampleId::new(value as u64),
+            sample: value,
+        }))
+    }
+}
+
+impl WorkerSourceFactory for DropTeardownFactory {
+    type Sample = usize;
+    type Error = Infallible;
+    type Source = DropTeardownSource;
+
+    fn create(&self, worker: WorkerContext) -> Result<Self::Source, Self::Error> {
+        Ok(DropTeardownSource {
+            worker: worker.info.id,
+            next: usize::from(worker.info.id == 0),
+            window: self.window,
+            high_produced: Arc::clone(&self.high_produced),
+            calls_after_window: Arc::clone(&self.calls_after_window),
+        })
+    }
+
+    fn exact_len(&self) -> Option<usize> {
+        self.window.checked_add(1)
+    }
+}
+
+#[test]
+fn iterator_drop_cancels_before_releasing_reassembly_credits() {
+    const WINDOW: usize = 4_096;
+    let calls_after_window = Arc::new(AtomicUsize::new(0));
+    let mut loader = StreamDataLoaderBuilder::new(DropTeardownFactory {
+        window: WINDOW,
+        high_produced: Arc::new((Mutex::new(0), Condvar::new())),
+        calls_after_window: Arc::clone(&calls_after_window),
+    })
+    .workers(2)
+    .prefetch_factor(WINDOW)
+    .collate(VecCollate)
+    .build()
+    .unwrap();
+    let mut iterator = loader.iter();
+    assert_eq!(iterator.next().unwrap().unwrap(), vec![0]);
+    drop(iterator);
+    assert_eq!(calls_after_window.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -481,16 +722,20 @@ fn every_stream_stage_failure_is_typed_contextual_and_visible_once() -> Result<(
         .collate(VecCollate)
         .build()?;
     let mut iterator = transform.iter();
-    assert!(matches!(
-        iterator.next(),
-        Some(Err(LoaderError::StreamPipeline {
-            batch: Some(0),
-            worker: 0,
-            sequence: Some(0),
-            logical_id: Some(7),
-            source: PipelineError::Transform(TestError::Transform),
-        }))
-    ));
+    let outcome = iterator.next();
+    assert!(
+        matches!(
+            outcome,
+            Some(Err(LoaderError::StreamPipeline {
+                batch: Some(0),
+                worker: 0,
+                sequence: Some(0),
+                logical_id: Some(7),
+                source: PipelineError::Transform(TestError::Transform),
+            }))
+        ),
+        "unexpected transform failure outcome: {outcome:?}"
+    );
     assert!(iterator.next().is_none());
 
     let mut factory = StreamDataLoaderBuilder::new(ErrorFactory(ErrorMode::Value))
@@ -607,10 +852,7 @@ impl Iterator for CooperativeSource {
         }
         self.done = true;
         self.entered.send(()).unwrap();
-        assert!(matches!(
-            self.context.wait_cancelled_or_deadline(),
-            WaitOutcome::Cancelled | WaitOutcome::DeadlineExpired
-        ));
+        self.context.cancellation.wait_cancelled();
         self.exits.fetch_add(1, Ordering::SeqCst);
         Some(Ok(WorkerRecord {
             sequence: Some(SequenceId::new(0)),
@@ -662,6 +904,141 @@ fn cooperative_stream_source_wakes_on_timeout_and_early_drop() -> Result<(), Rus
         drop(iterator);
         assert_eq!(exits.load(Ordering::SeqCst), 1);
     }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct QueuedLowFactory {
+    queued: mpsc::Sender<()>,
+}
+
+struct QueuedLowSource {
+    queued: mpsc::Sender<()>,
+    step: usize,
+}
+
+impl Iterator for QueuedLowSource {
+    type Item = Result<WorkerRecord<usize>, Infallible>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let record = match self.step {
+            0 => Some((1, 1)),
+            1 => Some((0, 0)),
+            2 => {
+                self.queued.send(()).unwrap();
+                None
+            }
+            _ => None,
+        };
+        self.step += 1;
+        record.map(|(sequence, sample)| {
+            Ok(WorkerRecord {
+                sequence: Some(SequenceId::new(sequence)),
+                logical_id: LogicalSampleId::new(sequence),
+                sample,
+            })
+        })
+    }
+}
+
+impl WorkerSourceFactory for QueuedLowFactory {
+    type Sample = usize;
+    type Error = Infallible;
+    type Source = QueuedLowSource;
+
+    fn create(&self, _worker: WorkerContext) -> Result<Self::Source, Self::Error> {
+        Ok(QueuedLowSource {
+            queued: self.queued.clone(),
+            step: 0,
+        })
+    }
+
+    fn exact_len(&self) -> Option<usize> {
+        Some(2)
+    }
+}
+
+#[test]
+fn queued_low_record_beats_an_expired_deadline_after_high_reassembly() -> Result<(), RustTorchError>
+{
+    let (queued_tx, queued_rx) = mpsc::channel();
+    let mut loader = StreamDataLoaderBuilder::new(QueuedLowFactory { queued: queued_tx })
+        .prefetch_factor(3)
+        .timeout(Duration::from_nanos(1))
+        .collate(VecCollate)
+        .build()?;
+    let mut iterator = loader.iter();
+    queued_rx.recv().unwrap();
+    assert_eq!(iterator.next().unwrap().unwrap(), vec![0]);
+    assert_eq!(iterator.next().unwrap().unwrap(), vec![1]);
+    assert!(iterator.next().is_none());
+    Ok(())
+}
+
+#[derive(Clone)]
+struct QueuedTerminalFactory {
+    ready: mpsc::Sender<()>,
+}
+
+struct QueuedTerminalSource {
+    ready: mpsc::Sender<()>,
+    step: usize,
+}
+
+impl Iterator for QueuedTerminalSource {
+    type Item = Result<WorkerRecord<usize>, Infallible>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let record = match self.step {
+            0 => Some(WorkerRecord {
+                sequence: Some(SequenceId::new(1)),
+                logical_id: LogicalSampleId::new(1),
+                sample: 1,
+            }),
+            1 => Some(WorkerRecord {
+                sequence: None,
+                logical_id: LogicalSampleId::new(2),
+                sample: 2,
+            }),
+            2 => {
+                self.ready.send(()).unwrap();
+                None
+            }
+            _ => None,
+        };
+        self.step += 1;
+        record.map(Ok)
+    }
+}
+
+impl WorkerSourceFactory for QueuedTerminalFactory {
+    type Sample = usize;
+    type Error = Infallible;
+    type Source = QueuedTerminalSource;
+
+    fn create(&self, _worker: WorkerContext) -> Result<Self::Source, Self::Error> {
+        Ok(QueuedTerminalSource {
+            ready: self.ready.clone(),
+            step: 0,
+        })
+    }
+}
+
+#[test]
+fn queued_protocol_error_beats_expiry_after_a_high_record() -> Result<(), RustTorchError> {
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let mut loader = StreamDataLoaderBuilder::new(QueuedTerminalFactory { ready: ready_tx })
+        .prefetch_factor(3)
+        .timeout(Duration::from_nanos(1))
+        .collate(VecCollate)
+        .build()?;
+    let mut iterator = loader.iter();
+    ready_rx.recv().unwrap();
+    assert!(matches!(
+        iterator.next(),
+        Some(Err(LoaderError::StreamProtocol { sequence: None, .. }))
+    ));
+    assert!(iterator.next().is_none());
     Ok(())
 }
 
@@ -1111,6 +1488,193 @@ fn persistent_early_drop_drains_stale_results_before_both_delivery_modes_restart
 }
 
 #[derive(Clone)]
+struct SourceDropFactory {
+    entered: mpsc::Sender<()>,
+    release: Arc<(Mutex<bool>, Condvar)>,
+    creates: Arc<AtomicUsize>,
+    panic_on_drop: bool,
+}
+
+struct SourceDropProbe {
+    entered: mpsc::Sender<()>,
+    release: Arc<(Mutex<bool>, Condvar)>,
+    panic_on_drop: bool,
+    yielded: bool,
+}
+
+impl Iterator for SourceDropProbe {
+    type Item = Result<WorkerRecord<usize>, Infallible>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.yielded {
+            return None;
+        }
+        self.yielded = true;
+        Some(Ok(WorkerRecord {
+            sequence: Some(SequenceId::new(0)),
+            logical_id: LogicalSampleId::new(0),
+            sample: 0,
+        }))
+    }
+}
+
+impl Drop for SourceDropProbe {
+    fn drop(&mut self) {
+        self.entered.send(()).unwrap();
+        let mut released = self.release.0.lock().unwrap();
+        while !*released {
+            released = self.release.1.wait(released).unwrap();
+        }
+        if self.panic_on_drop {
+            panic!("source destructor panic");
+        }
+    }
+}
+
+impl WorkerSourceFactory for SourceDropFactory {
+    type Sample = usize;
+    type Error = Infallible;
+    type Source = SourceDropProbe;
+
+    fn create(&self, _worker: WorkerContext) -> Result<Self::Source, Self::Error> {
+        self.creates.fetch_add(1, Ordering::SeqCst);
+        Ok(SourceDropProbe {
+            entered: self.entered.clone(),
+            release: Arc::clone(&self.release),
+            panic_on_drop: self.panic_on_drop,
+            yielded: false,
+        })
+    }
+
+    fn exact_len(&self) -> Option<usize> {
+        Some(1)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DropOutcome {
+    Exhausted,
+    Panic,
+    ChannelClosed,
+    Timeout,
+    Other,
+}
+
+#[test]
+fn persistent_exhaustion_waits_until_the_generation_source_is_dropped() {
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let creates = Arc::new(AtomicUsize::new(0));
+    let factory = SourceDropFactory {
+        entered: entered_tx,
+        release: Arc::clone(&release),
+        creates,
+        panic_on_drop: false,
+    };
+    let handle = thread::spawn(move || {
+        let mut loader = StreamDataLoaderBuilder::new(factory)
+            .persistent_workers(true)
+            .collate(VecCollate)
+            .build()
+            .unwrap();
+        let mut iterator = loader.iter();
+        assert_eq!(iterator.next().unwrap().unwrap(), vec![0]);
+        let outcome = match iterator.next() {
+            None => DropOutcome::Exhausted,
+            _ => DropOutcome::Other,
+        };
+        finished_tx.send(outcome).unwrap();
+    });
+
+    entered_rx.recv().unwrap();
+    let premature = match finished_rx.recv_timeout(Duration::from_millis(50)) {
+        Ok(outcome) => Some(outcome),
+        Err(mpsc::RecvTimeoutError::Timeout) => None,
+        Err(mpsc::RecvTimeoutError::Disconnected) => panic!("worker test disconnected"),
+    };
+    *release.0.lock().unwrap() = true;
+    release.1.notify_all();
+    let outcome = premature.unwrap_or_else(|| finished_rx.recv().unwrap());
+    handle.join().unwrap();
+    assert!(
+        premature.is_none(),
+        "exhaustion preceded source destruction"
+    );
+    assert_eq!(outcome, DropOutcome::Exhausted);
+}
+
+#[test]
+fn persistent_source_destructor_panic_is_visible_and_poisons_the_pool() {
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (outcome_tx, outcome_rx) = mpsc::channel();
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let creates = Arc::new(AtomicUsize::new(0));
+    let factory = SourceDropFactory {
+        entered: entered_tx,
+        release: Arc::clone(&release),
+        creates: Arc::clone(&creates),
+        panic_on_drop: true,
+    };
+    let handle = thread::spawn(move || {
+        let mut loader = StreamDataLoaderBuilder::new(factory)
+            .persistent_workers(true)
+            .timeout(Duration::from_secs(1))
+            .collate(VecCollate)
+            .build()
+            .unwrap();
+        let mut first = loader.iter();
+        assert_eq!(first.next().unwrap().unwrap(), vec![0]);
+        let first_outcome = match first.next() {
+            Some(Err(LoaderError::StreamWorkerPanic {
+                worker: 0,
+                batch: Some(1),
+                sequence: None,
+                logical_id: None,
+            })) => DropOutcome::Panic,
+            None => DropOutcome::Exhausted,
+            Some(Err(LoaderError::Timeout { .. })) => DropOutcome::Timeout,
+            _ => DropOutcome::Other,
+        };
+        outcome_tx.send(first_outcome).unwrap();
+        let second_outcome = if first_outcome == DropOutcome::Panic {
+            assert!(first.next().is_none());
+            drop(first);
+            let mut second = loader.iter();
+            match second.next() {
+                Some(Err(LoaderError::ChannelClosed { .. })) => DropOutcome::ChannelClosed,
+                Some(Err(LoaderError::Timeout { .. })) => DropOutcome::Timeout,
+                _ => DropOutcome::Other,
+            }
+        } else {
+            drop(first);
+            DropOutcome::Other
+        };
+        outcome_tx.send(second_outcome).unwrap();
+    });
+
+    entered_rx.recv().unwrap();
+    let premature = match outcome_rx.recv_timeout(Duration::from_millis(50)) {
+        Ok(outcome) => Some(outcome),
+        Err(mpsc::RecvTimeoutError::Timeout) => None,
+        Err(mpsc::RecvTimeoutError::Disconnected) => panic!("worker test disconnected"),
+    };
+    *release.0.lock().unwrap() = true;
+    release.1.notify_all();
+    let first_outcome = premature.unwrap_or_else(|| outcome_rx.recv().unwrap());
+    let second_outcome = outcome_rx.recv().unwrap();
+    handle.join().unwrap();
+
+    assert!(
+        premature.is_none(),
+        "terminal acknowledgement preceded Drop"
+    );
+    assert_eq!(first_outcome, DropOutcome::Panic);
+    assert_eq!(second_outcome, DropOutcome::ChannelClosed);
+    assert_eq!(creates.load(Ordering::SeqCst), 1);
+}
+
+#[derive(Clone)]
 struct BuildSideEffectFactory(Arc<AtomicUsize>);
 
 impl WorkerSourceFactory for BuildSideEffectFactory {
@@ -1178,6 +1742,74 @@ fn invalid_stream_builders_fail_before_factory_or_worker_side_effects() {
     };
     assert_eq!(field, "workers");
     assert!(reason.contains("batches_with_collate"));
+}
+
+const LARGE_INLINE_BYTES: usize = 1_048_576;
+type LargeInline = [u8; LARGE_INLINE_BYTES];
+
+#[derive(Clone)]
+struct LargeInlineFactory {
+    exact_calls: Arc<AtomicUsize>,
+    create_calls: Arc<AtomicUsize>,
+}
+
+impl WorkerSourceFactory for LargeInlineFactory {
+    type Sample = LargeInline;
+    type Error = Infallible;
+    type Source = std::iter::Empty<Result<WorkerRecord<LargeInline>, Infallible>>;
+
+    fn create(&self, _worker: WorkerContext) -> Result<Self::Source, Self::Error> {
+        self.create_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(std::iter::empty())
+    }
+
+    fn exact_len(&self) -> Option<usize> {
+        self.exact_calls.fetch_add(1, Ordering::SeqCst);
+        Some(0)
+    }
+}
+
+#[test]
+fn large_inline_batch_and_reassembly_storage_are_rejected_before_callbacks() {
+    for (prefetch_factor, batch_size) in [(1, 32), (32, 1)] {
+        let exact_calls = Arc::new(AtomicUsize::new(0));
+        let create_calls = Arc::new(AtomicUsize::new(0));
+        let init_calls = Arc::new(AtomicUsize::new(0));
+        let collate_calls = Arc::new(AtomicUsize::new(0));
+        let result = StreamDataLoaderBuilder::new(LargeInlineFactory {
+            exact_calls: Arc::clone(&exact_calls),
+            create_calls: Arc::clone(&create_calls),
+        })
+        .prefetch_factor(prefetch_factor)
+        .batch_size(batch_size)
+        .worker_init(FnWorkerInit::new({
+            let init_calls = Arc::clone(&init_calls);
+            move |_: &WorkerContext| {
+                init_calls.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, Infallible>(())
+            }
+        }))
+        .collate(FnCollate::new({
+            let collate_calls = Arc::clone(&collate_calls);
+            move |samples: Vec<LargeInline>| {
+                collate_calls.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, Infallible>(samples)
+            }
+        }))
+        .build();
+
+        assert!(matches!(
+            result,
+            Err(RustTorchError::InvalidConfiguration {
+                field: "prefetch_factor",
+                ..
+            })
+        ));
+        assert_eq!(exact_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(create_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(init_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(collate_calls.load(Ordering::SeqCst), 0);
+    }
 }
 
 #[test]
