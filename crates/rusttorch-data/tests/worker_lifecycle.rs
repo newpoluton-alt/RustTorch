@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     convert::Infallible,
     error::Error,
     fmt,
@@ -65,6 +66,10 @@ fn public_cancellation_and_deadline_waits_are_notification_driven() {
         WaitOutcome::DeadlineExpired
     );
     assert!(context.check().is_err());
+
+    let overflowing = Deadline::after(Duration::MAX);
+    assert_eq!(overflowing.remaining(), Some(Duration::ZERO));
+    assert!(overflowing.is_expired());
 }
 
 struct CooperativeRows {
@@ -193,6 +198,132 @@ fn timeout_deadline_is_fresh_for_each_blocking_next() -> Result<(), RustTorchErr
         Some(Err(LoaderError::Timeout { batch: 1 }))
     ));
     assert!(iterator.next().is_none());
+    Ok(())
+}
+
+struct SaturatedLaneRows {
+    zero_context: mpsc::Sender<CancellationToken>,
+    odd_releases: Mutex<Vec<Option<mpsc::Receiver<()>>>>,
+    odd_returned: mpsc::Sender<usize>,
+}
+
+impl Dataset for SaturatedLaneRows {
+    type Sample = usize;
+    type Error = Infallible;
+
+    fn len(&self) -> usize {
+        8
+    }
+
+    fn get(&self, _index: usize) -> Result<Self::Sample, Self::Error> {
+        unreachable!("positive workers use the context-aware batch hook")
+    }
+
+    fn get_batch_with_context(
+        &self,
+        indices: &[usize],
+        context: &WorkerContext,
+    ) -> Result<Vec<Self::Sample>, Self::Error> {
+        let index = indices[0];
+        if index == 0 {
+            self.zero_context
+                .send(context.cancellation.clone())
+                .unwrap();
+            let _ = context.wait_cancelled_or_deadline();
+        } else if index % 2 == 1 {
+            self.odd_releases.lock().unwrap()[index]
+                .take()
+                .expect("one release per odd task")
+                .recv()
+                .unwrap();
+            self.odd_returned.send(index).unwrap();
+        } else {
+            panic!("worker zero must not fetch queued task {index} before cancellation");
+        }
+        Ok(indices.to_vec())
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ObservedNext {
+    Batch(Vec<usize>),
+    Timeout(u64),
+    Cancelled,
+    OtherError,
+    End,
+}
+
+#[test]
+fn unordered_ready_batch_does_not_block_on_saturated_lane_refill() -> Result<(), RustTorchError> {
+    let (zero_tx, zero_rx) = mpsc::channel();
+    let (returned_tx, returned_rx) = mpsc::channel();
+    let mut releases = (0..8).map(|_| None).collect::<Vec<_>>();
+    let mut release_senders = Vec::new();
+    for index in [1, 3, 5] {
+        let (release_tx, release_rx) = mpsc::channel();
+        releases[index] = Some(release_rx);
+        release_senders.push(release_tx);
+    }
+    let mut loader = DataLoader::builder(SaturatedLaneRows {
+        zero_context: zero_tx,
+        odd_releases: Mutex::new(releases),
+        odd_returned: returned_tx,
+    })
+    .workers(2)
+    .prefetch_factor(2)
+    .ordered(false)
+    .timeout(Duration::from_millis(250))
+    .collate(VecCollate)
+    .build()?;
+    let mut iterator = loader.iter();
+    let zero_cancellation = zero_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker zero entered its controlled fetch");
+
+    let classify = |item| match item {
+        Some(Ok(batch)) => ObservedNext::Batch(batch),
+        Some(Err(LoaderError::Timeout { batch })) => ObservedNext::Timeout(batch),
+        Some(Err(LoaderError::Cancelled)) => ObservedNext::Cancelled,
+        Some(Err(_)) => ObservedNext::OtherError,
+        None => ObservedNext::End,
+    };
+
+    std::thread::scope(|scope| {
+        let (observed_tx, observed_rx) = mpsc::channel();
+        let caller = scope.spawn(move || {
+            for _ in 0..5 {
+                observed_tx.send(classify(iterator.next())).unwrap();
+            }
+        });
+
+        for (release, expected) in release_senders.into_iter().zip([1, 3, 5]) {
+            release.send(()).unwrap();
+            assert_eq!(
+                returned_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("released odd task returned"),
+                expected
+            );
+            let observed = observed_rx.recv_timeout(Duration::from_secs(2));
+            if observed.is_err() {
+                zero_cancellation.cancel();
+            }
+            assert_eq!(
+                observed.expect("ready batch was blocked by internal refill"),
+                ObservedNext::Batch(vec![expected])
+            );
+        }
+
+        assert_eq!(
+            observed_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            ObservedNext::Timeout(3)
+        );
+        assert_eq!(
+            observed_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            ObservedNext::End
+        );
+        caller.join().unwrap();
+    });
     Ok(())
 }
 
@@ -584,10 +715,16 @@ fn persistent_workers_reuse_threads_seeds_and_callbacks_across_epochs() -> Resul
     assert!(second_token.is_cancelled());
     assert_eq!(factory_calls.load(Ordering::SeqCst), 2);
     assert_eq!(init_calls.load(Ordering::SeqCst), 2);
-    let threads = threads.lock().unwrap();
+    let mut threads = threads.lock().unwrap().clone();
+    threads.sort_by_key(|(info, _)| info.id);
     assert_eq!(threads.len(), 2);
+    assert_eq!([threads[0].0.id, threads[1].0.id], [0, 1]);
     assert_eq!(threads[1].0.seed, threads[0].0.seed + 1);
     let contexts = contexts.lock().unwrap();
+    let keyed_contexts = contexts
+        .iter()
+        .map(|(thread, context)| ((context.epoch, context.logical_sample), *thread))
+        .collect::<BTreeMap<_, _>>();
     for epoch in [0, 1] {
         let mut logical = contexts
             .iter()
@@ -596,6 +733,13 @@ fn persistent_workers_reuse_threads_seeds_and_callbacks_across_epochs() -> Resul
             .collect::<Vec<_>>();
         logical.sort_unstable();
         assert_eq!(logical, [0, 1, 2, 3]);
+    }
+    for logical_sample in 0..4 {
+        assert_eq!(
+            keyed_contexts[&(0, logical_sample)],
+            keyed_contexts[&(1, logical_sample)],
+            "persistent routing must reuse the same worker thread"
+        );
     }
     drop(contexts);
     assert!(

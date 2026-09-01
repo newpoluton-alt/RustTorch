@@ -7,7 +7,9 @@ use std::{
     time::Duration,
 };
 
-use crossbeam_channel::{Receiver, RecvError, Sender, TryRecvError, after, bounded, select};
+use crossbeam_channel::{
+    Receiver, RecvError, Sender, TryRecvError, TrySendError, after, bounded, select,
+};
 use rusttorch_core::{Result, RustTorchError};
 
 use crate::{
@@ -20,6 +22,12 @@ pub(crate) struct WorkerTask {
     pub(crate) batch_sequence: u64,
     pub(crate) logical_samples: Vec<u64>,
     pub(crate) indices: Vec<usize>,
+}
+
+pub(crate) enum WorkerSubmit {
+    Submitted,
+    Full(WorkerTask),
+    Closed,
 }
 
 pub(crate) struct WorkerBatch<T> {
@@ -292,12 +300,17 @@ where
         Ok(())
     }
 
-    pub(crate) fn submit(&self, worker: usize, task: WorkerTask) -> std::result::Result<(), ()> {
-        let active = self.active.as_ref().ok_or(())?;
-        select! {
-            send(self.tasks[worker], task) -> result => result.map_err(|_| ()),
-            recv(active.cancellation.signal()) -> _ => Err(()),
-            recv(self.shutdown.signal()) -> _ => Err(()),
+    pub(crate) fn submit(&self, worker: usize, task: WorkerTask) -> WorkerSubmit {
+        let Some(active) = self.active.as_ref() else {
+            return WorkerSubmit::Closed;
+        };
+        if active.cancellation.is_cancelled() || self.shutdown.is_cancelled() {
+            return WorkerSubmit::Closed;
+        }
+        match self.tasks[worker].try_send(task) {
+            Ok(()) => WorkerSubmit::Submitted,
+            Err(TrySendError::Full(task)) => WorkerSubmit::Full(task),
+            Err(TrySendError::Disconnected(_)) => WorkerSubmit::Closed,
         }
     }
 

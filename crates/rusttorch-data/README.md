@@ -70,9 +70,10 @@ concrete task/control/completion slot buffers, worker/vector bookkeeping, and
 bounded channel control-block allowances above 64 MiB before sampler or
 batch-source callbacks.
 
-Positive-worker `.timeout(duration)` applies a fresh monotonic deadline to
-each blocking `next()` call. Dataset and transform contexts can observe that
-deadline or cooperative cancellation without polling. Persistent pools reuse
+Positive-worker `.timeout(duration)` must fit the platform monotonic clock
+range and applies a fresh deadline to each blocking `next()` call. Dataset and
+transform contexts can observe that deadline or cooperative cancellation
+without polling. Persistent pools reuse
 their threads, initial worker seeds, initializer calls, and transforms across
 iterator generations, but remain owned and joined by the loader. Iterator drop
 cancels and quiesces its generation; owner drop shuts down the pool. Rust

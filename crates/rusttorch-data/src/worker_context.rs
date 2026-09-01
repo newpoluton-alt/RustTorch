@@ -15,6 +15,11 @@ use rusttorch_core::{Result, RustTorchError};
 /// Version of RustTorch's deterministic worker-seed derivation.
 pub const WORKER_SEED_DERIVATION_VERSION: u32 = 1;
 
+// Predicate transitions always acquire `wait_lock` first, then `deadline` or
+// `signal_sender`, and notify while `wait_lock` is still held. Readers that
+// need both locks use the same `wait_lock -> deadline` order. This is the one
+// lock order for lifecycle state and prevents a notification between a
+// predicate check and the condition-variable park.
 struct CancellationState {
     cancelled: AtomicBool,
     wait_lock: Mutex<()>,
@@ -22,6 +27,8 @@ struct CancellationState {
     wake: Condvar,
     signal: Receiver<()>,
     signal_sender: Mutex<Option<Sender<()>>>,
+    #[cfg(test)]
+    require_wait_lock_for_transition: AtomicBool,
 }
 
 impl CancellationState {
@@ -34,7 +41,19 @@ impl CancellationState {
             wake: Condvar::new(),
             signal,
             signal_sender: Mutex::new(Some(signal_sender)),
+            #[cfg(test)]
+            require_wait_lock_for_transition: AtomicBool::new(false),
         })
+    }
+
+    #[cfg(test)]
+    fn assert_transition_holds_wait_lock(&self) {
+        if self.require_wait_lock_for_transition.load(Ordering::SeqCst) {
+            assert!(
+                self.wait_lock.try_lock().is_err(),
+                "predicate transition did not hold the waiter mutex"
+            );
+        }
     }
 }
 
@@ -72,6 +91,9 @@ impl CancellationToken {
 
     /// Requests cooperative cancellation and wakes every waiter.
     pub fn cancel(&self) {
+        let _wait_guard = self.state.wait_lock.lock().unwrap();
+        #[cfg(test)]
+        self.state.assert_transition_holds_wait_lock();
         if !self.state.cancelled.swap(true, Ordering::AcqRel) {
             self.state.signal_sender.lock().unwrap().take();
             self.state.wake.notify_all();
@@ -166,9 +188,13 @@ impl Deadline {
     }
 
     /// Creates a deadline expiring after `timeout`.
+    ///
+    /// A duration outside the platform's monotonic [`Instant`] range fails
+    /// closed as an already-expired deadline; it never becomes unarmed.
     pub fn after(timeout: Duration) -> Self {
+        let now = Instant::now();
         Self {
-            state: CancellationState::new(Instant::now().checked_add(timeout)),
+            state: CancellationState::new(Some(now.checked_add(timeout).unwrap_or(now))),
         }
     }
 
@@ -188,13 +214,24 @@ impl Deadline {
     }
 
     pub(crate) fn arm(&self, timeout: Duration) {
-        *self.state.deadline.lock().unwrap() = Instant::now().checked_add(timeout);
+        let _wait_guard = self.state.wait_lock.lock().unwrap();
+        #[cfg(test)]
+        self.state.assert_transition_holds_wait_lock();
+        let now = Instant::now();
+        *self.state.deadline.lock().unwrap() = Some(now.checked_add(timeout).unwrap_or(now));
         self.state.wake.notify_all();
     }
 
     pub(crate) fn disarm(&self) {
+        let _wait_guard = self.state.wait_lock.lock().unwrap();
+        #[cfg(test)]
+        self.state.assert_transition_holds_wait_lock();
         *self.state.deadline.lock().unwrap() = None;
         self.state.wake.notify_all();
+    }
+
+    pub(crate) fn can_represent(timeout: Duration) -> bool {
+        Instant::now().checked_add(timeout).is_some()
     }
 }
 
@@ -277,6 +314,37 @@ impl WorkerInfo {
 /// is cancelled only when the owner shuts the pool down. Dataset fetches and
 /// task transforms receive a separate, fresh context for each iterator
 /// generation.
+///
+/// ```
+/// use std::time::Duration;
+/// use rusttorch_data::{
+///     CancellationToken, Deadline, LoaderCancelled, WaitOutcome,
+///     WorkerContext, WorkerInfo,
+/// };
+///
+/// let cancellation = CancellationToken::new();
+/// let context = WorkerContext::new(
+///     WorkerInfo::new(0, 1, 7, 0)?,
+///     cancellation.clone(),
+///     Deadline::none(),
+/// );
+/// assert!(context.check().is_ok());
+/// let cancel = std::thread::spawn(move || cancellation.cancel());
+/// assert_eq!(context.wait_cancelled_or_deadline(), WaitOutcome::Cancelled);
+/// cancel.join().unwrap();
+/// let _: LoaderCancelled = context.check().unwrap_err();
+///
+/// let expired = WorkerContext::new(
+///     WorkerInfo::new(0, 1, 7, 0)?,
+///     CancellationToken::new(),
+///     Deadline::after(Duration::ZERO),
+/// );
+/// assert_eq!(
+///     expired.wait_cancelled_or_deadline(),
+///     WaitOutcome::DeadlineExpired,
+/// );
+/// # Ok::<(), rusttorch_core::RustTorchError>(())
+/// ```
 #[derive(Clone, Debug)]
 pub struct WorkerContext {
     /// Stable worker identity and initialization seed.
@@ -432,5 +500,36 @@ fn invalid_configuration(field: &'static str, reason: impl Into<String>) -> Rust
     RustTorchError::InvalidConfiguration {
         field,
         reason: reason.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancellation_transition_holds_the_waiter_mutex() {
+        let cancellation = CancellationToken::new();
+        cancellation
+            .state
+            .require_wait_lock_for_transition
+            .store(true, Ordering::SeqCst);
+
+        cancellation.cancel();
+        assert!(cancellation.is_cancelled());
+    }
+
+    #[test]
+    fn deadline_transitions_hold_the_waiter_mutex() {
+        let cancellation = CancellationToken::new();
+        let deadline = cancellation.paired_deadline();
+        cancellation
+            .state
+            .require_wait_lock_for_transition
+            .store(true, Ordering::SeqCst);
+
+        deadline.arm(Duration::from_secs(1));
+        deadline.disarm();
+        assert_eq!(deadline.remaining(), None);
     }
 }

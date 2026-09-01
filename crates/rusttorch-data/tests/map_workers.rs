@@ -12,6 +12,7 @@ use std::{
         mpsc,
     },
     thread::ThreadId,
+    time::Duration,
 };
 
 use rusttorch_core::RustTorchError;
@@ -511,8 +512,6 @@ fn channel_control_blocks_are_counted_before_many_worker_callbacks() {
 
 #[test]
 fn lifecycle_options_still_validate_capacity_before_sampler_callbacks() {
-    use std::time::Duration;
-
     for persistent in [false, true] {
         let calls = Arc::new(AtomicUsize::new(0));
         let builder = DataLoader::builder(PlainRows(1))
@@ -537,6 +536,47 @@ fn lifecycle_options_still_validate_capacity_before_sampler_callbacks() {
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
+}
+
+#[test]
+fn overflowing_timeout_rejects_before_plan_or_worker_callbacks() {
+    let plan_calls = Arc::new(AtomicUsize::new(0));
+    let worker_calls = Arc::new(AtomicUsize::new(0));
+    let factory_calls = Arc::clone(&worker_calls);
+    let init_calls = Arc::clone(&worker_calls);
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        DataLoader::builder(PlainRows(1))
+            .sampler(SetEpochSampler {
+                calls: Arc::clone(&plan_calls),
+                panic_on_set: true,
+            })
+            .workers(1)
+            .timeout(Duration::MAX)
+            .transform_factory(FnTransformFactory::new(move |_: Option<&WorkerContext>| {
+                factory_calls.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, TestError>(rusttorch_data::IdentityTransform)
+            }))
+            .worker_init(FnWorkerInit::new(move |_: &WorkerContext| {
+                init_calls.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, TestError>(())
+            }))
+            .collate(VecCollate)
+            .build()
+    }));
+
+    assert!(
+        outcome.is_ok(),
+        "plan callback ran before timeout validation"
+    );
+    assert!(matches!(
+        outcome.unwrap(),
+        Err(RustTorchError::InvalidConfiguration {
+            field: "timeout",
+            ..
+        })
+    ));
+    assert_eq!(plan_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(worker_calls.load(Ordering::SeqCst), 0);
 }
 
 struct PlainRows(usize);

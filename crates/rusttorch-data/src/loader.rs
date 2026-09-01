@@ -13,10 +13,10 @@ use rusttorch_core::{Result, RustTorchError};
 use crate::sampler::validate_batch_size;
 use crate::worker::{
     WorkerBatch, WorkerFailure, WorkerMessage, WorkerPool, WorkerPoolConfiguration, WorkerReceive,
-    WorkerRunContext, WorkerTask, validate_worker_pool_capacity,
+    WorkerRunContext, WorkerSubmit, WorkerTask, validate_worker_pool_capacity,
 };
 use crate::{
-    BatchSampler, BatchSource, CloneTransformFactory, Collate, Dataset, DefaultCollator,
+    BatchSampler, BatchSource, CloneTransformFactory, Collate, Dataset, Deadline, DefaultCollator,
     DefaultConverter, IdentityTransformFactory, LoaderError, NoWorkerInit, PipelineError,
     RandomSampler, Sampler, SequentialSampler, TaskContext, Transform, TransformFactory,
     WorkerInit,
@@ -64,6 +64,13 @@ type WorkerStageFailure<D, F, I> = WorkerFailure<
     <F as TransformFactory<<D as Dataset>::Sample>>::Error,
     <I as WorkerInit>::Error,
 >;
+
+struct PendingSubmission {
+    worker: usize,
+    task: WorkerTask,
+    next_submission: u64,
+    logical_end: u64,
+}
 
 impl Dataset for BuilderDatasetMarker {
     type Sample = ();
@@ -517,7 +524,8 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
     /// generation, drains it to quiescence, yields one typed timeout error, and
     /// then ends the iterator. User dataset and transform code must observe its
     /// [`crate::WorkerContext`] or [`crate::TaskContext`] to stop promptly;
-    /// Rust threads are never force-cancelled.
+    /// Rust threads are never force-cancelled. A nonzero timeout that exceeds
+    /// the platform monotonic clock range is rejected by [`Self::build`].
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.configuration.timeout = (!timeout.is_zero()).then_some(timeout);
         self
@@ -1129,6 +1137,7 @@ where
     next_submission: u64,
     next_visible: u64,
     next_logical_sample: u64,
+    pending_submission: Option<PendingSubmission>,
     outstanding: usize,
     source_exhausted: bool,
     submission_closed: bool,
@@ -1239,6 +1248,7 @@ where
             next_submission: 0,
             next_visible: 0,
             next_logical_sample: 0,
+            pending_submission: None,
             outstanding: 0,
             source_exhausted: false,
             submission_closed: false,
@@ -1370,6 +1380,9 @@ where
     }
 
     fn submit_one(&mut self) -> bool {
+        if let Some(pending) = self.pending_submission.take() {
+            return self.try_submit(pending);
+        }
         let next_batch = catch_unwind(AssertUnwindSafe(|| {
             self.batches.as_mut().and_then(Iterator::next)
         }));
@@ -1407,27 +1420,53 @@ where
         };
         let logical_samples = (logical_start..logical_end).collect();
         let worker = batch_sequence as usize % self.workers;
-        let task = WorkerTask {
-            generation: self.generation,
-            batch_sequence,
-            logical_samples,
-            indices,
-        };
-        if self
+        self.try_submit(PendingSubmission {
+            worker,
+            task: WorkerTask {
+                generation: self.generation,
+                batch_sequence,
+                logical_samples,
+                indices,
+            },
+            next_submission,
+            logical_end,
+        })
+    }
+
+    fn try_submit(&mut self, pending: PendingSubmission) -> bool {
+        let PendingSubmission {
+            worker,
+            task,
+            next_submission,
+            logical_end,
+        } = pending;
+        match self
             .pool
             .as_ref()
             .expect("submissions require an active worker pool")
             .pool()
             .submit(worker, task)
-            .is_err()
         {
-            self.submission_closed = true;
-            return false;
+            WorkerSubmit::Submitted => {
+                self.next_submission = next_submission;
+                self.next_logical_sample = logical_end;
+                self.outstanding += 1;
+                true
+            }
+            WorkerSubmit::Full(task) => {
+                self.pending_submission = Some(PendingSubmission {
+                    worker,
+                    task,
+                    next_submission,
+                    logical_end,
+                });
+                false
+            }
+            WorkerSubmit::Closed => {
+                self.submission_closed = true;
+                false
+            }
         }
-        self.next_submission = next_submission;
-        self.next_logical_sample = logical_end;
-        self.outstanding += 1;
-        true
     }
 
     fn stop(&mut self) {
@@ -1448,6 +1487,7 @@ where
             }
         }
         self.completed.clear();
+        self.pending_submission = None;
     }
 
     fn next_serial(&mut self) -> Option<IterResult<D, P, C, F, I>> {
@@ -1787,6 +1827,15 @@ fn validate_configuration(
         return Err(invalid_configuration(
             "timeout",
             "requires a positive worker count",
+        ));
+    }
+    if configuration
+        .timeout
+        .is_some_and(|timeout| !Deadline::can_represent(timeout))
+    {
+        return Err(invalid_configuration(
+            "timeout",
+            "exceeds the platform monotonic clock range",
         ));
     }
     if explicit.prefetch_factor && configuration.workers == 0 {
