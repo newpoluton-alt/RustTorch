@@ -75,20 +75,42 @@ impl WorkerSourceFactory for EmptyByteShards {
 }
 
 #[test]
-fn disabled_capacity_keeps_task9_map_and_stream_completion_shapes() {
+fn disabled_capacity_matches_task9_map_and_stream_boundaries() {
     DataLoader::builder(EmptyBytes)
         .workers(2)
-        .prefetch_factor(200_000)
+        .prefetch_factor(220_717)
         .build()
-        .expect("Task 9 accepted this disabled map completion boundary");
+        .expect("Task 9 accepted this exact disabled map completion boundary");
+    assert!(matches!(
+        DataLoader::builder(EmptyBytes)
+            .workers(2)
+            .prefetch_factor(220_718)
+            .build(),
+        Err(RustTorchError::InvalidConfiguration {
+            field: "prefetch_factor",
+            ..
+        })
+    ));
 
     StreamDataLoaderBuilder::new(EmptyByteShards)
         .workers(2)
         .batch_size(1)
-        .prefetch_factor(200_000)
+        .prefetch_factor(220_717)
         .collate(VecCollate)
         .build()
-        .expect("Task 9 accepted this disabled stream completion boundary");
+        .expect("Task 9 accepted this exact disabled stream completion boundary");
+    assert!(matches!(
+        StreamDataLoaderBuilder::new(EmptyByteShards)
+            .workers(2)
+            .batch_size(1)
+            .prefetch_factor(220_718)
+            .collate(VecCollate)
+            .build(),
+        Err(RustTorchError::InvalidConfiguration {
+            field: "prefetch_factor",
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -113,28 +135,27 @@ fn enabled_capacity_charges_permits_and_stream_waiters() {
         .build()
         .expect("smaller enabled map storage fits");
 
-    let stream_large = StreamDataLoaderBuilder::new(EmptyByteShards)
+    StreamDataLoaderBuilder::new(EmptyByteShards)
         .workers(2)
         .batch_size(1)
-        .prefetch_factor(200_000)
+        .prefetch_factor(182_331)
         .collate(VecCollate)
         .prefetch_bytes(limit)
-        .build();
+        .build()
+        .expect("exact enabled stream storage boundary fits");
     assert!(matches!(
-        stream_large,
+        StreamDataLoaderBuilder::new(EmptyByteShards)
+            .workers(2)
+            .batch_size(1)
+            .prefetch_factor(182_332)
+            .collate(VecCollate)
+            .prefetch_bytes(limit)
+            .build(),
         Err(RustTorchError::InvalidConfiguration {
             field: "prefetch_factor",
             ..
         })
     ));
-    StreamDataLoaderBuilder::new(EmptyByteShards)
-        .workers(2)
-        .batch_size(1)
-        .prefetch_factor(100_000)
-        .collate(VecCollate)
-        .prefetch_bytes(limit)
-        .build()
-        .expect("smaller enabled stream storage fits");
 }
 
 #[test]

@@ -73,6 +73,7 @@
 //! native code until that call returns.
 
 use std::{
+    convert::Infallible,
     marker::PhantomData,
     mem::{MaybeUninit, size_of},
     num::NonZeroUsize,
@@ -194,18 +195,43 @@ type ReassemblyEntry<T, P> = (u64, BufferedRecord<T, P>);
 type RetainedReassembly<T, P> = Mutex<Vec<ReassemblyEntry<T, P>>>;
 type StreamFootprint<S, F> = fn(&TransformOutput<S, F>) -> usize;
 
+enum StreamByteFailure {
+    MemoryLimit {
+        limit: usize,
+        actual: usize,
+    },
+    Protocol {
+        sequence: Option<u64>,
+        reason: String,
+    },
+}
+
 trait StreamMemoryPolicy: MemoryPolicy {
     type Waiters;
+    type Waiting: Send + 'static;
+    type Failure: Send + 'static;
 
     fn waiter_bytes(workers: usize) -> Result<usize>;
     fn preflight_waiters(workers: usize) -> Result<()>;
     fn new_waiters(workers: usize) -> Result<Self::Waiters>;
     fn waiters(waiters: &Self::Waiters) -> Option<&[Option<u64>]>;
     fn waiters_mut(waiters: &mut Self::Waiters) -> Option<&mut [Option<u64>]>;
+    fn waiting(sequence: u64) -> Option<Self::Waiting>;
+    fn waiting_sequence(waiting: Self::Waiting) -> u64;
+    fn memory_limit(limit: usize, actual: usize) -> Option<Self::Failure>;
+    fn protocol(sequence: Option<u64>, reason: String) -> Option<Self::Failure>;
+    fn map_failure<E>(
+        failure: Self::Failure,
+        worker: usize,
+        sequence: Option<u64>,
+        logical_id: Option<u64>,
+    ) -> LoaderError<E>;
 }
 
 impl StreamMemoryPolicy for MemoryDisabled {
     type Waiters = ();
+    type Waiting = Infallible;
+    type Failure = Infallible;
 
     fn waiter_bytes(_workers: usize) -> Result<usize> {
         Ok(0)
@@ -226,10 +252,37 @@ impl StreamMemoryPolicy for MemoryDisabled {
     fn waiters_mut(_waiters: &mut Self::Waiters) -> Option<&mut [Option<u64>]> {
         None
     }
+
+    fn waiting(_sequence: u64) -> Option<Self::Waiting> {
+        None
+    }
+
+    fn waiting_sequence(waiting: Self::Waiting) -> u64 {
+        match waiting {}
+    }
+
+    fn memory_limit(_limit: usize, _actual: usize) -> Option<Self::Failure> {
+        None
+    }
+
+    fn protocol(_sequence: Option<u64>, _reason: String) -> Option<Self::Failure> {
+        None
+    }
+
+    fn map_failure<E>(
+        failure: Self::Failure,
+        _worker: usize,
+        _sequence: Option<u64>,
+        _logical_id: Option<u64>,
+    ) -> LoaderError<E> {
+        match failure {}
+    }
 }
 
 impl StreamMemoryPolicy for MemoryEnabled {
     type Waiters = Vec<Option<u64>>;
+    type Waiting = u64;
+    type Failure = StreamByteFailure;
 
     fn waiter_bytes(workers: usize) -> Result<usize> {
         workers
@@ -254,6 +307,43 @@ impl StreamMemoryPolicy for MemoryEnabled {
 
     fn waiters_mut(waiters: &mut Self::Waiters) -> Option<&mut [Option<u64>]> {
         Some(waiters)
+    }
+
+    fn waiting(sequence: u64) -> Option<Self::Waiting> {
+        Some(sequence)
+    }
+
+    fn waiting_sequence(waiting: Self::Waiting) -> u64 {
+        waiting
+    }
+
+    fn memory_limit(limit: usize, actual: usize) -> Option<Self::Failure> {
+        Some(StreamByteFailure::MemoryLimit { limit, actual })
+    }
+
+    fn protocol(sequence: Option<u64>, reason: String) -> Option<Self::Failure> {
+        Some(StreamByteFailure::Protocol { sequence, reason })
+    }
+
+    fn map_failure<E>(
+        failure: Self::Failure,
+        worker: usize,
+        sequence: Option<u64>,
+        logical_id: Option<u64>,
+    ) -> LoaderError<E> {
+        match failure {
+            StreamByteFailure::MemoryLimit { limit, actual } => LoaderError::MemoryLimit {
+                batch: None,
+                worker: Some(worker),
+                sequence,
+                logical_id,
+                limit,
+                actual,
+            },
+            StreamByteFailure::Protocol { sequence, reason } => {
+                LoaderError::StreamProtocol { sequence, reason }
+            }
+        }
     }
 }
 
@@ -293,41 +383,47 @@ where
 type StreamCompletionFor<S, F, I, M> = StreamCompletion<
     TransformOutput<S, F>,
     <M as MemoryPolicy>::Permit,
+    <M as StreamMemoryPolicy>::Waiting,
+    <M as StreamMemoryPolicy>::Failure,
     <S as WorkerSourceFactory>::Error,
     TransformFailure<S, F>,
     <F as TransformFactory<<S as WorkerSourceFactory>::Sample>>::Error,
     <I as WorkerInit>::Error,
 >;
+type StreamFailureFor<S, F, I, M> = StreamFailure<
+    <S as WorkerSourceFactory>::Error,
+    TransformFailure<S, F>,
+    <F as TransformFactory<<S as WorkerSourceFactory>::Sample>>::Error,
+    <I as WorkerInit>::Error,
+    <M as StreamMemoryPolicy>::Failure,
+>;
+type StreamResult<T, P, W, ME, SE, TE, FE, IE> =
+    std::result::Result<StreamMessage<T, P, W>, StreamFailure<SE, TE, FE, IE, ME>>;
+type StreamCompletionSender<T, P, W, ME, SE, TE, FE, IE> =
+    Sender<StreamCompletion<T, P, W, ME, SE, TE, FE, IE>>;
 
-enum StreamFailure<SE, TE, FE, IE> {
+enum StreamFailure<SE, TE, FE, IE, ME> {
     Source(SE),
     Transform(TE),
     TransformInit(FE),
     WorkerInit(IE),
-    MemoryLimit {
-        limit: usize,
-        actual: usize,
-    },
-    Protocol {
-        sequence: Option<u64>,
-        reason: String,
-    },
+    Memory(ME),
     Panic,
 }
 
-enum StreamMessage<T, P> {
+enum StreamMessage<T, P, W> {
     Record(WorkerRecord<T>, P),
-    Waiting { sequence: u64 },
+    Waiting(W),
     End,
 }
 
-struct StreamCompletion<T, P, SE, TE, FE, IE> {
+struct StreamCompletion<T, P, W, ME, SE, TE, FE, IE> {
     worker: usize,
     generation: u64,
     sequence: Option<u64>,
     logical_id: Option<u64>,
     holds_credit: bool,
-    result: std::result::Result<StreamMessage<T, P>, StreamFailure<SE, TE, FE, IE>>,
+    result: StreamResult<T, P, W, ME, SE, TE, FE, IE>,
 }
 
 enum StreamControl {
@@ -1114,10 +1210,13 @@ fn run_stream_generation<S, F, I, M>(
                         None,
                         Some(logical_id),
                         true,
-                        StreamFailure::Protocol {
-                            sequence: None,
-                            reason: "ordered byte-bounded stream record did not provide a sequence identifier".to_owned(),
-                        },
+                        StreamFailure::Memory(
+                            M::protocol(
+                                None,
+                                "ordered byte-bounded stream record did not provide a sequence identifier".to_owned(),
+                            )
+                            .expect("enabled stream accounting has protocol failure storage"),
+                        ),
                     );
                     active.as_mut().expect("active stream generation").3 = false;
                     run.cancel();
@@ -1140,13 +1239,16 @@ fn run_stream_generation<S, F, I, M>(
                         Some(sequence),
                         Some(logical_id),
                         true,
-                        StreamFailure::Protocol {
-                            sequence: Some(sequence),
-                            reason: format!(
-                                "worker {} emitted non-increasing sequence {sequence}",
-                                info.id
-                            ),
-                        },
+                        StreamFailure::Memory(
+                            M::protocol(
+                                Some(sequence),
+                                format!(
+                                    "worker {} emitted non-increasing sequence {sequence}",
+                                    info.id
+                                ),
+                            )
+                            .expect("enabled stream accounting has protocol failure storage"),
+                        ),
                     );
                     active.as_mut().expect("active stream generation").3 = false;
                     run.cancel();
@@ -1170,7 +1272,10 @@ fn run_stream_generation<S, F, I, M>(
                         sequence: Some(sequence),
                         logical_id: Some(logical_id),
                         holds_credit: false,
-                        result: Ok(StreamMessage::Waiting { sequence }),
+                        result: Ok(StreamMessage::Waiting(
+                            M::waiting(sequence)
+                                .expect("enabled stream accounting has waiter messages"),
+                        )),
                     },
                 ) {
                     drop(source);
@@ -1200,7 +1305,10 @@ fn run_stream_generation<S, F, I, M>(
                         sequence,
                         Some(logical_id),
                         true,
-                        StreamFailure::MemoryLimit { limit, actual },
+                        StreamFailure::Memory(
+                            M::memory_limit(limit, actual)
+                                .expect("enabled stream accounting has memory-limit storage"),
+                        ),
                     );
                     active.as_mut().expect("active stream generation").3 = false;
                     run.cancel();
@@ -1223,10 +1331,13 @@ fn run_stream_generation<S, F, I, M>(
                         sequence,
                         Some(logical_id),
                         true,
-                        StreamFailure::Protocol {
-                            sequence,
-                            reason: "sequence was already admitted to the byte budget".to_owned(),
-                        },
+                        StreamFailure::Memory(
+                            M::protocol(
+                                sequence,
+                                "sequence was already admitted to the byte budget".to_owned(),
+                            )
+                            .expect("enabled stream accounting has protocol failure storage"),
+                        ),
                     );
                     active.as_mut().expect("active stream generation").3 = false;
                     run.cancel();
@@ -1305,15 +1416,15 @@ fn send_stream_end<S, F, I, M>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn send_stream_failure<T, P, SE, TE, FE, IE>(
-    results: &Sender<StreamCompletion<T, P, SE, TE, FE, IE>>,
+fn send_stream_failure<T, P, W, ME, SE, TE, FE, IE>(
+    results: &StreamCompletionSender<T, P, W, ME, SE, TE, FE, IE>,
     shutdown: &CancellationToken,
     worker: usize,
     generation: u64,
     sequence: Option<u64>,
     logical_id: Option<u64>,
     holds_credit: bool,
-    failure: StreamFailure<SE, TE, FE, IE>,
+    failure: StreamFailure<SE, TE, FE, IE, ME>,
 ) {
     let _ = send_stream_completion(
         results,
@@ -1330,11 +1441,11 @@ fn send_stream_failure<T, P, SE, TE, FE, IE>(
     );
 }
 
-fn send_stream_completion<T, P, SE, TE, FE, IE>(
-    results: &Sender<StreamCompletion<T, P, SE, TE, FE, IE>>,
+fn send_stream_completion<T, P, W, ME, SE, TE, FE, IE>(
+    results: &StreamCompletionSender<T, P, W, ME, SE, TE, FE, IE>,
     shutdown: &CancellationToken,
     cancellation: Option<&CancellationToken>,
-    completion: StreamCompletion<T, P, SE, TE, FE, IE>,
+    completion: StreamCompletion<T, P, W, ME, SE, TE, FE, IE>,
 ) -> bool {
     if let Some(cancellation) = cancellation {
         select! {
@@ -2258,7 +2369,7 @@ where
         worker: usize,
         sequence: Option<u64>,
         logical_id: Option<u64>,
-        failure: StreamFailure<S::Error, TransformFailure<S, F>, F::Error, I::Error>,
+        failure: StreamFailureFor<S, F, I, M>,
     ) -> StreamLoaderError<S, C, F, I> {
         let batch = Some(self.next_batch);
         match failure {
@@ -2290,17 +2401,7 @@ where
                 logical_id: None,
                 source: PipelineError::WorkerInit(source),
             },
-            StreamFailure::MemoryLimit { limit, actual } => LoaderError::MemoryLimit {
-                batch: None,
-                worker: Some(worker),
-                sequence,
-                logical_id,
-                limit,
-                actual,
-            },
-            StreamFailure::Protocol { sequence, reason } => {
-                LoaderError::StreamProtocol { sequence, reason }
-            }
+            StreamFailure::Memory(failure) => M::map_failure(failure, worker, sequence, logical_id),
             StreamFailure::Panic => LoaderError::StreamWorkerPanic {
                 worker,
                 batch,
@@ -2528,8 +2629,8 @@ where
                         }));
                     }
                 }
-                Ok(StreamMessage::Waiting { sequence }) => {
-                    self.set_front_waiter(completion.worker, Some(sequence));
+                Ok(StreamMessage::Waiting(waiting)) => {
+                    self.set_front_waiter(completion.worker, Some(M::waiting_sequence(waiting)));
                 }
                 Ok(StreamMessage::Record(record, permit)) => {
                     self.set_front_waiter(completion.worker, None);
@@ -2639,15 +2740,28 @@ mod tests {
 
     use super::*;
 
-    type TestCompletion =
-        StreamCompletion<usize, (), Infallible, Infallible, Infallible, Infallible>;
+    type TestCompletion = StreamCompletion<
+        usize,
+        (),
+        Infallible,
+        Infallible,
+        Infallible,
+        Infallible,
+        Infallible,
+        Infallible,
+    >;
+    type TestResult = StreamResult<
+        usize,
+        (),
+        Infallible,
+        Infallible,
+        Infallible,
+        Infallible,
+        Infallible,
+        Infallible,
+    >;
 
-    fn ready_completion(
-        result: std::result::Result<
-            StreamMessage<usize, ()>,
-            StreamFailure<Infallible, Infallible, Infallible, Infallible>,
-        >,
-    ) -> TestCompletion {
+    fn ready_completion(result: TestResult) -> TestCompletion {
         StreamCompletion {
             worker: 0,
             generation: 0,
