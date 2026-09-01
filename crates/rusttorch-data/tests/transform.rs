@@ -11,8 +11,9 @@ use std::{
 use rand::RngCore;
 use rusttorch_core::RustTorchError;
 use rusttorch_data::{
-    DataLoader, Dataset, FnCollate, FnTransform, FnTransformFactory, LoaderError, PipelineError,
-    TaskContext, Transform, VecCollate, WorkerInfo, with_worker_info,
+    CancellationToken, DataLoader, Dataset, Deadline, FnCollate, FnTransform, FnTransformFactory,
+    LoaderError, PipelineError, TaskContext, Transform, VecCollate, WorkerContext, WorkerInfo,
+    with_worker_info,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -60,6 +61,8 @@ fn task_rng_is_versioned_schedule_independent_and_has_a_locked_seed() {
         rank: 1,
         logical_sample: 99,
         stage: 7,
+        cancellation: CancellationToken::new(),
+        deadline: Deadline::none(),
     };
     assert_eq!(rusttorch_data::TASK_RNG_DERIVATION_VERSION, 1);
     assert_eq!(context.deterministic_seed(), 0x1d7d_73dc_f6e9_4f2d);
@@ -83,20 +86,23 @@ fn task_rng_is_versioned_schedule_independent_and_has_a_locked_seed() {
     let variants = [
         TaskContext {
             loader_seed: 43,
-            ..context
+            ..context.clone()
         },
         TaskContext {
             epoch: 4,
-            ..context
+            ..context.clone()
         },
-        TaskContext { rank: 2, ..context },
+        TaskContext {
+            rank: 2,
+            ..context.clone()
+        },
         TaskContext {
             logical_sample: 100,
-            ..context
+            ..context.clone()
         },
         TaskContext {
             stage: 8,
-            ..context
+            ..context.clone()
         },
     ];
     for variant in variants {
@@ -116,6 +122,8 @@ fn task_rng_does_not_change_libtorch_global_rng() {
         rank: 1,
         logical_sample: 99,
         stage: 7,
+        cancellation: CancellationToken::new(),
+        deadline: Deadline::none(),
     };
     let mut rng = context.rng();
     let _ = (0..32).map(|_| rng.next_u64()).collect::<Vec<_>>();
@@ -140,6 +148,8 @@ fn fn_transform_preserves_output_and_error_types() {
         rank: 0,
         logical_sample: 0,
         stage: 7,
+        cancellation: CancellationToken::new(),
+        deadline: Deadline::none(),
     };
     assert_eq!(
         rusttorch_data::Transform::transform(&mut transform, 3, &context),
@@ -170,13 +180,16 @@ fn serial_factory_creates_one_transform_per_iterator_and_context_ids_restart()
     let factory = FnTransformFactory::new({
         let creates = Arc::clone(&creates);
         let contexts = Arc::clone(&contexts);
-        move |worker: Option<&WorkerInfo>| {
+        move |worker: Option<&WorkerContext>| {
             assert!(worker.is_none());
             let transform_id = creates.fetch_add(1, Ordering::SeqCst) + 1;
             let contexts = Arc::clone(&contexts);
             Ok::<_, FactoryError>(FnTransform::new(
                 move |value: i64, context: &TaskContext| {
-                    contexts.lock().unwrap().push((transform_id, *context));
+                    contexts
+                        .lock()
+                        .unwrap()
+                        .push((transform_id, context.clone()));
                     Ok::<_, TransformError>(value + transform_id as i64 * 100)
                 },
             ))
@@ -319,7 +332,7 @@ fn every_serial_stage_keeps_its_concrete_error_and_metadata() -> Result<(), Rust
     assert!(iterator.next().is_none());
 
     let mut factory = DataLoader::builder(Rows(vec![1]))
-        .transform_factory(FnTransformFactory::new(|_: Option<&WorkerInfo>| {
+        .transform_factory(FnTransformFactory::new(|_: Option<&WorkerContext>| {
             Err::<rusttorch_data::IdentityTransform, _>(FactoryError)
         }))
         .collate(VecCollate)

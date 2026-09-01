@@ -85,7 +85,8 @@ fn facade_exposes_the_owned_loader_builder() {
 #[test]
 fn facade_reexports_task_transform_and_worker_context_contracts() {
     use rusttorch::data::{
-        FnTransform, PipelineError, TaskContext, Transform, WorkerInfo, get_worker_info,
+        CancellationToken, Deadline, FnTransform, PipelineError, TaskContext, Transform,
+        WorkerInfo, get_worker_info,
     };
 
     let context = TaskContext {
@@ -94,6 +95,8 @@ fn facade_reexports_task_transform_and_worker_context_contracts() {
         rank: 1,
         logical_sample: 99,
         stage: 7,
+        cancellation: CancellationToken::new(),
+        deadline: Deadline::none(),
     };
     let mut transform =
         FnTransform::new(|value: i64, _: &TaskContext| Ok::<_, Infallible>(value + 1));

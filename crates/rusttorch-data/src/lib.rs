@@ -40,7 +40,8 @@ pub use transform::{
     TransformFactory,
 };
 pub use worker_context::{
-    FnWorkerInit, NoWorkerInit, WORKER_SEED_DERIVATION_VERSION, WorkerInfo, WorkerInit,
+    CancellationToken, Deadline, FnWorkerInit, LoaderCancelled, NoWorkerInit,
+    WORKER_SEED_DERIVATION_VERSION, WaitOutcome, WorkerContext, WorkerInfo, WorkerInit,
     get_worker_info, with_worker_info,
 };
 
@@ -67,6 +68,21 @@ pub trait Dataset {
     /// return exactly one sample per supplied index and preserve index order.
     fn get_batch(&self, indices: &[usize]) -> std::result::Result<Vec<Self::Sample>, Self::Error> {
         indices.iter().map(|&index| self.get(index)).collect()
+    }
+
+    /// Loads one index batch with cooperative worker lifecycle context.
+    ///
+    /// The source-compatible default ignores `context` and delegates to
+    /// [`Dataset::get_batch`] exactly once. Context-aware datasets may
+    /// override this hook to honor cancellation and deadlines between bounded
+    /// operations. Rust cannot force-cancel an arbitrary blocking native call.
+    fn get_batch_with_context(
+        &self,
+        indices: &[usize],
+        context: &WorkerContext,
+    ) -> std::result::Result<Vec<Self::Sample>, Self::Error> {
+        let _ = context;
+        self.get_batch(indices)
     }
 
     /// Returns `true` when the dataset has no samples.

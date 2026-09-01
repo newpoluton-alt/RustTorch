@@ -18,7 +18,7 @@ use rusttorch_core::RustTorchError;
 use rusttorch_data::{
     BatchSource, DataLoader, Dataset, FnBatchSource, FnCollate, FnSampler, FnTransform,
     FnTransformFactory, FnWorkerInit, LoaderError, PipelineError, Sampler, TaskContext, Transform,
-    VecCollate, WorkerInfo, get_worker_info,
+    VecCollate, WorkerContext, get_worker_info,
 };
 
 struct ConcurrentRows {
@@ -314,11 +314,11 @@ fn unallocatable_bounded_capacities_are_typed_before_worker_side_effects() {
         let result = DataLoader::builder(PlainRows(1))
             .workers(1)
             .prefetch_factor(factor)
-            .transform_factory(FnTransformFactory::new(move |_: Option<&WorkerInfo>| {
+            .transform_factory(FnTransformFactory::new(move |_: Option<&WorkerContext>| {
                 factory_effects.fetch_add(1, Ordering::SeqCst);
                 Ok::<_, TestError>(rusttorch_data::IdentityTransform)
             }))
-            .worker_init(FnWorkerInit::new(move |_: &WorkerInfo| {
+            .worker_init(FnWorkerInit::new(move |_: &WorkerContext| {
                 init_effects.fetch_add(1, Ordering::SeqCst);
                 Ok::<_, TestError>(())
             }))
@@ -510,7 +510,7 @@ fn channel_control_blocks_are_counted_before_many_worker_callbacks() {
 }
 
 #[test]
-fn unsupported_worker_options_reject_at_build_before_sampler_callbacks() {
+fn lifecycle_options_still_validate_capacity_before_sampler_callbacks() {
     use std::time::Duration;
 
     for persistent in [false, true] {
@@ -521,6 +521,7 @@ fn unsupported_worker_options_reject_at_build_before_sampler_callbacks() {
                 panic_on_set: true,
             })
             .workers(1)
+            .prefetch_factor(usize::MAX)
             .collate(VecCollate);
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             if persistent {
@@ -529,10 +530,7 @@ fn unsupported_worker_options_reject_at_build_before_sampler_callbacks() {
                 builder.timeout(Duration::from_millis(1)).build()
             }
         }));
-        assert!(
-            outcome.is_ok(),
-            "set_epoch ran before unsupported validation"
-        );
+        assert!(outcome.is_ok(), "set_epoch ran before capacity validation");
         assert!(matches!(
             outcome.unwrap(),
             Err(RustTorchError::InvalidConfiguration { .. })
@@ -566,7 +564,7 @@ fn initial_sampler_and_batch_source_panics_are_typed_without_starting_workers()
             panic!("initial sampler panic")
         }))
         .workers(1)
-        .transform_factory(FnTransformFactory::new(move |_: Option<&WorkerInfo>| {
+        .transform_factory(FnTransformFactory::new(move |_: Option<&WorkerContext>| {
             calls.fetch_add(1, Ordering::SeqCst);
             Ok::<_, TestError>(rusttorch_data::IdentityTransform)
         }))
@@ -662,7 +660,7 @@ fn sampler_epoch_panic_is_typed_without_starting_workers() -> Result<(), RustTor
     let mut loader = DataLoader::builder(PlainRows(1))
         .sampler(PanicEpochSampler)
         .workers(1)
-        .transform_factory(FnTransformFactory::new(move |_: Option<&WorkerInfo>| {
+        .transform_factory(FnTransformFactory::new(move |_: Option<&WorkerContext>| {
             calls.fetch_add(1, Ordering::SeqCst);
             Ok::<_, TestError>(rusttorch_data::IdentityTransform)
         }))
@@ -771,14 +769,14 @@ fn factory_and_initializer_run_once_per_worker_with_fresh_generations() -> Resul
     let factory = FnTransformFactory::new({
         let calls = Arc::clone(&factories);
         let contexts = Arc::clone(&contexts);
-        move |worker: Option<&WorkerInfo>| {
-            let worker = *worker.expect("worker factory receives real context");
-            assert_eq!(get_worker_info(), Some(worker));
-            calls.lock().unwrap().push(worker);
+        move |worker: Option<&WorkerContext>| {
+            let worker = worker.expect("worker factory receives real context");
+            assert_eq!(get_worker_info(), Some(worker.info));
+            calls.lock().unwrap().push(worker.info);
             let contexts = Arc::clone(&contexts);
             Ok::<_, TestError>(FnTransform::new(
                 move |value: usize, context: &TaskContext| {
-                    contexts.lock().unwrap().push(*context);
+                    contexts.lock().unwrap().push(context.clone());
                     Ok::<_, TestError>(value)
                 },
             ))
@@ -786,9 +784,9 @@ fn factory_and_initializer_run_once_per_worker_with_fresh_generations() -> Resul
     });
     let initializer = FnWorkerInit::new({
         let calls = Arc::clone(&initializers);
-        move |worker: &WorkerInfo| {
-            assert_eq!(get_worker_info(), Some(*worker));
-            calls.lock().unwrap().push(*worker);
+        move |worker: &WorkerContext| {
+            assert_eq!(get_worker_info(), Some(worker.info));
+            calls.lock().unwrap().push(worker.info);
             Ok::<_, TestError>(())
         }
     });
@@ -932,7 +930,7 @@ fn worker_and_coordinator_errors_are_typed_visible_once_and_contextual()
 
     let mut factory = DataLoader::builder(PlainRows(1))
         .workers(1)
-        .transform_factory(FnTransformFactory::new(|_: Option<&WorkerInfo>| {
+        .transform_factory(FnTransformFactory::new(|_: Option<&WorkerContext>| {
             Err::<rusttorch_data::IdentityTransform, _>(TestError::Factory)
         }))
         .collate(FnCollate::new(|values: Vec<usize>| {
@@ -952,7 +950,7 @@ fn worker_and_coordinator_errors_are_typed_visible_once_and_contextual()
 
     let mut initializer = DataLoader::builder(PlainRows(1))
         .workers(1)
-        .worker_init(FnWorkerInit::new(|_: &WorkerInfo| {
+        .worker_init(FnWorkerInit::new(|_: &WorkerContext| {
             Err::<(), _>(TestError::Init)
         }))
         .collate(FnCollate::new(|values: Vec<usize>| {
@@ -1070,7 +1068,7 @@ fn worker_panics_are_converted_with_worker_and_batch_context() -> Result<(), Rus
 
     let mut factory = DataLoader::builder(PlainRows(1))
         .workers(1)
-        .transform_factory(FnTransformFactory::new(|_: Option<&WorkerInfo>| {
+        .transform_factory(FnTransformFactory::new(|_: Option<&WorkerContext>| {
             panic!("factory panic");
             #[allow(unreachable_code)]
             Ok::<_, TestError>(rusttorch_data::IdentityTransform)
@@ -1090,7 +1088,7 @@ fn worker_panics_are_converted_with_worker_and_batch_context() -> Result<(), Rus
     let mut initializer = DataLoader::builder(PlainRows(1))
         .workers(1)
         .worker_init(FnWorkerInit::new(
-            |_: &WorkerInfo| -> Result<(), TestError> { panic!("initializer panic") },
+            |_: &WorkerContext| -> Result<(), TestError> { panic!("initializer panic") },
         ))
         .collate(VecCollate)
         .build()?;
@@ -1154,7 +1152,7 @@ fn default_serial_loader_keeps_non_send_dataset_and_transform_support() -> Resul
 }
 
 #[test]
-fn timeout_and_persistence_reject_before_any_worker_side_effect() -> Result<(), RustTorchError> {
+fn timeout_and_persistence_start_real_workers() -> Result<(), RustTorchError> {
     use std::time::Duration;
 
     let creates = Arc::new(AtomicUsize::new(0));
@@ -1162,7 +1160,7 @@ fn timeout_and_persistence_reject_before_any_worker_side_effect() -> Result<(), 
         let creates = Arc::clone(&creates);
         let mut builder = DataLoader::builder(PlainRows(1))
             .workers(1)
-            .transform_factory(FnTransformFactory::new(move |_: Option<&WorkerInfo>| {
+            .transform_factory(FnTransformFactory::new(move |_: Option<&WorkerContext>| {
                 creates.fetch_add(1, Ordering::SeqCst);
                 Ok::<_, TestError>(rusttorch_data::IdentityTransform)
             }))
@@ -1172,25 +1170,23 @@ fn timeout_and_persistence_reject_before_any_worker_side_effect() -> Result<(), 
         } else {
             builder.timeout(Duration::from_millis(1))
         };
-        assert!(matches!(
-            builder.build(),
-            Err(RustTorchError::InvalidConfiguration { .. })
-        ));
+        let mut loader = builder.build()?;
+        assert_eq!(loader.iter().count(), 1);
     }
-    assert_eq!(creates.load(Ordering::SeqCst), 0);
+    assert_eq!(creates.load(Ordering::SeqCst), 2);
 
-    let result = DataLoader::builder(PlainRows(1))
+    let mut loader = DataLoader::builder(PlainRows(1))
         .sampler(PanicEpochSampler)
         .workers(1)
         .timeout(Duration::from_millis(1))
         .collate(VecCollate)
-        .build();
+        .build()?;
     assert!(matches!(
-        result,
-        Err(RustTorchError::InvalidConfiguration {
-            field: "timeout",
-            ..
-        })
+        loader.iter().next(),
+        Some(Err(LoaderError::CoordinatorPanic {
+            stage: "sampler epoch",
+            batch: None,
+        }))
     ));
     Ok(())
 }

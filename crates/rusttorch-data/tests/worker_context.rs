@@ -10,8 +10,8 @@ use std::{
 
 use rusttorch_core::RustTorchError;
 use rusttorch_data::{
-    FnTransform, FnTransformFactory, FnWorkerInit, TaskContext, TransformFactory, WorkerInfo,
-    WorkerInit, get_worker_info, with_worker_info,
+    CancellationToken, Deadline, FnTransform, FnTransformFactory, FnWorkerInit, TaskContext,
+    TransformFactory, WorkerContext, WorkerInfo, WorkerInit, get_worker_info, with_worker_info,
 };
 
 #[test]
@@ -144,9 +144,9 @@ fn factory_and_initializer_adapters_run_once_per_simulated_worker() {
     let factory_calls = Arc::new(Mutex::new(Vec::new()));
     let factory = FnTransformFactory::new({
         let calls = Arc::clone(&factory_calls);
-        move |worker: Option<&WorkerInfo>| {
-            let worker = *worker.expect("simulated worker context");
-            calls.lock().unwrap().push(worker.id);
+        move |worker: Option<&WorkerContext>| {
+            let worker = worker.expect("simulated worker context");
+            calls.lock().unwrap().push(worker.info.id);
             Ok::<_, FactoryFailure>(FnTransform::new(|value: usize, _: &TaskContext| {
                 Ok::<_, FactoryFailure>(value)
             }))
@@ -155,8 +155,8 @@ fn factory_and_initializer_adapters_run_once_per_simulated_worker() {
     let init_calls = Arc::new(AtomicUsize::new(0));
     let initializer = FnWorkerInit::new({
         let calls = Arc::clone(&init_calls);
-        move |worker: &WorkerInfo| {
-            assert_eq!(get_worker_info(), Some(*worker));
+        move |worker: &WorkerContext| {
+            assert_eq!(get_worker_info(), Some(worker.info));
             calls.fetch_add(1, Ordering::SeqCst);
             Ok::<_, InitFailure>(())
         }
@@ -164,11 +164,12 @@ fn factory_and_initializer_adapters_run_once_per_simulated_worker() {
 
     for id in 0..3 {
         let worker = WorkerInfo::from_loader_seed(id, 3, 42, 1, 2).expect("valid worker");
+        let context = WorkerContext::new(worker, CancellationToken::new(), Deadline::none());
         with_worker_info(worker, || {
             initializer
-                .initialize(&worker)
+                .initialize(&context)
                 .expect("initializer succeeds");
-            let _transform = factory.create(Some(&worker)).expect("factory succeeds");
+            let _transform = factory.create(Some(&context)).expect("factory succeeds");
         });
     }
     assert_eq!(*factory_calls.lock().unwrap(), [0, 1, 2]);

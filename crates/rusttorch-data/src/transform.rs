@@ -3,7 +3,7 @@ use std::convert::Infallible;
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 
-use crate::WorkerInfo;
+use crate::{CancellationToken, Deadline, LoaderCancelled, WaitOutcome, WorkerContext};
 
 /// Version of RustTorch's deterministic task-RNG seed derivation.
 pub const TASK_RNG_DERIVATION_VERSION: u32 = 1;
@@ -13,7 +13,7 @@ pub const TASK_RNG_DERIVATION_VERSION: u32 = 1;
 /// Worker assignment is deliberately absent, so random transforms are stable
 /// when scheduling or worker counts change. The resulting ChaCha12 sequence is
 /// a RustTorch contract and does not claim PyTorch Philox sequence identity.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct TaskContext {
     /// Loader-level seed.
     pub loader_seed: u64,
@@ -25,6 +25,10 @@ pub struct TaskContext {
     pub logical_sample: u64,
     /// Transform stage, starting at zero.
     pub stage: u32,
+    /// Cancellation for the active iterator generation.
+    pub cancellation: CancellationToken,
+    /// Dynamic deadline for the active `Iterator::next` wait.
+    pub deadline: Deadline,
 }
 
 impl TaskContext {
@@ -36,6 +40,20 @@ impl TaskContext {
     /// Creates task-local ChaCha12 state without changing LibTorch's RNG.
     pub fn rng(&self) -> ChaCha12Rng {
         ChaCha12Rng::seed_from_u64(self.deterministic_seed())
+    }
+
+    /// Returns an error when this generation is cancelled or expired.
+    pub fn check(&self) -> std::result::Result<(), LoaderCancelled> {
+        if self.cancellation.is_cancelled() || self.deadline.is_expired() {
+            Err(LoaderCancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Blocks until generation cancellation or deadline expiry.
+    pub fn wait_cancelled_or_deadline(&self) -> WaitOutcome {
+        self.cancellation.wait_cancelled_or_deadline(&self.deadline)
     }
 }
 
@@ -66,6 +84,8 @@ pub trait Transform<Input> {
 ///     rank: 1,
 ///     logical_sample: 99,
 ///     stage: 7,
+///     cancellation: rusttorch_data::CancellationToken::new(),
+///     deadline: rusttorch_data::Deadline::none(),
 /// };
 /// let mut double = FnTransform::new(|value: i64, _: &TaskContext| {
 ///     Ok::<_, Infallible>(value * 2)
@@ -112,9 +132,12 @@ pub trait TransformFactory<Input> {
     type Error;
 
     /// Creates a transform for `worker`, or for the serial path when `None`.
+    ///
+    /// A persistent worker receives its pool-lifetime context here. Individual
+    /// task transforms receive generation cancellation through [`TaskContext`].
     fn create(
         &self,
-        worker: Option<&WorkerInfo>,
+        worker: Option<&WorkerContext>,
     ) -> std::result::Result<Self::Transform, Self::Error>;
 }
 
@@ -134,14 +157,14 @@ impl<F> FnTransformFactory<F> {
 impl<Input, T, E, F> TransformFactory<Input> for FnTransformFactory<F>
 where
     T: Transform<Input>,
-    F: Fn(Option<&WorkerInfo>) -> std::result::Result<T, E>,
+    F: Fn(Option<&WorkerContext>) -> std::result::Result<T, E>,
 {
     type Transform = T;
     type Error = E;
 
     fn create(
         &self,
-        worker: Option<&WorkerInfo>,
+        worker: Option<&WorkerContext>,
     ) -> std::result::Result<Self::Transform, Self::Error> {
         (self.create)(worker)
     }
@@ -168,7 +191,7 @@ where
 
     fn create(
         &self,
-        _worker: Option<&WorkerInfo>,
+        _worker: Option<&WorkerContext>,
     ) -> std::result::Result<Self::Transform, Self::Error> {
         Ok(self.transform.clone())
     }
@@ -201,7 +224,7 @@ impl<Input> TransformFactory<Input> for IdentityTransformFactory {
 
     fn create(
         &self,
-        _worker: Option<&WorkerInfo>,
+        _worker: Option<&WorkerContext>,
     ) -> std::result::Result<Self::Transform, Self::Error> {
         Ok(IdentityTransform)
     }

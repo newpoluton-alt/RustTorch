@@ -66,8 +66,16 @@ Owned map loaders can select bounded Rust workers with `.workers(count)` and
 `Arc`; workers fetch and transform in deterministic lanes, while collation
 runs on the coordinator. Results preserve sampler order unless
 `.in_order(false)` is selected. Build rejects a conservative aggregate of
-concrete task/completion slot buffers, worker/vector bookkeeping, and bounded
-channel control-block allowances above 64 MiB before sampler or batch-source
-callbacks. Positive-worker timeout and persistence requests also reject at
-build; pinning, streaming workers, and checkpointing are not implemented in
-this scope.
+concrete task/control/completion slot buffers, worker/vector bookkeeping, and
+bounded channel control-block allowances above 64 MiB before sampler or
+batch-source callbacks.
+
+Positive-worker `.timeout(duration)` applies a fresh monotonic deadline to
+each blocking `next()` call. Dataset and transform contexts can observe that
+deadline or cooperative cancellation without polling. Persistent pools reuse
+their threads, initial worker seeds, initializer calls, and transforms across
+iterator generations, but remain owned and joined by the loader. Iterator drop
+cancels and quiesces its generation; owner drop shuts down the pool. Rust
+cannot force-cancel an arbitrary blocking `Dataset::get`, system call, or
+native decoder, so drop waits until non-cooperative work returns. Pinning,
+streaming workers, and checkpointing are not implemented in this scope.

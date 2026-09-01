@@ -4,7 +4,7 @@ use rand::{SeedableRng, seq::SliceRandom};
 use rand_chacha::ChaCha12Rng;
 use rusttorch_core::{Result, RustTorchError, Tensor};
 
-use crate::Dataset;
+use crate::{Dataset, WorkerContext};
 
 /// A map-style dataset backed by tensors with a shared first dimension.
 ///
@@ -437,5 +437,13 @@ where
 
     fn get_batch(&self, indices: &[usize]) -> std::result::Result<Vec<Self::Sample>, Self::Error> {
         self.as_ref().get_batch(indices)
+    }
+
+    fn get_batch_with_context(
+        &self,
+        indices: &[usize],
+        context: &WorkerContext,
+    ) -> std::result::Result<Vec<Self::Sample>, Self::Error> {
+        self.as_ref().get_batch_with_context(indices, context)
     }
 }

@@ -12,8 +12,8 @@ use rusttorch_core::{Result, RustTorchError};
 
 use crate::sampler::validate_batch_size;
 use crate::worker::{
-    WorkerBatch, WorkerFailure, WorkerPool, WorkerPoolConfiguration, WorkerTask,
-    validate_worker_pool_capacity,
+    WorkerBatch, WorkerFailure, WorkerMessage, WorkerPool, WorkerPoolConfiguration, WorkerReceive,
+    WorkerRunContext, WorkerTask, validate_worker_pool_capacity,
 };
 use crate::{
     BatchSampler, BatchSource, CloneTransformFactory, Collate, Dataset, DefaultCollator,
@@ -500,13 +500,24 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
         }
     }
 
-    /// Selects persistent workers for positive-worker execution.
+    /// Selects whether positive-worker iterators reuse loader-owned threads.
+    ///
+    /// Persistent workers keep their initial [`crate::WorkerInfo`] seeds and
+    /// factory-created state across epochs. Each iterator still receives a
+    /// fresh generation cancellation token and deadline, and dropping either
+    /// the iterator or loader cooperatively wakes and joins the affected work.
     pub fn persistent_workers(mut self, persistent: bool) -> Self {
         self.configuration.persistent_workers = persistent;
         self
     }
 
-    /// Sets a worker wait timeout; [`Duration::ZERO`] disables it.
+    /// Sets the cooperative timeout for each blocking [`Iterator::next`] call.
+    ///
+    /// [`Duration::ZERO`] disables the timeout. Expiry cancels the current
+    /// generation, drains it to quiescence, yields one typed timeout error, and
+    /// then ends the iterator. User dataset and transform code must observe its
+    /// [`crate::WorkerContext`] or [`crate::TaskContext`] to stop promptly;
+    /// Rust threads are never force-cancelled.
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.configuration.timeout = (!timeout.is_zero()).then_some(timeout);
         self
@@ -537,7 +548,7 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
     /// The worker count multiplied by this factor is checked before any
     /// worker starts and is also the global outstanding-work credit limit.
     /// Capacities that overflow crossbeam's ring arithmetic or whose
-    /// conservative aggregate of concrete task/completion slots, worker
+    /// conservative aggregate of concrete task/control/completion slots, worker
     /// bookkeeping, and channel control-block allowances exceeds the checked
     /// 64 MiB queue-allocation ceiling are rejected during build.
     pub fn prefetch_factor(mut self, factor: usize) -> Self {
@@ -560,8 +571,8 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
     /// # Errors
     ///
     /// Returns [`RustTorchError::InvalidConfiguration`] before plan callbacks
-    /// for incompatible arguments, unsupported positive-worker lifecycle
-    /// options, zero-valued controls, or unallocatable worker queue sizes.
+    /// for incompatible zero-worker options, zero-valued controls, or
+    /// unallocatable worker queue sizes.
     pub fn build(mut self) -> Result<OwnedDataLoader<D, P, C, F, I, X>>
     where
         D: Dataset,
@@ -619,6 +630,7 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
             loader_seed: self.configuration.loader_seed,
             rank: self.configuration.rank,
             next_generation: 0,
+            persistent_pool: None,
             execution: PhantomData,
         })
     }
@@ -836,7 +848,11 @@ pub struct OwnedDataLoader<
     F = IdentityTransformFactory,
     I = NoWorkerInit,
     X = SerialExecution,
-> {
+> where
+    D: Dataset,
+    F: TransformFactory<D::Sample>,
+    I: WorkerInit,
+{
     dataset: Arc<D>,
     plan: P,
     collator: C,
@@ -852,6 +868,7 @@ pub struct OwnedDataLoader<
     loader_seed: u64,
     rank: usize,
     next_generation: u64,
+    persistent_pool: Option<WorkerPool<D, F, I>>,
     execution: PhantomData<X>,
 }
 
@@ -870,6 +887,7 @@ where
         };
         let batches = transform.as_ref().map(|_| self.plan.iter());
         let epoch = self.plan.epoch();
+        let run_context = WorkerRunContext::new(0, self.loader_seed, epoch);
         LoaderIter {
             dataset: self.dataset.as_ref(),
             plan: &mut self.plan,
@@ -883,6 +901,7 @@ where
             loader_seed: self.loader_seed,
             epoch,
             rank: self.rank,
+            run_context,
             output: PhantomData,
         }
     }
@@ -966,6 +985,7 @@ where
     loader_seed: u64,
     epoch: u64,
     rank: usize,
+    run_context: WorkerRunContext,
     output: PhantomData<fn() -> I>,
 }
 
@@ -1038,6 +1058,8 @@ where
                 rank: self.rank,
                 logical_sample: self.next_logical_sample,
                 stage: 0,
+                cancellation: self.run_context.cancellation.clone(),
+                deadline: self.run_context.deadline.clone(),
             };
             let Some(transform) = self.transform.as_mut() else {
                 self.exhausted = true;
@@ -1092,13 +1114,15 @@ where
     batches: Option<P::Iter>,
     serial_transform: Option<F::Transform>,
     serial_transform_error: Option<F::Error>,
-    pool: Option<WorkerPool<D, F, I>>,
+    pool: Option<IteratorPool<'a, D, F, I>>,
     completed: BTreeMap<u64, CompletedBatch<D, F>>,
     pending_error: Option<IterError<D, P, C, F, I>>,
     generation: u64,
+    run_context: Option<WorkerRunContext>,
     workers: usize,
     capacity: usize,
     ordered: bool,
+    timeout: Option<Duration>,
     loader_seed: u64,
     epoch: u64,
     rank: usize,
@@ -1109,6 +1133,59 @@ where
     source_exhausted: bool,
     submission_closed: bool,
     exhausted: bool,
+}
+
+enum IteratorPool<'a, D, F, I>
+where
+    D: Dataset,
+    F: TransformFactory<D::Sample>,
+    I: WorkerInit,
+{
+    Owned(WorkerPool<D, F, I>),
+    Persistent {
+        pool: &'a mut WorkerPool<D, F, I>,
+        generation: u64,
+    },
+}
+
+impl<D, F, I> IteratorPool<'_, D, F, I>
+where
+    D: Dataset,
+    F: TransformFactory<D::Sample>,
+    I: WorkerInit,
+{
+    fn pool(&self) -> &WorkerPool<D, F, I> {
+        match self {
+            Self::Owned(pool) => pool,
+            Self::Persistent { pool, .. } => pool,
+        }
+    }
+
+    fn pool_mut(&mut self) -> &mut WorkerPool<D, F, I> {
+        match self {
+            Self::Owned(pool) => pool,
+            Self::Persistent { pool, .. } => pool,
+        }
+    }
+
+    fn is_persistent(&self) -> bool {
+        matches!(self, Self::Persistent { .. })
+    }
+}
+
+impl<D, F, I> Drop for IteratorPool<'_, D, F, I>
+where
+    D: Dataset,
+    F: TransformFactory<D::Sample>,
+    I: WorkerInit,
+{
+    fn drop(&mut self) {
+        if let Self::Persistent { pool, generation } = self
+            && pool.quiesce(*generation).is_err()
+        {
+            pool.poison();
+        }
+    }
 }
 
 impl<D, P, C, F, I> OwnedDataLoader<D, P, C, F, I, WorkerExecution>
@@ -1125,24 +1202,10 @@ where
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
 {
-    /// Starts a fresh bounded worker pool, or the explicit zero-worker path.
+    /// Starts a fresh generation on a bounded worker pool, or the explicit
+    /// zero-worker path.
     pub fn iter(&mut self) -> WorkerLoaderIter<'_, D, P, C, F, I> {
-        let unsupported = if self.workers > 0 && self.timeout.is_some() {
-            Some(invalid_configuration(
-                "timeout",
-                "positive-worker timeout execution is scheduled for DataLoader Task 8",
-            ))
-        } else if self.workers > 0 && self.persistent_workers {
-            Some(invalid_configuration(
-                "persistent_workers",
-                "persistent worker execution is scheduled for DataLoader Task 8",
-            ))
-        } else {
-            None
-        };
-        let (epoch, epoch_panicked) = if unsupported.is_some() {
-            (0, false)
-        } else if self.workers == 0 {
+        let (epoch, epoch_panicked) = if self.workers == 0 {
             (self.plan.epoch(), false)
         } else {
             match catch_unwind(AssertUnwindSafe(|| self.plan.epoch())) {
@@ -1161,9 +1224,15 @@ where
             completed: BTreeMap::new(),
             pending_error: None,
             generation: self.next_generation,
+            run_context: Some(WorkerRunContext::new(
+                self.next_generation,
+                self.loader_seed,
+                epoch,
+            )),
             workers: self.workers,
             capacity: self.outstanding_capacity.unwrap_or(0),
             ordered: self.ordered,
+            timeout: self.timeout,
             loader_seed: self.loader_seed,
             epoch,
             rank: self.rank,
@@ -1176,10 +1245,6 @@ where
             exhausted: false,
         };
 
-        if let Some(error) = unsupported {
-            iterator.pending_error = Some(LoaderError::Configuration(error));
-            return iterator;
-        }
         if epoch_panicked {
             iterator.pending_error = Some(LoaderError::CoordinatorPanic {
                 stage: P::EPOCH_PANIC_STAGE,
@@ -1222,22 +1287,60 @@ where
                 .expect("positive workers have a validated prefetch factor")
                 .get(),
             result_capacity: iterator.capacity,
-            generation: iterator.generation,
+            seed_generation: iterator.generation,
             loader_seed: self.loader_seed,
-            epoch,
             rank: self.rank,
         };
-        match WorkerPool::new(
-            Arc::clone(&self.dataset),
-            Arc::clone(&self.transform_factory),
-            Arc::clone(&self.worker_init),
-            configuration,
-        ) {
-            Ok(pool) => {
-                iterator.pool = Some(pool);
-                iterator.fill_available();
+        let run_context =
+            WorkerRunContext::new(iterator.generation, self.loader_seed, iterator.epoch);
+        iterator.run_context = Some(run_context.clone());
+
+        if self.persistent_workers {
+            if self.persistent_pool.is_none() {
+                match WorkerPool::new(
+                    Arc::clone(&self.dataset),
+                    Arc::clone(&self.transform_factory),
+                    Arc::clone(&self.worker_init),
+                    configuration,
+                ) {
+                    Ok(pool) => self.persistent_pool = Some(pool),
+                    Err(error) => {
+                        iterator.pending_error = Some(LoaderError::Configuration(error));
+                        return iterator;
+                    }
+                }
             }
-            Err(error) => iterator.pending_error = Some(LoaderError::Configuration(error)),
+            let pool = self
+                .persistent_pool
+                .as_mut()
+                .expect("persistent pool was created");
+            if pool.is_poisoned() || pool.start_generation(run_context).is_err() {
+                iterator.pending_error = Some(LoaderError::ChannelClosed { batch: 0 });
+                return iterator;
+            }
+            iterator.pool = Some(IteratorPool::Persistent {
+                pool,
+                generation: iterator.generation,
+            });
+        } else {
+            match WorkerPool::new(
+                Arc::clone(&self.dataset),
+                Arc::clone(&self.transform_factory),
+                Arc::clone(&self.worker_init),
+                configuration,
+            ) {
+                Ok(mut pool) => {
+                    if pool.start_generation(run_context).is_err() {
+                        iterator.pending_error = Some(LoaderError::ChannelClosed { batch: 0 });
+                    } else {
+                        iterator.pool = Some(IteratorPool::Owned(pool));
+                    }
+                }
+                Err(error) => iterator.pending_error = Some(LoaderError::Configuration(error)),
+            }
+        }
+        if iterator.pending_error.is_none() {
+            iterator.fill_available();
         }
         iterator
     }
@@ -1314,6 +1417,7 @@ where
             .pool
             .as_ref()
             .expect("submissions require an active worker pool")
+            .pool()
             .submit(worker, task)
             .is_err()
         {
@@ -1327,8 +1431,22 @@ where
     }
 
     fn stop(&mut self) {
+        self.stop_inner(false);
+    }
+
+    fn stop_poisoned(&mut self) {
+        self.stop_inner(true);
+    }
+
+    fn stop_inner(&mut self, poisoned: bool) {
         self.exhausted = true;
-        self.pool.take();
+        if let Some(mut pool) = self.pool.take() {
+            let should_poison = poisoned
+                || (pool.is_persistent() && pool.pool_mut().quiesce(self.generation).is_err());
+            if should_poison {
+                pool.pool_mut().poison();
+            }
+        }
         self.completed.clear();
     }
 
@@ -1377,6 +1495,18 @@ where
                 rank: self.rank,
                 logical_sample: self.next_logical_sample,
                 stage: 0,
+                cancellation: self
+                    .run_context
+                    .as_ref()
+                    .expect("serial generation context")
+                    .cancellation
+                    .clone(),
+                deadline: self
+                    .run_context
+                    .as_ref()
+                    .expect("serial generation context")
+                    .deadline
+                    .clone(),
             };
             let transform = self
                 .serial_transform
@@ -1418,9 +1548,7 @@ where
     ) -> IterResult<D, P, C, F, I> {
         debug_assert_eq!(batch.generation, self.generation);
         self.outstanding -= 1;
-        if self.ordered {
-            self.next_visible = self.next_visible.saturating_add(1);
-        }
+        self.next_visible = self.next_visible.saturating_add(1);
         let sequence = batch.batch_sequence;
         let result = match catch_unwind(AssertUnwindSafe(|| {
             self.plan.finish(self.collator, batch.samples)
@@ -1522,26 +1650,65 @@ where
         if self.workers == 0 {
             return self.next_serial();
         }
+        let mut deadline_armed = false;
         loop {
             if self.ordered
                 && let Some((worker, batch)) = self.completed.remove(&self.next_visible)
             {
+                if deadline_armed {
+                    self.run_context
+                        .as_ref()
+                        .expect("worker context")
+                        .deadline
+                        .disarm();
+                }
                 return Some(self.publish(worker, batch));
             }
             if self.outstanding == 0 && self.source_exhausted {
+                if deadline_armed {
+                    self.run_context
+                        .as_ref()
+                        .expect("worker context")
+                        .deadline
+                        .disarm();
+                }
                 self.stop();
                 return None;
             }
-            let completion = match self
+            let run_context = self
+                .run_context
+                .as_ref()
+                .expect("worker iteration has a generation context")
+                .clone();
+            if !deadline_armed && let Some(timeout) = self.timeout {
+                run_context.deadline.arm(timeout);
+                deadline_armed = true;
+            }
+            let remaining = self.timeout.and_then(|_| run_context.deadline.remaining());
+            let received = self
                 .pool
                 .as_ref()
                 .expect("worker iteration has an active pool")
-                .receive()
-            {
-                Ok(completion) => completion,
-                Err(()) => {
+                .pool()
+                .receive(&run_context, remaining);
+            let completion = match received {
+                WorkerReceive::Completion(completion) => completion,
+                WorkerReceive::Timeout => {
                     let batch = self.next_visible;
+                    run_context.cancellation.cancel();
+                    run_context.deadline.disarm();
                     self.stop();
+                    return Some(Err(LoaderError::Timeout { batch }));
+                }
+                WorkerReceive::Cancelled => {
+                    run_context.deadline.disarm();
+                    self.stop();
+                    return Some(Err(LoaderError::Cancelled));
+                }
+                WorkerReceive::Closed => {
+                    let batch = self.next_visible;
+                    run_context.deadline.disarm();
+                    self.stop_poisoned();
                     return Some(Err(LoaderError::ChannelClosed { batch }));
                 }
             };
@@ -1550,21 +1717,33 @@ where
             }
             match completion.result {
                 Err(failure) => {
+                    let poisons_pool = matches!(
+                        &failure,
+                        WorkerFailure::TransformInit(_)
+                            | WorkerFailure::WorkerInit(_)
+                            | WorkerFailure::Panic
+                    );
                     let error =
                         self.map_failure(completion.worker, completion.batch_sequence, failure);
-                    self.stop();
+                    run_context.deadline.disarm();
+                    if poisons_pool {
+                        self.stop_poisoned();
+                    } else {
+                        self.stop();
+                    }
                     return Some(Err(error));
                 }
-                Ok(Some(batch)) if self.ordered && batch.batch_sequence != self.next_visible => {
+                Ok(WorkerMessage::Batch(batch))
+                    if self.ordered && batch.batch_sequence != self.next_visible =>
+                {
                     self.completed
                         .insert(batch.batch_sequence, (completion.worker, batch));
                 }
-                Ok(Some(batch)) => return Some(self.publish(completion.worker, batch)),
-                Ok(None) => {
-                    let batch = self.next_visible;
-                    self.stop();
-                    return Some(Err(LoaderError::ChannelClosed { batch }));
+                Ok(WorkerMessage::Batch(batch)) => {
+                    run_context.deadline.disarm();
+                    return Some(self.publish(completion.worker, batch));
                 }
+                Ok(WorkerMessage::Quiesced) => continue,
             }
         }
     }
@@ -1626,18 +1805,6 @@ fn validate_configuration(
         return Err(invalid_configuration(
             "persistent_workers",
             "requires a positive worker count",
-        ));
-    }
-    if configuration.workers > 0 && configuration.timeout.is_some() {
-        return Err(invalid_configuration(
-            "timeout",
-            "positive-worker timeout execution is scheduled for DataLoader Task 8",
-        ));
-    }
-    if configuration.workers > 0 && configuration.persistent_workers {
-        return Err(invalid_configuration(
-            "persistent_workers",
-            "persistent worker execution is scheduled for DataLoader Task 8",
         ));
     }
     Ok(())

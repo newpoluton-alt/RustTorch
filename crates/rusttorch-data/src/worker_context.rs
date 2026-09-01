@@ -1,9 +1,216 @@
-use std::{cell::RefCell, convert::Infallible};
+use std::{
+    cell::RefCell,
+    convert::Infallible,
+    fmt,
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
+use crossbeam_channel::{Receiver, Sender, bounded};
 use rusttorch_core::{Result, RustTorchError};
 
 /// Version of RustTorch's deterministic worker-seed derivation.
 pub const WORKER_SEED_DERIVATION_VERSION: u32 = 1;
+
+struct CancellationState {
+    cancelled: AtomicBool,
+    wait_lock: Mutex<()>,
+    deadline: Mutex<Option<Instant>>,
+    wake: Condvar,
+    signal: Receiver<()>,
+    signal_sender: Mutex<Option<Sender<()>>>,
+}
+
+impl CancellationState {
+    fn new(deadline: Option<Instant>) -> Arc<Self> {
+        let (signal_sender, signal) = bounded(0);
+        Arc::new(Self {
+            cancelled: AtomicBool::new(false),
+            wait_lock: Mutex::new(()),
+            deadline: Mutex::new(deadline),
+            wake: Condvar::new(),
+            signal,
+            signal_sender: Mutex::new(Some(signal_sender)),
+        })
+    }
+}
+
+/// Cloneable cooperative cancellation notification.
+///
+/// Cancellation is sticky. Waiting uses a condition variable and queue waits
+/// use the same token's disconnection signal, so neither path polls.
+#[derive(Clone)]
+pub struct CancellationToken {
+    state: Arc<CancellationState>,
+}
+
+impl fmt::Debug for CancellationToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CancellationToken")
+            .field("cancelled", &self.is_cancelled())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for CancellationToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CancellationToken {
+    /// Creates a live token with no deadline.
+    pub fn new() -> Self {
+        Self {
+            state: CancellationState::new(None),
+        }
+    }
+
+    /// Requests cooperative cancellation and wakes every waiter.
+    pub fn cancel(&self) {
+        if !self.state.cancelled.swap(true, Ordering::AcqRel) {
+            self.state.signal_sender.lock().unwrap().take();
+            self.state.wake.notify_all();
+        }
+    }
+
+    /// Returns whether cancellation has been requested.
+    pub fn is_cancelled(&self) -> bool {
+        self.state.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Blocks until cancellation is requested.
+    pub fn wait_cancelled(&self) {
+        let mut guard = self.state.wait_lock.lock().unwrap();
+        while !self.is_cancelled() {
+            guard = self.state.wake.wait(guard).unwrap();
+        }
+    }
+
+    /// Waits up to `timeout`, returning `true` when cancellation won.
+    pub fn wait_cancelled_timeout(&self, timeout: Duration) -> bool {
+        if self.is_cancelled() {
+            return true;
+        }
+        let guard = self.state.wait_lock.lock().unwrap();
+        let _ = self
+            .state
+            .wake
+            .wait_timeout_while(guard, timeout, |_| !self.is_cancelled())
+            .unwrap();
+        self.is_cancelled()
+    }
+
+    pub(crate) fn signal(&self) -> &Receiver<()> {
+        &self.state.signal
+    }
+
+    pub(crate) fn paired_deadline(&self) -> Deadline {
+        Deadline {
+            state: Arc::clone(&self.state),
+        }
+    }
+
+    pub(crate) fn wait_cancelled_or_deadline(&self, deadline: &Deadline) -> WaitOutcome {
+        let mut guard = self.state.wait_lock.lock().unwrap();
+        loop {
+            if self.is_cancelled() {
+                return WaitOutcome::Cancelled;
+            }
+            match deadline.remaining() {
+                Some(remaining) if remaining.is_zero() => return WaitOutcome::DeadlineExpired,
+                Some(remaining) => {
+                    let (next, _) = self.state.wake.wait_timeout(guard, remaining).unwrap();
+                    guard = next;
+                }
+                None => guard = self.state.wake.wait(guard).unwrap(),
+            }
+        }
+    }
+}
+
+/// Cloneable monotonic deadline visible to cooperative worker code.
+///
+/// Loader-owned deadlines are armed for each blocking `Iterator::next` call
+/// and disarmed afterwards. [`Deadline::none`] never expires.
+#[derive(Clone)]
+pub struct Deadline {
+    state: Arc<CancellationState>,
+}
+
+impl fmt::Debug for Deadline {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Deadline")
+            .field("remaining", &self.remaining())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for Deadline {
+    fn default() -> Self {
+        Self::none()
+    }
+}
+
+impl Deadline {
+    /// Creates an unarmed deadline.
+    pub fn none() -> Self {
+        Self {
+            state: CancellationState::new(None),
+        }
+    }
+
+    /// Creates a deadline expiring after `timeout`.
+    pub fn after(timeout: Duration) -> Self {
+        Self {
+            state: CancellationState::new(Instant::now().checked_add(timeout)),
+        }
+    }
+
+    /// Returns whether the armed deadline has expired.
+    pub fn is_expired(&self) -> bool {
+        self.remaining()
+            .is_some_and(|remaining| remaining.is_zero())
+    }
+
+    /// Returns the remaining duration, or `None` when unarmed.
+    pub fn remaining(&self) -> Option<Duration> {
+        self.state
+            .deadline
+            .lock()
+            .unwrap()
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+    }
+
+    pub(crate) fn arm(&self, timeout: Duration) {
+        *self.state.deadline.lock().unwrap() = Instant::now().checked_add(timeout);
+        self.state.wake.notify_all();
+    }
+
+    pub(crate) fn disarm(&self) {
+        *self.state.deadline.lock().unwrap() = None;
+        self.state.wake.notify_all();
+    }
+}
+
+/// Outcome of waiting for cooperative cancellation or a deadline.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WaitOutcome {
+    /// Cancellation was requested.
+    Cancelled,
+    /// The monotonic deadline expired.
+    DeadlineExpired,
+}
+
+/// Error returned by [`WorkerContext::check`] after cancellation or expiry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("loader work was cancelled or its deadline expired")]
+pub struct LoaderCancelled;
 
 /// Stable information visible while a loader worker callback is active.
 ///
@@ -64,6 +271,47 @@ impl WorkerInfo {
     }
 }
 
+/// Cancellation and deadline state passed to worker lifecycle callbacks.
+///
+/// For persistent pools this context belongs to the pool lifetime: its token
+/// is cancelled only when the owner shuts the pool down. Dataset fetches and
+/// task transforms receive a separate, fresh context for each iterator
+/// generation.
+#[derive(Clone, Debug)]
+pub struct WorkerContext {
+    /// Stable worker identity and initialization seed.
+    pub info: WorkerInfo,
+    /// Cooperative cancellation token.
+    pub cancellation: CancellationToken,
+    /// Dynamic monotonic deadline.
+    pub deadline: Deadline,
+}
+
+impl WorkerContext {
+    /// Creates a context from explicit worker information and controls.
+    pub fn new(info: WorkerInfo, cancellation: CancellationToken, deadline: Deadline) -> Self {
+        Self {
+            info,
+            cancellation,
+            deadline,
+        }
+    }
+
+    /// Returns an error when cancelled or expired.
+    pub fn check(&self) -> std::result::Result<(), LoaderCancelled> {
+        if self.cancellation.is_cancelled() || self.deadline.is_expired() {
+            Err(LoaderCancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Blocks until cancellation or deadline expiry.
+    pub fn wait_cancelled_or_deadline(&self) -> WaitOutcome {
+        self.cancellation.wait_cancelled_or_deadline(&self.deadline)
+    }
+}
+
 /// Initializes one worker after its context becomes active.
 ///
 /// The default serial loader imposes no thread-safety bound; positive worker
@@ -73,7 +321,7 @@ pub trait WorkerInit {
     type Error;
 
     /// Initializes `worker` once for its worker lifecycle.
-    fn initialize(&self, worker: &WorkerInfo) -> std::result::Result<(), Self::Error>;
+    fn initialize(&self, worker: &WorkerContext) -> std::result::Result<(), Self::Error>;
 }
 
 /// Adapts a fallible closure into a [`WorkerInit`].
@@ -91,11 +339,11 @@ impl<F> FnWorkerInit<F> {
 
 impl<E, F> WorkerInit for FnWorkerInit<F>
 where
-    F: Fn(&WorkerInfo) -> std::result::Result<(), E>,
+    F: Fn(&WorkerContext) -> std::result::Result<(), E>,
 {
     type Error = E;
 
-    fn initialize(&self, worker: &WorkerInfo) -> std::result::Result<(), Self::Error> {
+    fn initialize(&self, worker: &WorkerContext) -> std::result::Result<(), Self::Error> {
         (self.initialize)(worker)
     }
 }
@@ -107,7 +355,7 @@ pub struct NoWorkerInit;
 impl WorkerInit for NoWorkerInit {
     type Error = Infallible;
 
-    fn initialize(&self, _worker: &WorkerInfo) -> std::result::Result<(), Self::Error> {
+    fn initialize(&self, _worker: &WorkerContext) -> std::result::Result<(), Self::Error> {
         Ok(())
     }
 }
