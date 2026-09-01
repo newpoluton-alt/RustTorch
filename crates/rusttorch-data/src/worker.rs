@@ -12,7 +12,7 @@ use crossbeam_channel::{
 };
 use rusttorch_core::{Result, RustTorchError};
 
-use crate::memory::{BudgetError, ByteBudget, BytePermit};
+use crate::memory::{BudgetError, ByteBudget, MemoryPolicy};
 use crate::{
     CancellationToken, Dataset, Deadline, TaskContext, Transform, TransformFactory, WorkerContext,
     WorkerInfo, WorkerInit, with_worker_info,
@@ -31,11 +31,11 @@ pub(crate) enum WorkerSubmit {
     Closed,
 }
 
-pub(crate) struct WorkerBatch<T> {
+pub(crate) struct WorkerBatch<T, P = ()> {
     pub(crate) generation: u64,
     pub(crate) batch_sequence: u64,
     pub(crate) samples: Vec<T>,
-    pub(crate) permit: Option<BytePermit>,
+    pub(crate) permit: P,
 }
 
 pub(crate) enum WorkerFailure<DE, TE, FE, IE> {
@@ -48,22 +48,23 @@ pub(crate) enum WorkerFailure<DE, TE, FE, IE> {
     Panic,
 }
 
-pub(crate) enum WorkerMessage<T> {
-    Batch(WorkerBatch<T>),
+pub(crate) enum WorkerMessage<T, P = ()> {
+    Batch(WorkerBatch<T, P>),
     Quiesced,
 }
 
-pub(crate) struct WorkerCompletion<T, DE, TE, FE, IE> {
+pub(crate) struct WorkerCompletion<T, P, DE, TE, FE, IE> {
     pub(crate) worker: usize,
     pub(crate) generation: u64,
     pub(crate) batch_sequence: Option<u64>,
-    pub(crate) result: std::result::Result<WorkerMessage<T>, WorkerFailure<DE, TE, FE, IE>>,
+    pub(crate) result: std::result::Result<WorkerMessage<T, P>, WorkerFailure<DE, TE, FE, IE>>,
 }
 
-type Completion<D, F, I> = WorkerCompletion<
+type Completion<D, F, I, M> = WorkerCompletion<
     <<F as TransformFactory<<D as Dataset>::Sample>>::Transform as Transform<
         <D as Dataset>::Sample,
     >>::Output,
+    <M as MemoryPolicy>::Permit,
     <D as Dataset>::Error,
     <<F as TransformFactory<<D as Dataset>::Sample>>::Transform as Transform<
         <D as Dataset>::Sample,
@@ -127,10 +128,20 @@ impl WorkerRunContext {
     }
 
     pub(crate) fn cancel(&self) {
-        self.cancellation.cancel();
+        self.cancel_with_hook(|| {});
+    }
+
+    #[cfg(test)]
+    fn cancel_with_test_hook(&self, between_notifications: impl FnOnce()) {
+        self.cancel_with_hook(between_notifications);
+    }
+
+    fn cancel_with_hook(&self, between_notifications: impl FnOnce()) {
         if let Some(byte_budget) = &self.byte_budget {
             byte_budget.cancel();
         }
+        between_notifications();
+        self.cancellation.cancel();
     }
 
     fn worker_context(&self, info: WorkerInfo) -> WorkerContext {
@@ -142,27 +153,29 @@ enum WorkerControl {
     Begin(WorkerRunContext),
 }
 
-pub(crate) enum WorkerReceive<D, F, I>
+pub(crate) enum WorkerReceive<D, F, I, M>
 where
     D: Dataset,
     F: TransformFactory<D::Sample>,
     I: WorkerInit,
+    M: MemoryPolicy,
 {
-    Completion(Completion<D, F, I>),
+    Completion(Completion<D, F, I, M>),
     Timeout,
     Cancelled,
     Closed,
 }
 
-pub(crate) struct WorkerPool<D, F, I>
+pub(crate) struct WorkerPool<D, F, I, M>
 where
     D: Dataset,
     F: TransformFactory<D::Sample>,
     I: WorkerInit,
+    M: MemoryPolicy,
 {
     controls: Vec<Sender<WorkerControl>>,
     tasks: Vec<Sender<WorkerTask>>,
-    results: Option<Receiver<Completion<D, F, I>>>,
+    results: Option<Receiver<Completion<D, F, I, M>>>,
     handles: Vec<JoinHandle<()>>,
     shutdown: CancellationToken,
     active: Option<WorkerRunContext>,
@@ -178,7 +191,7 @@ pub(crate) struct WorkerPoolConfiguration {
     pub(crate) rank: usize,
 }
 
-impl<D, F, I> WorkerPool<D, F, I>
+impl<D, F, I, M> WorkerPool<D, F, I, M>
 where
     D: Dataset + Send + Sync + 'static,
     D::Sample: Send + 'static,
@@ -190,6 +203,7 @@ where
     F::Error: Send + 'static,
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
+    M: MemoryPolicy + Send + 'static,
 {
     pub(crate) fn new(
         dataset: Arc<D>,
@@ -199,14 +213,14 @@ where
         footprint: Option<WorkerFootprint<D, F>>,
         ordered: bool,
     ) -> Result<Self> {
-        validate_worker_pool_capacity::<D, F, I>(
+        validate_worker_pool_capacity::<D, F, I, M>(
             configuration.workers,
             configuration.prefetch_factor,
             configuration.result_capacity,
         )?;
         preflight_channel_storage::<WorkerTask>(configuration.result_capacity)?;
         preflight_channel_storage::<WorkerControl>(configuration.workers)?;
-        preflight_channel_storage::<Completion<D, F, I>>(configuration.result_capacity)?;
+        preflight_channel_storage::<Completion<D, F, I, M>>(configuration.result_capacity)?;
 
         let mut infos = Vec::new();
         reserve_exact(&mut infos, configuration.workers, "workers")?;
@@ -270,7 +284,7 @@ where
             let handle = thread::Builder::new()
                 .name(format!("rusttorch-data-worker-{}", info.id))
                 .spawn(move || {
-                    run_worker(
+                    run_worker::<D, F, I, M>(
                         info,
                         initialization_generation,
                         dataset,
@@ -295,11 +309,12 @@ where
     }
 }
 
-impl<D, F, I> WorkerPool<D, F, I>
+impl<D, F, I, M> WorkerPool<D, F, I, M>
 where
     D: Dataset,
     F: TransformFactory<D::Sample>,
     I: WorkerInit,
+    M: MemoryPolicy,
 {
     pub(crate) fn workers(&self) -> usize {
         self.tasks.len()
@@ -345,7 +360,7 @@ where
         &self,
         context: &WorkerRunContext,
         timeout: Option<Duration>,
-    ) -> WorkerReceive<D, F, I> {
+    ) -> WorkerReceive<D, F, I, M> {
         let results = self
             .results
             .as_ref()
@@ -485,13 +500,14 @@ where
     }
 }
 
-fn map_receive<D, F, I>(
-    result: std::result::Result<Completion<D, F, I>, RecvError>,
-) -> WorkerReceive<D, F, I>
+fn map_receive<D, F, I, M>(
+    result: std::result::Result<Completion<D, F, I, M>, RecvError>,
+) -> WorkerReceive<D, F, I, M>
 where
     D: Dataset,
     F: TransformFactory<D::Sample>,
     I: WorkerInit,
+    M: MemoryPolicy,
 {
     match result {
         Ok(completion) => WorkerReceive::Completion(completion),
@@ -499,7 +515,7 @@ where
     }
 }
 
-pub(crate) fn validate_worker_pool_capacity<D, F, I>(
+pub(crate) fn validate_worker_pool_capacity<D, F, I, M>(
     workers: usize,
     prefetch_factor: usize,
     outstanding: usize,
@@ -508,6 +524,7 @@ where
     D: Dataset,
     F: TransformFactory<D::Sample>,
     I: WorkerInit,
+    M: MemoryPolicy,
 {
     let expected_outstanding = workers
         .checked_mul(prefetch_factor)
@@ -526,7 +543,7 @@ where
     }
 
     let slots_per_credit = size_of::<ChannelSlot<WorkerTask>>()
-        .checked_add(size_of::<ChannelSlot<Completion<D, F, I>>>())
+        .checked_add(size_of::<ChannelSlot<Completion<D, F, I, M>>>())
         .ok_or_else(|| capacity_error("bounded channel slot sizes exceed usize"))?;
     let credit_bytes = outstanding
         .checked_mul(slots_per_credit)
@@ -546,8 +563,8 @@ where
         .ok_or_else(|| capacity_error("worker bookkeeping size exceeds usize"))?;
     let fixed_bookkeeping = size_of::<Vec<()>>()
         .checked_mul(6)
-        .and_then(|bytes| bytes.checked_add(size_of::<Sender<Completion<D, F, I>>>()))
-        .and_then(|bytes| bytes.checked_add(size_of::<Receiver<Completion<D, F, I>>>()));
+        .and_then(|bytes| bytes.checked_add(size_of::<Sender<Completion<D, F, I, M>>>()))
+        .and_then(|bytes| bytes.checked_add(size_of::<Receiver<Completion<D, F, I, M>>>()));
     let vector_bytes = workers
         .checked_mul(per_worker_bookkeeping)
         .and_then(|bytes| fixed_bookkeeping.and_then(|fixed| bytes.checked_add(fixed)))
@@ -607,11 +624,12 @@ fn capacity_error(reason: impl Into<String>) -> RustTorchError {
     }
 }
 
-impl<D, F, I> Drop for WorkerPool<D, F, I>
+impl<D, F, I, M> Drop for WorkerPool<D, F, I, M>
 where
     D: Dataset,
     F: TransformFactory<D::Sample>,
     I: WorkerInit,
+    M: MemoryPolicy,
 {
     fn drop(&mut self) {
         self.shutdown();
@@ -619,7 +637,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_worker<D, F, I>(
+fn run_worker<D, F, I, M>(
     info: WorkerInfo,
     initialization_generation: u64,
     dataset: Arc<D>,
@@ -627,7 +645,7 @@ fn run_worker<D, F, I>(
     initializer: Arc<I>,
     controls: Receiver<WorkerControl>,
     tasks: Receiver<WorkerTask>,
-    results: Sender<Completion<D, F, I>>,
+    results: Sender<Completion<D, F, I, M>>,
     shutdown: CancellationToken,
     footprint: Option<WorkerFootprint<D, F>>,
     ordered: bool,
@@ -642,6 +660,7 @@ fn run_worker<D, F, I>(
     F::Error: Send + 'static,
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
+    M: MemoryPolicy + Send + 'static,
 {
     let lifecycle = WorkerContext::new(info, shutdown.clone(), shutdown.paired_deadline());
     let mut active = None;
@@ -680,7 +699,7 @@ fn run_worker<D, F, I>(
                     recv(shutdown.signal()) -> _ => return false,
                 };
                 active = Some((run.clone(), None));
-                run_generation::<D, F, I>(
+                run_generation::<D, F, I, M>(
                     info,
                     &dataset,
                     &mut transform,
@@ -726,12 +745,12 @@ fn run_worker<D, F, I>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_generation<D, F, I>(
+fn run_generation<D, F, I, M>(
     info: WorkerInfo,
     dataset: &D,
     transform: &mut F::Transform,
     tasks: &Receiver<WorkerTask>,
-    results: &Sender<Completion<D, F, I>>,
+    results: &Sender<Completion<D, F, I, M>>,
     shutdown: &CancellationToken,
     run: &WorkerRunContext,
     active: &mut Option<(WorkerRunContext, Option<u64>)>,
@@ -748,6 +767,7 @@ fn run_generation<D, F, I>(
     F::Error: Send + 'static,
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
+    M: MemoryPolicy,
 {
     let context = run.worker_context(info);
     loop {
@@ -771,7 +791,7 @@ fn run_generation<D, F, I>(
             Ok(samples) if context.check().is_ok() => samples,
             Ok(_) => break,
             Err(error) => {
-                if send_generation_failure::<D, F, I>(
+                if send_generation_failure::<D, F, I, M>(
                     results,
                     shutdown,
                     run,
@@ -785,7 +805,7 @@ fn run_generation<D, F, I>(
             }
         };
         if samples.len() != expected {
-            if send_generation_failure::<D, F, I>(
+            if send_generation_failure::<D, F, I, M>(
                 results,
                 shutdown,
                 run,
@@ -818,7 +838,7 @@ fn run_generation<D, F, I>(
                 Ok(sample) if context.check().is_ok() => transformed.push(sample),
                 Ok(_) => break,
                 Err(error) => {
-                    if send_generation_failure::<D, F, I>(
+                    if send_generation_failure::<D, F, I, M>(
                         results,
                         shutdown,
                         run,
@@ -849,7 +869,7 @@ fn run_generation<D, F, I>(
             match acquired {
                 Ok(permit) => Some(permit),
                 Err(BudgetError::Oversize { limit, actual }) => {
-                    if send_generation_failure::<D, F, I>(
+                    if send_generation_failure::<D, F, I, M>(
                         results,
                         shutdown,
                         run,
@@ -863,7 +883,7 @@ fn run_generation<D, F, I>(
                 }
                 Err(BudgetError::Cancelled) => break,
                 Err(BudgetError::SequenceAlreadyAdmitted) => {
-                    if send_generation_failure::<D, F, I>(
+                    if send_generation_failure::<D, F, I, M>(
                         results,
                         shutdown,
                         run,
@@ -883,7 +903,7 @@ fn run_generation<D, F, I>(
             generation: task.generation,
             batch_sequence: task.batch_sequence,
             samples: transformed,
-            permit,
+            permit: M::permit(permit),
         };
         if !send_completion(
             results,
@@ -919,8 +939,8 @@ fn run_generation<D, F, I>(
     );
 }
 
-fn send_generation_failure<D, F, I>(
-    results: &Sender<Completion<D, F, I>>,
+fn send_generation_failure<D, F, I, M>(
+    results: &Sender<Completion<D, F, I, M>>,
     shutdown: &CancellationToken,
     run: &WorkerRunContext,
     worker: usize,
@@ -931,6 +951,7 @@ where
     D: Dataset,
     F: TransformFactory<D::Sample>,
     I: WorkerInit,
+    M: MemoryPolicy,
 {
     send_completion(
         results,
@@ -945,8 +966,8 @@ where
     )
 }
 
-fn send_pool_failure<T, DE, TE, FE, IE>(
-    results: &Sender<WorkerCompletion<T, DE, TE, FE, IE>>,
+fn send_pool_failure<T, P, DE, TE, FE, IE>(
+    results: &Sender<WorkerCompletion<T, P, DE, TE, FE, IE>>,
     shutdown: &CancellationToken,
     worker: usize,
     generation: u64,
@@ -965,11 +986,11 @@ fn send_pool_failure<T, DE, TE, FE, IE>(
     );
 }
 
-fn send_completion<T, DE, TE, FE, IE>(
-    results: &Sender<WorkerCompletion<T, DE, TE, FE, IE>>,
+fn send_completion<T, P, DE, TE, FE, IE>(
+    results: &Sender<WorkerCompletion<T, P, DE, TE, FE, IE>>,
     shutdown: &CancellationToken,
     cancellation: Option<&CancellationToken>,
-    completion: WorkerCompletion<T, DE, TE, FE, IE>,
+    completion: WorkerCompletion<T, P, DE, TE, FE, IE>,
 ) -> bool {
     if let Some(cancellation) = cancellation {
         select! {
@@ -982,5 +1003,53 @@ fn send_completion<T, DE, TE, FE, IE>(
             send(results, completion) -> result => result.is_ok(),
             recv(shutdown.signal()) -> _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{Arc, mpsc},
+        thread,
+    };
+
+    use crate::memory::{BudgetError, ByteBudget};
+
+    use super::WorkerRunContext;
+
+    #[test]
+    fn generation_cancel_closes_budget_before_lifecycle_notification() {
+        let budget = ByteBudget::new(1);
+        let held = budget.acquire(1).expect("initial permit fits");
+        let context = WorkerRunContext::new(7, 11, 13).with_byte_budget(Some(Arc::clone(&budget)));
+        let lifecycle = context.cancellation.clone();
+        let (lifecycle_sender, lifecycle_receiver) = mpsc::sync_channel(0);
+        let lifecycle_thread = thread::spawn(move || {
+            lifecycle.wait_cancelled();
+            lifecycle_sender.send(()).unwrap();
+        });
+
+        let (paused_sender, paused_receiver) = mpsc::sync_channel(0);
+        let (resume_sender, resume_receiver) = mpsc::sync_channel(0);
+        let cancel_thread = thread::spawn(move || {
+            context.cancel_with_test_hook(|| {
+                paused_sender.send(()).unwrap();
+                resume_receiver.recv().unwrap();
+            });
+        });
+
+        paused_receiver.recv().unwrap();
+        drop(held);
+        assert!(matches!(budget.acquire(1), Err(BudgetError::Cancelled)));
+        assert!(matches!(budget.acquire(2), Err(BudgetError::Cancelled)));
+        assert!(matches!(
+            lifecycle_receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+
+        resume_sender.send(()).unwrap();
+        lifecycle_receiver.recv().unwrap();
+        cancel_thread.join().unwrap();
+        lifecycle_thread.join().unwrap();
     }
 }

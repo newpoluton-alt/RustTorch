@@ -86,7 +86,7 @@ use crossbeam_channel::{Receiver, RecvError, Sender, TryRecvError, after, bounde
 
 use rusttorch_core::{Device, Result, RustTorchError, available_devices};
 
-use crate::memory::{BudgetError, ByteBudget, BytePermit, MemoryDisabled, MemoryEnabled};
+use crate::memory::{BudgetError, ByteBudget, MemoryDisabled, MemoryEnabled, MemoryPolicy};
 use crate::worker::WorkerRunContext;
 use crate::{
     Auto, CancellationToken, CloneTransformFactory, Collate, Deadline, DefaultCollator, Explicit,
@@ -190,9 +190,72 @@ type StreamPipelineError<S, C, F, I> = PipelineError<
     <I as WorkerInit>::Error,
 >;
 type StreamLoaderError<S, C, F, I> = LoaderError<StreamPipelineError<S, C, F, I>>;
-type ReassemblyEntry<T> = (u64, BufferedRecord<T>);
-type RetainedReassembly<T> = Mutex<Vec<ReassemblyEntry<T>>>;
+type ReassemblyEntry<T, P> = (u64, BufferedRecord<T, P>);
+type RetainedReassembly<T, P> = Mutex<Vec<ReassemblyEntry<T, P>>>;
 type StreamFootprint<S, F> = fn(&TransformOutput<S, F>) -> usize;
+
+trait StreamMemoryPolicy: MemoryPolicy {
+    type Waiters;
+
+    fn waiter_bytes(workers: usize) -> Result<usize>;
+    fn preflight_waiters(workers: usize) -> Result<()>;
+    fn new_waiters(workers: usize) -> Result<Self::Waiters>;
+    fn waiters(waiters: &Self::Waiters) -> Option<&[Option<u64>]>;
+    fn waiters_mut(waiters: &mut Self::Waiters) -> Option<&mut [Option<u64>]>;
+}
+
+impl StreamMemoryPolicy for MemoryDisabled {
+    type Waiters = ();
+
+    fn waiter_bytes(_workers: usize) -> Result<usize> {
+        Ok(0)
+    }
+
+    fn preflight_waiters(_workers: usize) -> Result<()> {
+        Ok(())
+    }
+
+    fn new_waiters(_workers: usize) -> Result<Self::Waiters> {
+        Ok(())
+    }
+
+    fn waiters(_waiters: &Self::Waiters) -> Option<&[Option<u64>]> {
+        None
+    }
+
+    fn waiters_mut(_waiters: &mut Self::Waiters) -> Option<&mut [Option<u64>]> {
+        None
+    }
+}
+
+impl StreamMemoryPolicy for MemoryEnabled {
+    type Waiters = Vec<Option<u64>>;
+
+    fn waiter_bytes(workers: usize) -> Result<usize> {
+        workers
+            .checked_mul(size_of::<Option<u64>>())
+            .ok_or_else(|| capacity_error("stream byte waiter storage exceeds usize"))
+    }
+
+    fn preflight_waiters(workers: usize) -> Result<()> {
+        preflight_vec::<Option<u64>>(workers, "stream byte waiter state")
+    }
+
+    fn new_waiters(workers: usize) -> Result<Self::Waiters> {
+        let mut waiters = Vec::new();
+        reserve_exact(&mut waiters, workers, "stream byte waiter state")?;
+        waiters.resize(workers, None);
+        Ok(waiters)
+    }
+
+    fn waiters(waiters: &Self::Waiters) -> Option<&[Option<u64>]> {
+        Some(waiters)
+    }
+
+    fn waiters_mut(waiters: &mut Self::Waiters) -> Option<&mut [Option<u64>]> {
+        Some(waiters)
+    }
+}
 
 #[doc(hidden)]
 pub trait StreamPinPolicy<S, C, F>
@@ -227,8 +290,9 @@ where
     }
 }
 
-type StreamCompletionFor<S, F, I> = StreamCompletion<
+type StreamCompletionFor<S, F, I, M> = StreamCompletion<
     TransformOutput<S, F>,
+    <M as MemoryPolicy>::Permit,
     <S as WorkerSourceFactory>::Error,
     TransformFailure<S, F>,
     <F as TransformFactory<<S as WorkerSourceFactory>::Sample>>::Error,
@@ -251,33 +315,33 @@ enum StreamFailure<SE, TE, FE, IE> {
     Panic,
 }
 
-enum StreamMessage<T> {
-    Record(WorkerRecord<T>),
+enum StreamMessage<T, P> {
+    Record(WorkerRecord<T>, P),
     Waiting { sequence: u64 },
     End,
 }
 
-struct StreamCompletion<T, SE, TE, FE, IE> {
+struct StreamCompletion<T, P, SE, TE, FE, IE> {
     worker: usize,
     generation: u64,
     sequence: Option<u64>,
     logical_id: Option<u64>,
     holds_credit: bool,
-    permit: Option<BytePermit>,
-    result: std::result::Result<StreamMessage<T>, StreamFailure<SE, TE, FE, IE>>,
+    result: std::result::Result<StreamMessage<T, P>, StreamFailure<SE, TE, FE, IE>>,
 }
 
 enum StreamControl {
     Begin(WorkerRunContext),
 }
 
-enum StreamReceive<S, F, I>
+enum StreamReceive<S, F, I, M>
 where
     S: WorkerSourceFactory,
     F: TransformFactory<S::Sample>,
     I: WorkerInit,
+    M: StreamMemoryPolicy,
 {
-    Completion(StreamCompletionFor<S, F, I>),
+    Completion(StreamCompletionFor<S, F, I, M>),
     Timeout,
     Cancelled,
     Closed,
@@ -300,7 +364,7 @@ struct CapacitySlot<T> {
     message: MaybeUninit<T>,
 }
 
-fn validate_stream_capacity<S, F, I>(
+fn validate_stream_capacity<S, F, I, M>(
     workers: usize,
     prefetch_factor: usize,
     outstanding: usize,
@@ -311,6 +375,7 @@ where
     S: WorkerSourceFactory,
     F: TransformFactory<S::Sample>,
     I: WorkerInit,
+    M: StreamMemoryPolicy,
 {
     let expected = workers
         .checked_mul(prefetch_factor)
@@ -332,7 +397,7 @@ where
         .checked_mul(size_of::<CapacitySlot<()>>())
         .ok_or_else(|| capacity_error("stream credit storage exceeds usize"))?;
     let result_bytes = outstanding
-        .checked_mul(size_of::<CapacitySlot<StreamCompletionFor<S, F, I>>>())
+        .checked_mul(size_of::<CapacitySlot<StreamCompletionFor<S, F, I, M>>>())
         .ok_or_else(|| capacity_error("stream result storage exceeds usize"))?;
     let control_bytes = workers
         .checked_mul(size_of::<CapacitySlot<StreamControl>>())
@@ -342,7 +407,9 @@ where
         .and_then(|bytes| bytes.checked_mul(2))
         .ok_or_else(|| capacity_error("stream batch storage exceeds usize"))?;
     let reassembly_bytes = reassembly_slots
-        .checked_mul(size_of::<ReassemblyEntry<TransformOutput<S, F>>>())
+        .checked_mul(size_of::<
+            ReassemblyEntry<TransformOutput<S, F>, <M as MemoryPolicy>::Permit>,
+        >())
         .ok_or_else(|| capacity_error("ordered stream reassembly exceeds usize"))?;
     let per_worker = size_of::<WorkerInfo>()
         .checked_add(size_of::<(Sender<()>, Receiver<()>)>())
@@ -353,10 +420,11 @@ where
         .and_then(|bytes| bytes.checked_add(size_of::<Sender<StreamControl>>()))
         .and_then(|bytes| bytes.checked_add(size_of::<JoinHandle<()>>()))
         .and_then(|bytes| bytes.checked_add(size_of::<bool>()))
-        .and_then(|bytes| bytes.checked_add(size_of::<Option<u64>>()))
         .ok_or_else(|| capacity_error("stream worker bookkeeping exceeds usize"))?;
+    let waiter_bytes = M::waiter_bytes(workers)?;
     let bookkeeping = workers
         .checked_mul(per_worker)
+        .and_then(|bytes| bytes.checked_add(waiter_bytes))
         .ok_or_else(|| capacity_error("stream worker bookkeeping exceeds usize"))?;
     let channel_count = workers
         .checked_mul(2)
@@ -380,9 +448,9 @@ where
     }
     preflight_channel_storage::<()>(outstanding)?;
     preflight_channel_storage::<StreamControl>(workers)?;
-    preflight_channel_storage::<StreamCompletionFor<S, F, I>>(outstanding)?;
+    preflight_channel_storage::<StreamCompletionFor<S, F, I, M>>(outstanding)?;
     preflight_vec::<TransformOutput<S, F>>(batch_size, "stream batch")?;
-    preflight_vec::<Option<u64>>(workers, "stream byte waiter state")?;
+    M::preflight_waiters(workers)?;
     Ok(())
 }
 
@@ -404,15 +472,16 @@ fn capacity_error(reason: impl Into<String>) -> RustTorchError {
     invalid_configuration("prefetch_factor", reason)
 }
 
-struct StreamWorkerPool<S, F, I>
+struct StreamWorkerPool<S, F, I, M>
 where
     S: WorkerSourceFactory,
     F: TransformFactory<S::Sample>,
     I: WorkerInit,
+    M: StreamMemoryPolicy,
 {
     controls: Vec<Sender<StreamControl>>,
     credits: Vec<Sender<()>>,
-    results: Option<Receiver<StreamCompletionFor<S, F, I>>>,
+    results: Option<Receiver<StreamCompletionFor<S, F, I, M>>>,
     handles: Vec<JoinHandle<()>>,
     shutdown: CancellationToken,
     active: Option<WorkerRunContext>,
@@ -422,7 +491,7 @@ where
     poisoned: bool,
 }
 
-impl<S, F, I> StreamWorkerPool<S, F, I>
+impl<S, F, I, M> StreamWorkerPool<S, F, I, M>
 where
     S: WorkerSourceFactory,
     F: TransformFactory<S::Sample> + Send + Sync + 'static,
@@ -432,6 +501,7 @@ where
     F::Error: Send + 'static,
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
+    M: StreamMemoryPolicy + Send + 'static,
 {
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -444,7 +514,7 @@ where
         reassembly_slots: usize,
         footprint: Option<StreamFootprint<S, F>>,
     ) -> Result<Self> {
-        validate_stream_capacity::<S, F, I>(
+        validate_stream_capacity::<S, F, I, M>(
             configuration.workers,
             configuration.prefetch_factor,
             outstanding,
@@ -521,7 +591,7 @@ where
             let handle = thread::Builder::new()
                 .name(format!("rusttorch-stream-worker-{id}"))
                 .spawn(move || {
-                    run_stream_worker::<S, F, I>(
+                    run_stream_worker::<S, F, I, M>(
                         info,
                         generation,
                         source_factory,
@@ -546,11 +616,12 @@ where
     }
 }
 
-impl<S, F, I> StreamWorkerPool<S, F, I>
+impl<S, F, I, M> StreamWorkerPool<S, F, I, M>
 where
     S: WorkerSourceFactory,
     F: TransformFactory<S::Sample>,
     I: WorkerInit,
+    M: StreamMemoryPolicy,
 {
     fn start_generation(&mut self, context: WorkerRunContext) -> std::result::Result<(), ()> {
         if self.poisoned || self.active.is_some() || self.shutdown.is_cancelled() {
@@ -574,7 +645,7 @@ where
         &self,
         context: &WorkerRunContext,
         timeout: Option<Duration>,
-    ) -> StreamReceive<S, F, I> {
+    ) -> StreamReceive<S, F, I, M> {
         let results = self
             .results
             .as_ref()
@@ -589,7 +660,7 @@ where
 
     fn account(
         &mut self,
-        completion: &StreamCompletionFor<S, F, I>,
+        completion: &StreamCompletionFor<S, F, I, M>,
     ) -> std::result::Result<(), ()> {
         let fatal = matches!(
             &completion.result,
@@ -684,11 +755,12 @@ where
     }
 }
 
-impl<S, F, I> Drop for StreamWorkerPool<S, F, I>
+impl<S, F, I, M> Drop for StreamWorkerPool<S, F, I, M>
 where
     S: WorkerSourceFactory,
     F: TransformFactory<S::Sample>,
     I: WorkerInit,
+    M: StreamMemoryPolicy,
 {
     fn drop(&mut self) {
         self.shutdown();
@@ -757,7 +829,7 @@ fn bounded_checked<T>(capacity: usize, label: &'static str) -> Result<(Sender<T>
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_stream_worker<S, F, I>(
+fn run_stream_worker<S, F, I, M>(
     info: WorkerInfo,
     initialization_generation: u64,
     source_factory: Arc<S>,
@@ -765,7 +837,7 @@ fn run_stream_worker<S, F, I>(
     initializer: Arc<I>,
     controls: Receiver<StreamControl>,
     credits: Receiver<()>,
-    results: Sender<StreamCompletionFor<S, F, I>>,
+    results: Sender<StreamCompletionFor<S, F, I, M>>,
     shutdown: CancellationToken,
     footprint: Option<StreamFootprint<S, F>>,
     ordered: bool,
@@ -778,6 +850,7 @@ fn run_stream_worker<S, F, I>(
     F::Error: Send + 'static,
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
+    M: StreamMemoryPolicy + Send + 'static,
 {
     let lifecycle = WorkerContext::new(info, shutdown.clone(), shutdown.paired_deadline());
     let mut active: Option<(WorkerRunContext, Option<u64>, Option<u64>, bool)> = None;
@@ -822,7 +895,7 @@ fn run_stream_worker<S, F, I>(
                     recv(shutdown.signal()) -> _ => return false,
                 };
                 active = Some((run.clone(), None, None, false));
-                run_stream_generation::<S, F, I>(
+                run_stream_generation::<S, F, I, M>(
                     info,
                     &source_factory,
                     &mut transform,
@@ -869,12 +942,12 @@ fn run_stream_worker<S, F, I>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_stream_generation<S, F, I>(
+fn run_stream_generation<S, F, I, M>(
     info: WorkerInfo,
     source_factory: &S,
     transform: &mut F::Transform,
     credits: &Receiver<()>,
-    results: &Sender<StreamCompletionFor<S, F, I>>,
+    results: &Sender<StreamCompletionFor<S, F, I, M>>,
     shutdown: &CancellationToken,
     run: &WorkerRunContext,
     active: &mut Option<(WorkerRunContext, Option<u64>, Option<u64>, bool)>,
@@ -889,6 +962,7 @@ fn run_stream_generation<S, F, I>(
     F::Error: Send + 'static,
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
+    M: StreamMemoryPolicy,
 {
     let generation_info = WorkerInfo::from_loader_seed(
         info.id,
@@ -907,7 +981,7 @@ fn run_stream_generation<S, F, I>(
         Ok(source) if context.check().is_ok() => source,
         Ok(source) => {
             drop(source);
-            send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, false);
+            send_stream_end::<S, F, I, M>(results, shutdown, info.id, run.generation, false);
             return;
         }
         Err(error) => {
@@ -922,7 +996,7 @@ fn run_stream_generation<S, F, I>(
                 StreamFailure::Source(error),
             );
             run.cancel();
-            send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, false);
+            send_stream_end::<S, F, I, M>(results, shutdown, info.id, run.generation, false);
             return;
         }
     };
@@ -936,13 +1010,13 @@ fn run_stream_generation<S, F, I>(
         };
         if !acquired {
             drop(source);
-            send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, false);
+            send_stream_end::<S, F, I, M>(results, shutdown, info.id, run.generation, false);
             return;
         }
         active.as_mut().expect("active stream generation").3 = true;
         if context.check().is_err() {
             drop(source);
-            send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, true);
+            send_stream_end::<S, F, I, M>(results, shutdown, info.id, run.generation, true);
             active.as_mut().expect("active stream generation").3 = false;
             return;
         }
@@ -951,7 +1025,7 @@ fn run_stream_generation<S, F, I>(
             Some(Ok(record)) => {
                 if context.check().is_err() {
                     drop(source);
-                    send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, true);
+                    send_stream_end::<S, F, I, M>(results, shutdown, info.id, run.generation, true);
                     active.as_mut().expect("active stream generation").3 = false;
                     return;
                 }
@@ -959,7 +1033,7 @@ fn run_stream_generation<S, F, I>(
             }
             None => {
                 drop(source);
-                send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, true);
+                send_stream_end::<S, F, I, M>(results, shutdown, info.id, run.generation, true);
                 active.as_mut().expect("active stream generation").3 = false;
                 return;
             }
@@ -977,7 +1051,7 @@ fn run_stream_generation<S, F, I>(
                 );
                 active.as_mut().expect("active stream generation").3 = false;
                 run.cancel();
-                send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, false);
+                send_stream_end::<S, F, I, M>(results, shutdown, info.id, run.generation, false);
                 return;
             }
         };
@@ -1001,7 +1075,7 @@ fn run_stream_generation<S, F, I>(
             Ok(sample) if context.check().is_ok() => sample,
             Ok(_) => {
                 drop(source);
-                send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, true);
+                send_stream_end::<S, F, I, M>(results, shutdown, info.id, run.generation, true);
                 active.as_mut().expect("active stream generation").3 = false;
                 return;
             }
@@ -1019,7 +1093,7 @@ fn run_stream_generation<S, F, I>(
                 );
                 active.as_mut().expect("active stream generation").3 = false;
                 run.cancel();
-                send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, false);
+                send_stream_end::<S, F, I, M>(results, shutdown, info.id, run.generation, false);
                 return;
             }
         };
@@ -1047,7 +1121,13 @@ fn run_stream_generation<S, F, I>(
                     );
                     active.as_mut().expect("active stream generation").3 = false;
                     run.cancel();
-                    send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, false);
+                    send_stream_end::<S, F, I, M>(
+                        results,
+                        shutdown,
+                        info.id,
+                        run.generation,
+                        false,
+                    );
                     return;
                 };
                 if last_sequence.is_some_and(|previous| sequence <= previous) {
@@ -1070,7 +1150,13 @@ fn run_stream_generation<S, F, I>(
                     );
                     active.as_mut().expect("active stream generation").3 = false;
                     run.cancel();
-                    send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, false);
+                    send_stream_end::<S, F, I, M>(
+                        results,
+                        shutdown,
+                        info.id,
+                        run.generation,
+                        false,
+                    );
                     return;
                 }
                 last_sequence = Some(sequence);
@@ -1084,12 +1170,11 @@ fn run_stream_generation<S, F, I>(
                         sequence: Some(sequence),
                         logical_id: Some(logical_id),
                         holds_credit: false,
-                        permit: None,
                         result: Ok(StreamMessage::Waiting { sequence }),
                     },
                 ) {
                     drop(source);
-                    send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, true);
+                    send_stream_end::<S, F, I, M>(results, shutdown, info.id, run.generation, true);
                     active.as_mut().expect("active stream generation").3 = false;
                     return;
                 }
@@ -1101,7 +1186,7 @@ fn run_stream_generation<S, F, I>(
                 Ok(permit) => Some(permit),
                 Err(BudgetError::Cancelled) => {
                     drop(source);
-                    send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, true);
+                    send_stream_end::<S, F, I, M>(results, shutdown, info.id, run.generation, true);
                     active.as_mut().expect("active stream generation").3 = false;
                     return;
                 }
@@ -1119,7 +1204,13 @@ fn run_stream_generation<S, F, I>(
                     );
                     active.as_mut().expect("active stream generation").3 = false;
                     run.cancel();
-                    send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, false);
+                    send_stream_end::<S, F, I, M>(
+                        results,
+                        shutdown,
+                        info.id,
+                        run.generation,
+                        false,
+                    );
                     return;
                 }
                 Err(BudgetError::SequenceAlreadyAdmitted) => {
@@ -1139,7 +1230,13 @@ fn run_stream_generation<S, F, I>(
                     );
                     active.as_mut().expect("active stream generation").3 = false;
                     run.cancel();
-                    send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, false);
+                    send_stream_end::<S, F, I, M>(
+                        results,
+                        shutdown,
+                        info.id,
+                        run.generation,
+                        false,
+                    );
                     return;
                 }
             }
@@ -1156,12 +1253,14 @@ fn run_stream_generation<S, F, I>(
                 sequence,
                 logical_id: Some(logical_id),
                 holds_credit: true,
-                permit,
-                result: Ok(StreamMessage::Record(WorkerRecord {
-                    sequence: record.sequence,
-                    logical_id: record.logical_id,
-                    sample,
-                })),
+                result: Ok(StreamMessage::Record(
+                    WorkerRecord {
+                        sequence: record.sequence,
+                        logical_id: record.logical_id,
+                        sample,
+                    },
+                    M::permit(permit),
+                )),
             },
         );
         if sent {
@@ -1171,15 +1270,15 @@ fn run_stream_generation<S, F, I>(
             active.3 = false;
         } else {
             drop(source);
-            send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, true);
+            send_stream_end::<S, F, I, M>(results, shutdown, info.id, run.generation, true);
             active.as_mut().expect("active stream generation").3 = false;
             return;
         }
     }
 }
 
-fn send_stream_end<S, F, I>(
-    results: &Sender<StreamCompletionFor<S, F, I>>,
+fn send_stream_end<S, F, I, M>(
+    results: &Sender<StreamCompletionFor<S, F, I, M>>,
     shutdown: &CancellationToken,
     worker: usize,
     generation: u64,
@@ -1188,6 +1287,7 @@ fn send_stream_end<S, F, I>(
     S: WorkerSourceFactory,
     F: TransformFactory<S::Sample>,
     I: WorkerInit,
+    M: StreamMemoryPolicy,
 {
     let _ = send_stream_completion(
         results,
@@ -1199,15 +1299,14 @@ fn send_stream_end<S, F, I>(
             sequence: None,
             logical_id: None,
             holds_credit,
-            permit: None,
             result: Ok(StreamMessage::End),
         },
     );
 }
 
 #[allow(clippy::too_many_arguments)]
-fn send_stream_failure<T, SE, TE, FE, IE>(
-    results: &Sender<StreamCompletion<T, SE, TE, FE, IE>>,
+fn send_stream_failure<T, P, SE, TE, FE, IE>(
+    results: &Sender<StreamCompletion<T, P, SE, TE, FE, IE>>,
     shutdown: &CancellationToken,
     worker: usize,
     generation: u64,
@@ -1226,17 +1325,16 @@ fn send_stream_failure<T, SE, TE, FE, IE>(
             sequence,
             logical_id,
             holds_credit,
-            permit: None,
             result: Err(failure),
         },
     );
 }
 
-fn send_stream_completion<T, SE, TE, FE, IE>(
-    results: &Sender<StreamCompletion<T, SE, TE, FE, IE>>,
+fn send_stream_completion<T, P, SE, TE, FE, IE>(
+    results: &Sender<StreamCompletion<T, P, SE, TE, FE, IE>>,
     shutdown: &CancellationToken,
     cancellation: Option<&CancellationToken>,
-    completion: StreamCompletion<T, SE, TE, FE, IE>,
+    completion: StreamCompletion<T, P, SE, TE, FE, IE>,
 ) -> bool {
     if let Some(cancellation) = cancellation {
         select! {
@@ -1508,6 +1606,7 @@ impl<S, C, F, I, M, N> StreamDataLoaderBuilder<S, C, F, I, M, N> {
         F: TransformFactory<S::Sample>,
         C: Collate<TransformOutput<S, F>>,
         I: WorkerInit,
+        M: StreamMemoryPolicy,
     {
         let pin_memory_status = resolve_stream_pin(self.configuration.pin_memory)?;
         if self.configuration.workers == 0 {
@@ -1548,7 +1647,7 @@ impl<S, C, F, I, M, N> StreamDataLoaderBuilder<S, C, F, I, M, N> {
                     "workers multiplied by prefetch_factor exceeds usize",
                 )
             })?;
-        validate_stream_capacity::<S, F, I>(
+        validate_stream_capacity::<S, F, I, M>(
             self.configuration.workers,
             self.configuration.prefetch_factor,
             outstanding_capacity,
@@ -1565,7 +1664,7 @@ impl<S, C, F, I, M, N> StreamDataLoaderBuilder<S, C, F, I, M, N> {
                     ))
                 })?;
         }
-        validate_stream_capacity::<S, F, I>(
+        validate_stream_capacity::<S, F, I, M>(
             self.configuration.workers,
             self.configuration.prefetch_factor,
             outstanding_capacity,
@@ -1684,6 +1783,7 @@ impl<S, C, F, I, Q> StreamDataLoaderBuilder<S, C, F, I, MemoryEnabled, PinEnable
 }
 
 /// Owned, re-iterable explicitly sharded stream loader.
+#[allow(private_bounds)]
 pub struct StreamDataLoader<
     S,
     C,
@@ -1696,6 +1796,7 @@ pub struct StreamDataLoader<
     F: TransformFactory<S::Sample>,
     C: Collate<TransformOutput<S, F>>,
     I: WorkerInit,
+    M: StreamMemoryPolicy,
 {
     factory: Arc<S>,
     collator: C,
@@ -1705,21 +1806,23 @@ pub struct StreamDataLoader<
     outstanding_capacity: usize,
     exact_len: Option<usize>,
     next_generation: u64,
-    persistent_pool: Option<StreamWorkerPool<S, F, I>>,
+    persistent_pool: Option<StreamWorkerPool<S, F, I, M>>,
     // `iter` has exclusive loader access; this wrapper preserves `Sync` for
     // output that is `Send` but not `Sync` without runtime contention.
-    ordered_reassembly: RetainedReassembly<TransformOutput<S, F>>,
+    ordered_reassembly: RetainedReassembly<TransformOutput<S, F>, M::Permit>,
     footprint: Option<StreamFootprint<S, F>>,
     pin_memory_status: PinMemoryStatus,
     policies: PhantomData<(M, N)>,
 }
 
+#[allow(private_bounds)]
 impl<S, C, F, I, M, N> StreamDataLoader<S, C, F, I, M, N>
 where
     S: WorkerSourceFactory,
     F: TransformFactory<S::Sample>,
     C: Collate<TransformOutput<S, F>>,
     I: WorkerInit,
+    M: StreamMemoryPolicy,
 {
     /// Returns the exact global batch count when the factory is sized.
     pub fn len(&self) -> Option<usize> {
@@ -1780,36 +1883,38 @@ where
     }
 }
 
-struct BufferedRecord<T> {
+struct BufferedRecord<T, P> {
     worker: usize,
     record: WorkerRecord<T>,
-    permit: Option<BytePermit>,
+    permit: P,
 }
 
-enum StreamIteratorPool<'a, S, F, I>
+enum StreamIteratorPool<'a, S, F, I, M>
 where
     S: WorkerSourceFactory,
     F: TransformFactory<S::Sample>,
     I: WorkerInit,
+    M: StreamMemoryPolicy,
 {
-    Owned(StreamWorkerPool<S, F, I>),
-    Persistent(&'a mut StreamWorkerPool<S, F, I>),
+    Owned(StreamWorkerPool<S, F, I, M>),
+    Persistent(&'a mut StreamWorkerPool<S, F, I, M>),
 }
 
-impl<S, F, I> StreamIteratorPool<'_, S, F, I>
+impl<S, F, I, M> StreamIteratorPool<'_, S, F, I, M>
 where
     S: WorkerSourceFactory,
     F: TransformFactory<S::Sample>,
     I: WorkerInit,
+    M: StreamMemoryPolicy,
 {
-    fn pool(&self) -> &StreamWorkerPool<S, F, I> {
+    fn pool(&self) -> &StreamWorkerPool<S, F, I, M> {
         match self {
             Self::Owned(pool) => pool,
             Self::Persistent(pool) => pool,
         }
     }
 
-    fn pool_mut(&mut self) -> &mut StreamWorkerPool<S, F, I> {
+    fn pool_mut(&mut self) -> &mut StreamWorkerPool<S, F, I, M> {
         match self {
             Self::Owned(pool) => pool,
             Self::Persistent(pool) => pool,
@@ -1821,6 +1926,7 @@ where
     }
 }
 
+#[allow(private_bounds)]
 impl<S, C, F, I, M, N> StreamDataLoader<S, C, F, I, M, N>
 where
     S: WorkerSourceFactory,
@@ -1832,6 +1938,7 @@ where
     C: Collate<TransformOutput<S, F>>,
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
+    M: StreamMemoryPolicy + Send + 'static,
     N: StreamPinPolicy<S, C, F>,
 {
     /// Starts a fresh explicitly sharded worker generation.
@@ -1874,18 +1981,13 @@ where
             )));
         }
 
-        let mut front_waiters = Vec::new();
-        if front_waiters
-            .try_reserve_exact(self.configuration.workers)
-            .is_err()
-        {
-            pending_error = Some(LoaderError::Configuration(invalid_configuration(
-                "prefetch_factor",
-                "stream byte waiter state allocation is unavailable",
-            )));
-        } else {
-            front_waiters.resize(self.configuration.workers, None);
-        }
+        let front_waiters = match M::new_waiters(self.configuration.workers) {
+            Ok(waiters) => waiters,
+            Err(error) => {
+                pending_error = Some(LoaderError::Configuration(error));
+                M::new_waiters(0).expect("zero waiter state is always allocatable")
+            }
+        };
 
         let mut pool = None;
         if pending_error.is_none() {
@@ -1965,15 +2067,17 @@ where
 }
 
 /// One borrowing iterator generation from a [`StreamDataLoader`].
+#[allow(private_bounds)]
 pub struct StreamLoaderIter<'a, S, C, F, I, M = MemoryDisabled, N = PinDisabled>
 where
     S: WorkerSourceFactory,
     F: TransformFactory<S::Sample>,
     C: Collate<TransformOutput<S, F>>,
     I: WorkerInit,
+    M: StreamMemoryPolicy,
 {
     collator: &'a mut C,
-    pool: Option<StreamIteratorPool<'a, S, F, I>>,
+    pool: Option<StreamIteratorPool<'a, S, F, I, M>>,
     run_context: WorkerRunContext,
     generation: u64,
     ordered: bool,
@@ -1982,18 +2086,19 @@ where
     drop_last: bool,
     expected_records: Option<usize>,
     reassembly_capacity: usize,
-    completed: &'a mut Vec<ReassemblyEntry<TransformOutput<S, F>>>,
+    completed: &'a mut Vec<ReassemblyEntry<TransformOutput<S, F>, M::Permit>>,
     partial: Vec<TransformOutput<S, F>>,
     next_sequence: u64,
     next_batch: u64,
     pending_error: Option<StreamLoaderError<S, C, F, I>>,
     source_complete: bool,
     exhausted: bool,
-    front_waiters: Vec<Option<u64>>,
+    front_waiters: M::Waiters,
     pin_memory_status: PinMemoryStatus,
     marker: PhantomData<&'a mut (S, C, F, I, M, N)>,
 }
 
+#[allow(private_bounds)]
 impl<S, C, F, I, M, N> StreamLoaderIter<'_, S, C, F, I, M, N>
 where
     S: WorkerSourceFactory,
@@ -2005,6 +2110,7 @@ where
     C: Collate<TransformOutput<S, F>>,
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
+    M: StreamMemoryPolicy + Send + 'static,
     N: StreamPinPolicy<S, C, F>,
 {
     fn return_credit(&mut self, worker: usize) -> std::result::Result<(), ()> {
@@ -2013,6 +2119,12 @@ where
 
     fn disarm_deadline(&self) {
         self.run_context.deadline.disarm();
+    }
+
+    fn set_front_waiter(&mut self, worker: usize, sequence: Option<u64>) {
+        if let Some(waiters) = M::waiters_mut(&mut self.front_waiters) {
+            waiters[worker] = sequence;
+        }
     }
 
     fn close(&mut self, poisoned: bool) {
@@ -2047,17 +2159,21 @@ where
 
     fn consume(
         &mut self,
-        mut buffered: BufferedRecord<TransformOutput<S, F>>,
+        buffered: BufferedRecord<TransformOutput<S, F>, M::Permit>,
     ) -> std::result::Result<bool, StreamLoaderError<S, C, F, I>> {
+        let BufferedRecord {
+            worker,
+            record,
+            permit,
+        } = buffered;
         let next_sequence = if self.ordered {
-            let Some(next) = buffered
-                .record
+            let Some(next) = record
                 .sequence
                 .expect("ordered records are validated")
                 .checked_next()
             else {
                 self.run_context.cancel();
-                if self.return_credit(buffered.worker).is_err() {
+                if self.return_credit(worker).is_err() {
                     self.close(true);
                     return Err(LoaderError::ChannelClosed {
                         batch: self.next_batch,
@@ -2072,7 +2188,7 @@ where
         } else {
             None
         };
-        if self.return_credit(buffered.worker).is_err() {
+        if self.return_credit(worker).is_err() {
             self.close(true);
             return Err(LoaderError::ChannelClosed {
                 batch: self.next_batch,
@@ -2081,8 +2197,8 @@ where
         if let Some(next_sequence) = next_sequence {
             self.next_sequence = next_sequence;
         }
-        drop(buffered.permit.take());
-        self.partial.push(buffered.record.sample);
+        drop(permit);
+        self.partial.push(record.sample);
         Ok(self.partial.len() == self.batch_size)
     }
 
@@ -2206,6 +2322,7 @@ where
     C: Collate<TransformOutput<S, F>>,
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
+    M: StreamMemoryPolicy + Send + 'static,
     N: StreamPinPolicy<S, C, F>,
 {
     type Item = std::result::Result<C::Batch, StreamLoaderError<S, C, F, I>>;
@@ -2257,23 +2374,19 @@ where
             if self.ordered
                 && self.run_context.byte_budget.is_some()
                 && let Some(pool) = self.pool.as_ref()
-                && self
-                    .front_waiters
+                && let Some(front_waiters) = M::waiters(&self.front_waiters)
+                && front_waiters
                     .iter()
                     .enumerate()
                     .any(|(worker, _)| !pool.pool().terminal.get(worker).copied().unwrap_or(false))
-                && self
-                    .front_waiters
-                    .iter()
-                    .enumerate()
-                    .all(|(worker, sequence)| {
-                        pool.pool().terminal.get(worker).copied().unwrap_or(false)
-                            || sequence.is_some_and(|sequence| sequence > self.next_sequence)
-                    })
+                && front_waiters.iter().enumerate().all(|(worker, sequence)| {
+                    pool.pool().terminal.get(worker).copied().unwrap_or(false)
+                        || sequence.is_some_and(|sequence| sequence > self.next_sequence)
+                })
             {
                 let expected = self.next_sequence;
-                let found = self
-                    .front_waiters
+                let found = M::waiters(&self.front_waiters)
+                    .expect("enabled byte accounting has waiter state")
                     .iter()
                     .flatten()
                     .copied()
@@ -2368,7 +2481,7 @@ where
 
             match completion.result {
                 Err(failure) => {
-                    self.front_waiters[completion.worker] = None;
+                    self.set_front_waiter(completion.worker, None);
                     self.run_context.cancel();
                     let fatal = matches!(
                         &failure,
@@ -2400,7 +2513,7 @@ where
                     return Some(Err(error));
                 }
                 Ok(StreamMessage::End) => {
-                    self.front_waiters[completion.worker] = None;
+                    self.set_front_waiter(completion.worker, None);
                     if self
                         .pool
                         .as_mut()
@@ -2416,14 +2529,14 @@ where
                     }
                 }
                 Ok(StreamMessage::Waiting { sequence }) => {
-                    self.front_waiters[completion.worker] = Some(sequence);
+                    self.set_front_waiter(completion.worker, Some(sequence));
                 }
-                Ok(StreamMessage::Record(record)) => {
-                    self.front_waiters[completion.worker] = None;
+                Ok(StreamMessage::Record(record, permit)) => {
+                    self.set_front_waiter(completion.worker, None);
                     let buffered = BufferedRecord {
                         worker: completion.worker,
                         record,
-                        permit: completion.permit,
+                        permit,
                     };
                     if !self.ordered {
                         match self.consume(buffered) {
@@ -2493,6 +2606,7 @@ where
     F: TransformFactory<S::Sample>,
     C: Collate<TransformOutput<S, F>>,
     I: WorkerInit,
+    M: StreamMemoryPolicy,
 {
     fn drop(&mut self) {
         self.run_context.cancel();
@@ -2525,11 +2639,12 @@ mod tests {
 
     use super::*;
 
-    type TestCompletion = StreamCompletion<usize, Infallible, Infallible, Infallible, Infallible>;
+    type TestCompletion =
+        StreamCompletion<usize, (), Infallible, Infallible, Infallible, Infallible>;
 
     fn ready_completion(
         result: std::result::Result<
-            StreamMessage<usize>,
+            StreamMessage<usize, ()>,
             StreamFailure<Infallible, Infallible, Infallible, Infallible>,
         >,
     ) -> TestCompletion {
@@ -2539,7 +2654,6 @@ mod tests {
             sequence: None,
             logical_id: None,
             holds_credit: false,
-            permit: None,
             result,
         }
     }

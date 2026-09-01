@@ -10,7 +10,7 @@ use std::{
 
 use rusttorch_core::{Device, Result, RustTorchError, available_devices};
 
-use crate::memory::{ByteBudget, MemoryDisabled, MemoryEnabled};
+use crate::memory::{ByteBudget, MemoryDisabled, MemoryEnabled, MemoryPolicy};
 use crate::sampler::validate_batch_size;
 use crate::worker::{
     WorkerBatch, WorkerFailure, WorkerMessage, WorkerPool, WorkerPoolConfiguration, WorkerReceive,
@@ -59,7 +59,10 @@ type IterResult<D, P, C, F, I> = std::result::Result<
     <P as LoaderPlan<TransformOutput<D, F>, C>>::Batch,
     IterError<D, P, C, F, I>,
 >;
-type CompletedBatch<D, F> = (usize, WorkerBatch<TransformOutput<D, F>>);
+type CompletedBatch<D, F, M> = (
+    usize,
+    WorkerBatch<TransformOutput<D, F>, <M as MemoryPolicy>::Permit>,
+);
 type FootprintFn<D, F> = fn(&[TransformOutput<D, F>]) -> usize;
 type WorkerStageFailure<D, F, I> = WorkerFailure<
     <D as Dataset>::Error,
@@ -733,6 +736,7 @@ impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N> {
         F: TransformFactory<D::Sample>,
         P: LoaderPlanConfiguration,
         I: WorkerInit,
+        M: MemoryPolicy,
     {
         validate_configuration(&self.configuration, self.explicit)?;
         let pin_memory_status = resolve_pin_request(self.configuration.pin_memory)?;
@@ -758,7 +762,7 @@ impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N> {
             (_, None) => unreachable!("positive workers always have an effective prefetch factor"),
         };
         if let Some(capacity) = outstanding_capacity {
-            validate_worker_pool_capacity::<D, F, I>(
+            validate_worker_pool_capacity::<D, F, I, M>(
                 self.configuration.workers,
                 effective_prefetch
                     .expect("positive workers have a prefetch factor")
@@ -1086,6 +1090,7 @@ where
 /// ordering and collation. This differs from PyTorch's process-local dataset
 /// copies and worker-side collation while preserving bounded prefetch,
 /// deterministic routing, task-local randomness, and ordered delivery.
+#[allow(private_bounds)]
 pub struct OwnedDataLoader<
     D,
     P,
@@ -1099,6 +1104,7 @@ pub struct OwnedDataLoader<
     D: Dataset,
     F: TransformFactory<D::Sample>,
     I: WorkerInit,
+    M: MemoryPolicy,
 {
     dataset: Arc<D>,
     plan: P,
@@ -1117,16 +1123,18 @@ pub struct OwnedDataLoader<
     loader_seed: u64,
     rank: usize,
     next_generation: u64,
-    persistent_pool: Option<WorkerPool<D, F, I>>,
+    persistent_pool: Option<WorkerPool<D, F, I, M>>,
     policies: PhantomData<(X, M, N)>,
 }
 
+#[allow(private_bounds)]
 impl<D, P, C, F, I, M, N> OwnedDataLoader<D, P, C, F, I, SerialExecution, M, N>
 where
     D: Dataset,
     F: TransformFactory<D::Sample>,
     P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
     I: WorkerInit,
+    M: MemoryPolicy,
     N: MapPinPolicy<D, P, C, F>,
 {
     /// Starts a fresh finite iteration for the configured epoch.
@@ -1159,12 +1167,14 @@ where
     }
 }
 
+#[allow(private_bounds)]
 impl<D, P, C, F, I, X, M, N> OwnedDataLoader<D, P, C, F, I, X, M, N>
 where
     D: Dataset,
     F: TransformFactory<D::Sample>,
     P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
     I: WorkerInit,
+    M: MemoryPolicy,
 {
     /// Returns the exact number of yielded items when the source is sized.
     pub fn len(&self) -> Option<usize> {
@@ -1379,6 +1389,7 @@ where
 }
 
 /// One positive-worker iteration borrowed from an [`OwnedDataLoader`].
+#[allow(private_bounds)]
 pub struct WorkerLoaderIter<
     'a,
     D,
@@ -1393,6 +1404,7 @@ pub struct WorkerLoaderIter<
     F: TransformFactory<D::Sample>,
     P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
     I: WorkerInit,
+    M: MemoryPolicy,
 {
     dataset: Arc<D>,
     plan: &'a mut P,
@@ -1400,8 +1412,8 @@ pub struct WorkerLoaderIter<
     batches: Option<P::Iter>,
     serial_transform: Option<F::Transform>,
     serial_transform_error: Option<F::Error>,
-    pool: Option<IteratorPool<'a, D, F, I>>,
-    completed: BTreeMap<u64, CompletedBatch<D, F>>,
+    pool: Option<IteratorPool<'a, D, F, I, M>>,
+    completed: BTreeMap<u64, CompletedBatch<D, F, M>>,
     pending_error: Option<IterError<D, P, C, F, I>>,
     generation: u64,
     run_context: Option<WorkerRunContext>,
@@ -1424,33 +1436,35 @@ pub struct WorkerLoaderIter<
     policies: PhantomData<(M, N)>,
 }
 
-enum IteratorPool<'a, D, F, I>
+enum IteratorPool<'a, D, F, I, M>
 where
     D: Dataset,
     F: TransformFactory<D::Sample>,
     I: WorkerInit,
+    M: MemoryPolicy,
 {
-    Owned(WorkerPool<D, F, I>),
+    Owned(WorkerPool<D, F, I, M>),
     Persistent {
-        pool: &'a mut WorkerPool<D, F, I>,
+        pool: &'a mut WorkerPool<D, F, I, M>,
         generation: u64,
     },
 }
 
-impl<D, F, I> IteratorPool<'_, D, F, I>
+impl<D, F, I, M> IteratorPool<'_, D, F, I, M>
 where
     D: Dataset,
     F: TransformFactory<D::Sample>,
     I: WorkerInit,
+    M: MemoryPolicy,
 {
-    fn pool(&self) -> &WorkerPool<D, F, I> {
+    fn pool(&self) -> &WorkerPool<D, F, I, M> {
         match self {
             Self::Owned(pool) => pool,
             Self::Persistent { pool, .. } => pool,
         }
     }
 
-    fn pool_mut(&mut self) -> &mut WorkerPool<D, F, I> {
+    fn pool_mut(&mut self) -> &mut WorkerPool<D, F, I, M> {
         match self {
             Self::Owned(pool) => pool,
             Self::Persistent { pool, .. } => pool,
@@ -1462,11 +1476,12 @@ where
     }
 }
 
-impl<D, F, I> Drop for IteratorPool<'_, D, F, I>
+impl<D, F, I, M> Drop for IteratorPool<'_, D, F, I, M>
 where
     D: Dataset,
     F: TransformFactory<D::Sample>,
     I: WorkerInit,
+    M: MemoryPolicy,
 {
     fn drop(&mut self) {
         if let Self::Persistent { pool, generation } = self
@@ -1477,6 +1492,7 @@ where
     }
 }
 
+#[allow(private_bounds)]
 impl<D, P, C, F, I, M, N> OwnedDataLoader<D, P, C, F, I, WorkerExecution, M, N>
 where
     D: Dataset + Send + Sync + 'static,
@@ -1490,6 +1506,7 @@ where
     P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
+    M: MemoryPolicy + Send + 'static,
     N: MapPinPolicy<D, P, C, F>,
 {
     /// Starts a fresh generation on a bounded worker pool, or the explicit
@@ -1647,6 +1664,7 @@ where
     }
 }
 
+#[allow(private_bounds)]
 impl<D, P, C, F, I, M, N> WorkerLoaderIter<'_, D, P, C, F, I, M, N>
 where
     D: Dataset + Send + Sync + 'static,
@@ -1660,6 +1678,7 @@ where
     P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
+    M: MemoryPolicy + Send + 'static,
     N: MapPinPolicy<D, P, C, F>,
 {
     fn fill_available(&mut self) {
@@ -1884,7 +1903,10 @@ where
     fn publish(
         &mut self,
         worker: usize,
-        batch: WorkerBatch<<F::Transform as Transform<D::Sample>>::Output>,
+        batch: WorkerBatch<
+            <F::Transform as Transform<D::Sample>>::Output,
+            <M as MemoryPolicy>::Permit,
+        >,
     ) -> IterResult<D, P, C, F, I> {
         debug_assert_eq!(batch.generation, self.generation);
         self.outstanding -= 1;
@@ -1989,6 +2011,7 @@ where
     P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
+    M: MemoryPolicy + Send + 'static,
     N: MapPinPolicy<D, P, C, F>,
 {
     type Item = std::result::Result<

@@ -43,6 +43,100 @@ impl Dataset for Rows {
     }
 }
 
+struct EmptyBytes;
+
+impl Dataset for EmptyBytes {
+    type Sample = u8;
+    type Error = Infallible;
+
+    fn len(&self) -> usize {
+        0
+    }
+
+    fn get(&self, _index: usize) -> Result<Self::Sample, Self::Error> {
+        unreachable!("empty dataset is never fetched")
+    }
+}
+
+struct EmptyByteShards;
+
+impl WorkerSourceFactory for EmptyByteShards {
+    type Sample = u8;
+    type Error = Infallible;
+    type Source = std::iter::Empty<Result<WorkerRecord<u8>, Infallible>>;
+
+    fn create(&self, _worker: WorkerContext) -> Result<Self::Source, Self::Error> {
+        Ok(std::iter::empty())
+    }
+
+    fn exact_len(&self) -> Option<usize> {
+        Some(0)
+    }
+}
+
+#[test]
+fn disabled_capacity_keeps_task9_map_and_stream_completion_shapes() {
+    DataLoader::builder(EmptyBytes)
+        .workers(2)
+        .prefetch_factor(200_000)
+        .build()
+        .expect("Task 9 accepted this disabled map completion boundary");
+
+    StreamDataLoaderBuilder::new(EmptyByteShards)
+        .workers(2)
+        .batch_size(1)
+        .prefetch_factor(200_000)
+        .collate(VecCollate)
+        .build()
+        .expect("Task 9 accepted this disabled stream completion boundary");
+}
+
+#[test]
+fn enabled_capacity_charges_permits_and_stream_waiters() {
+    let limit = NonZeroUsize::MIN;
+    let map_large = DataLoader::builder(EmptyBytes)
+        .workers(2)
+        .prefetch_factor(200_000)
+        .prefetch_bytes(limit)
+        .build();
+    assert!(matches!(
+        map_large,
+        Err(RustTorchError::InvalidConfiguration {
+            field: "prefetch_factor",
+            ..
+        })
+    ));
+    DataLoader::builder(EmptyBytes)
+        .workers(2)
+        .prefetch_factor(100_000)
+        .prefetch_bytes(limit)
+        .build()
+        .expect("smaller enabled map storage fits");
+
+    let stream_large = StreamDataLoaderBuilder::new(EmptyByteShards)
+        .workers(2)
+        .batch_size(1)
+        .prefetch_factor(200_000)
+        .collate(VecCollate)
+        .prefetch_bytes(limit)
+        .build();
+    assert!(matches!(
+        stream_large,
+        Err(RustTorchError::InvalidConfiguration {
+            field: "prefetch_factor",
+            ..
+        })
+    ));
+    StreamDataLoaderBuilder::new(EmptyByteShards)
+        .workers(2)
+        .batch_size(1)
+        .prefetch_factor(100_000)
+        .collate(VecCollate)
+        .prefetch_bytes(limit)
+        .build()
+        .expect("smaller enabled stream storage fits");
+}
+
 #[test]
 fn footprints_are_recursive_capacity_aware_and_saturating() {
     assert_eq!(String::with_capacity(17).resident_bytes(), 17);

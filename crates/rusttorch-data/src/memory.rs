@@ -181,16 +181,16 @@ impl ByteBudget {
         sequence: Option<u64>,
         bytes: usize,
     ) -> Result<BytePermit, BudgetError> {
-        if bytes > self.limit {
-            return Err(BudgetError::Oversize {
-                limit: self.limit,
-                actual: bytes,
-            });
-        }
         let mut state = lock_recover(&self.state);
         loop {
             if state.cancelled {
                 return Err(BudgetError::Cancelled);
+            }
+            if bytes > self.limit {
+                return Err(BudgetError::Oversize {
+                    limit: self.limit,
+                    actual: bytes,
+                });
             }
             if sequence.is_some_and(|sequence| sequence < state.next_ordered) {
                 return Err(BudgetError::SequenceAlreadyAdmitted);
@@ -237,6 +237,28 @@ fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub(crate) struct BytePermit {
     budget: Arc<ByteBudget>,
     bytes: usize,
+}
+
+pub(crate) trait MemoryPolicy {
+    type Permit: Send + 'static;
+
+    fn permit(acquired: Option<BytePermit>) -> Self::Permit;
+}
+
+impl MemoryPolicy for MemoryDisabled {
+    type Permit = ();
+
+    fn permit(acquired: Option<BytePermit>) -> Self::Permit {
+        debug_assert!(acquired.is_none());
+    }
+}
+
+impl MemoryPolicy for MemoryEnabled {
+    type Permit = BytePermit;
+
+    fn permit(acquired: Option<BytePermit>) -> Self::Permit {
+        acquired.expect("enabled byte accounting acquires a permit before publication")
+    }
 }
 
 impl Drop for BytePermit {
