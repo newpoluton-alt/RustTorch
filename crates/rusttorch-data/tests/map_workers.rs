@@ -16,9 +16,9 @@ use std::{
 
 use rusttorch_core::RustTorchError;
 use rusttorch_data::{
-    DataLoader, Dataset, FnBatchSource, FnCollate, FnSampler, FnTransform, FnTransformFactory,
-    FnWorkerInit, LoaderError, PipelineError, Sampler, TaskContext, Transform, VecCollate,
-    WorkerInfo, get_worker_info,
+    BatchSource, DataLoader, Dataset, FnBatchSource, FnCollate, FnSampler, FnTransform,
+    FnTransformFactory, FnWorkerInit, LoaderError, PipelineError, Sampler, TaskContext, Transform,
+    VecCollate, WorkerInfo, get_worker_info,
 };
 
 struct ConcurrentRows {
@@ -336,6 +336,176 @@ fn unallocatable_bounded_capacities_are_typed_before_worker_side_effects() {
     }
 }
 
+struct SetEpochSampler {
+    calls: Arc<AtomicUsize>,
+    panic_on_set: bool,
+}
+
+impl Sampler for SetEpochSampler {
+    type Iter = std::ops::Range<usize>;
+
+    fn iter(&self) -> Self::Iter {
+        0..1
+    }
+
+    fn epoch(&self) -> u64 {
+        0
+    }
+
+    fn set_epoch(&mut self, _epoch: u64) {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        assert!(!self.panic_on_set, "set_epoch must not run");
+    }
+}
+
+struct SetEpochBatchSource {
+    calls: Arc<AtomicUsize>,
+}
+
+impl BatchSource for SetEpochBatchSource {
+    type Iter = std::vec::IntoIter<Vec<usize>>;
+
+    fn iter(&self) -> Self::Iter {
+        vec![vec![0]].into_iter()
+    }
+
+    fn epoch(&self) -> u64 {
+        0
+    }
+
+    fn set_epoch(&mut self, _epoch: u64) {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        panic!("batch source set_epoch must not run");
+    }
+}
+
+#[derive(Debug)]
+struct LargeInlineError([u8; 1024]);
+
+impl fmt::Display for LargeInlineError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "large inline error ({})", self.0.len())
+    }
+}
+
+impl Error for LargeInlineError {}
+
+struct LargeErrorRows;
+
+impl Dataset for LargeErrorRows {
+    type Sample = usize;
+    type Error = LargeInlineError;
+
+    fn len(&self) -> usize {
+        1
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn get(&self, index: usize) -> Result<Self::Sample, Self::Error> {
+        Ok(index)
+    }
+}
+
+#[test]
+fn build_rejects_before_sampler_or_batch_source_epoch_callbacks() {
+    let sampler_calls = Arc::new(AtomicUsize::new(0));
+    let sampler = SetEpochSampler {
+        calls: Arc::clone(&sampler_calls),
+        panic_on_set: true,
+    };
+    let impossible = catch_unwind(AssertUnwindSafe(|| {
+        DataLoader::builder(PlainRows(1))
+            .sampler(sampler)
+            .workers(1)
+            .prefetch_factor(usize::MAX)
+            .collate(VecCollate)
+            .build()
+    }));
+    assert!(impossible.is_ok(), "set_epoch ran before ring validation");
+    assert!(matches!(
+        impossible.unwrap(),
+        Err(RustTorchError::InvalidConfiguration { .. })
+    ));
+    assert_eq!(sampler_calls.load(Ordering::SeqCst), 0);
+
+    let batch_calls = Arc::new(AtomicUsize::new(0));
+    let batch_source = SetEpochBatchSource {
+        calls: Arc::clone(&batch_calls),
+    };
+    let impossible = catch_unwind(AssertUnwindSafe(|| {
+        DataLoader::builder(PlainRows(1))
+            .batch_sampler(batch_source)
+            .workers(1)
+            .prefetch_factor(usize::MAX)
+            .collate(VecCollate)
+            .build()
+    }));
+    assert!(
+        impossible.is_ok(),
+        "batch source set_epoch ran before validation"
+    );
+    assert!(matches!(
+        impossible.unwrap(),
+        Err(RustTorchError::InvalidConfiguration { .. })
+    ));
+    assert_eq!(batch_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn concrete_completion_storage_is_rejected_at_build_before_sampler_callbacks() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let result = DataLoader::builder(LargeErrorRows)
+        .sampler(SetEpochSampler {
+            calls: Arc::clone(&calls),
+            panic_on_set: false,
+        })
+        .workers(1)
+        .prefetch_factor(100_000)
+        .collate(VecCollate)
+        .build();
+
+    assert!(matches!(
+        result,
+        Err(RustTorchError::InvalidConfiguration {
+            field: "prefetch_factor",
+            ..
+        })
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn unsupported_worker_options_reject_at_build_before_sampler_callbacks() {
+    use std::time::Duration;
+
+    for persistent in [false, true] {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let builder = DataLoader::builder(PlainRows(1))
+            .sampler(SetEpochSampler {
+                calls: Arc::clone(&calls),
+                panic_on_set: true,
+            })
+            .workers(1)
+            .collate(VecCollate);
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            if persistent {
+                builder.persistent_workers(true).build()
+            } else {
+                builder.timeout(Duration::from_millis(1)).build()
+            }
+        }));
+        assert!(
+            outcome.is_ok(),
+            "set_epoch ran before unsupported validation"
+        );
+        assert!(matches!(
+            outcome.unwrap(),
+            Err(RustTorchError::InvalidConfiguration { .. })
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+}
+
 struct PlainRows(usize);
 
 impl Dataset for PlainRows {
@@ -397,7 +567,7 @@ fn initial_sampler_and_batch_source_panics_are_typed_without_starting_workers()
         let typed = matches!(
             iterator.next(),
             Some(Err(LoaderError::CoordinatorPanic {
-                stage: "sampler creation",
+                stage: "batch source creation",
                 batch: None,
             }))
         );
@@ -415,6 +585,23 @@ fn initial_sampler_and_batch_source_panics_are_typed_without_starting_workers()
 
 struct PanicAfterTwoIndices {
     next: usize,
+}
+
+struct PanicAfterTwoBatches {
+    next: usize,
+}
+
+impl Iterator for PanicAfterTwoBatches {
+    type Item = Vec<usize>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next == 2 {
+            panic!("batch source refill panic");
+        }
+        let index = self.next;
+        self.next += 1;
+        Some(vec![index])
+    }
 }
 
 struct PanicEpochSampler;
@@ -510,6 +697,33 @@ fn refill_sampler_panic_is_typed_once_after_completed_batches() -> Result<(), Ru
     assert_eq!(second, [1]);
     assert!(typed);
     assert!(done);
+    Ok(())
+}
+
+#[test]
+fn refill_batch_source_panic_has_exact_stage_and_batch() -> Result<(), RustTorchError> {
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let mut loader = DataLoader::builder(PlainRows(3))
+        .batch_sampler(FnBatchSource::new(Some(3), |_| PanicAfterTwoBatches {
+            next: 0,
+        }))
+        .workers(1)
+        .prefetch_factor(1)
+        .transform(DropTransform(Arc::clone(&dropped)))
+        .collate(VecCollate)
+        .build()?;
+    let mut iterator = loader.iter();
+    assert_eq!(iterator.next().unwrap().unwrap(), [0]);
+    assert_eq!(iterator.next().unwrap().unwrap(), [1]);
+    assert!(matches!(
+        iterator.next(),
+        Some(Err(LoaderError::CoordinatorPanic {
+            stage: "batch source refill",
+            batch: Some(2),
+        }))
+    ));
+    assert!(iterator.next().is_none());
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
     Ok(())
 }
 
@@ -923,30 +1137,25 @@ fn timeout_and_persistence_reject_before_any_worker_side_effect() -> Result<(), 
         } else {
             builder.timeout(Duration::from_millis(1))
         };
-        let mut loader = builder.build()?;
         assert!(matches!(
-            loader.iter().next(),
-            Some(Err(LoaderError::Configuration(
-                RustTorchError::InvalidConfiguration { .. }
-            )))
+            builder.build(),
+            Err(RustTorchError::InvalidConfiguration { .. })
         ));
     }
     assert_eq!(creates.load(Ordering::SeqCst), 0);
 
-    let mut loader = DataLoader::builder(PlainRows(1))
+    let result = DataLoader::builder(PlainRows(1))
         .sampler(PanicEpochSampler)
         .workers(1)
         .timeout(Duration::from_millis(1))
         .collate(VecCollate)
-        .build()?;
+        .build();
     assert!(matches!(
-        loader.iter().next(),
-        Some(Err(LoaderError::Configuration(
-            RustTorchError::InvalidConfiguration {
-                field: "timeout",
-                ..
-            }
-        )))
+        result,
+        Err(RustTorchError::InvalidConfiguration {
+            field: "timeout",
+            ..
+        })
     ));
     Ok(())
 }
@@ -1049,6 +1258,31 @@ fn collator_panic_is_typed_once_and_joins_every_worker() -> Result<(), RustTorch
     let (typed, done) = outcome.unwrap();
     assert!(typed);
     assert!(done);
+    assert_eq!(dropped.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+#[test]
+fn no_batch_converter_panic_is_typed_once_and_joins_every_worker() -> Result<(), RustTorchError> {
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let mut loader = DataLoader::builder(PlainRows(2))
+        .without_batching()
+        .workers(2)
+        .prefetch_factor(1)
+        .transform(DropTransform(Arc::clone(&dropped)))
+        .convert(FnCollate::new(
+            |_: Vec<usize>| -> Result<Vec<usize>, TestError> { panic!("converter panic") },
+        ))
+        .build()?;
+    let mut iterator = loader.iter();
+    assert!(matches!(
+        iterator.next(),
+        Some(Err(LoaderError::CoordinatorPanic {
+            stage: "conversion",
+            batch: Some(0),
+        }))
+    ));
+    assert!(iterator.next().is_none());
     assert_eq!(dropped.load(Ordering::SeqCst), 2);
     Ok(())
 }

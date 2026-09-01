@@ -1,4 +1,5 @@
 use std::{
+    cell::UnsafeCell,
     mem::{MaybeUninit, size_of},
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, atomic::AtomicUsize},
@@ -53,7 +54,14 @@ type Completion<D, F, I> = WorkerCompletion<
     <I as WorkerInit>::Error,
 >;
 
-const MAX_CHANNEL_STORAGE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_WORKER_QUEUE_ALLOCATION_BYTES: usize = 64 * 1024 * 1024;
+
+#[allow(dead_code)]
+#[repr(C)]
+struct ChannelSlot<T> {
+    stamp: AtomicUsize,
+    message: UnsafeCell<MaybeUninit<T>>,
+}
 
 pub(crate) struct WorkerPool<D, F, I>
 where
@@ -102,14 +110,13 @@ where
         initializer: Arc<I>,
         configuration: WorkerPoolConfiguration,
     ) -> Result<Self> {
-        validate_channel_storage::<WorkerTask>(
+        validate_worker_pool_capacity::<D, F, I>(
+            configuration.workers,
             configuration.prefetch_factor,
             configuration.result_capacity,
         )?;
-        validate_channel_storage::<Completion<D, F, I>>(
-            configuration.result_capacity,
-            configuration.result_capacity,
-        )?;
+        preflight_channel_storage::<WorkerTask>(configuration.result_capacity)?;
+        preflight_channel_storage::<Completion<D, F, I>>(configuration.result_capacity)?;
 
         let mut infos = Vec::new();
         reserve_exact(&mut infos, configuration.workers, "workers")?;
@@ -190,25 +197,63 @@ where
     }
 }
 
-fn validate_channel_storage<T>(lane_capacity: usize, total_capacity: usize) -> Result<()> {
-    let mark_bit = lane_capacity
-        .checked_add(1)
-        .and_then(usize::checked_next_power_of_two)
-        .and_then(|mark_bit| mark_bit.checked_mul(2))
-        .ok_or_else(|| capacity_error("bounded channel ring arithmetic overflowed"))?;
-    let _ = mark_bit;
-
-    let slot_size = size_of::<(AtomicUsize, MaybeUninit<T>)>();
-    let bytes = total_capacity
-        .checked_mul(slot_size)
-        .ok_or_else(|| capacity_error("bounded channel storage exceeds Rust allocation limits"))?;
-    if bytes > MAX_CHANNEL_STORAGE_BYTES {
-        return Err(capacity_error(format!(
-            "bounded channel storage requires {bytes} bytes, above the {MAX_CHANNEL_STORAGE_BYTES}-byte safety ceiling"
-        )));
+pub(crate) fn validate_worker_pool_capacity<D, F, I>(
+    workers: usize,
+    prefetch_factor: usize,
+    outstanding: usize,
+) -> Result<()>
+where
+    D: Dataset,
+    F: TransformFactory<D::Sample>,
+    I: WorkerInit,
+{
+    let expected_outstanding = workers
+        .checked_mul(prefetch_factor)
+        .ok_or_else(|| capacity_error("workers multiplied by prefetch_factor exceeds usize"))?;
+    if expected_outstanding != outstanding {
+        return Err(capacity_error(
+            "outstanding capacity does not match workers multiplied by prefetch_factor",
+        ));
+    }
+    for capacity in [prefetch_factor, outstanding] {
+        capacity
+            .checked_add(1)
+            .and_then(usize::checked_next_power_of_two)
+            .and_then(|mark_bit| mark_bit.checked_mul(2))
+            .ok_or_else(|| capacity_error("bounded channel ring arithmetic overflowed"))?;
     }
 
-    let mut reservation: Vec<MaybeUninit<(AtomicUsize, MaybeUninit<T>)>> = Vec::new();
+    let slots_per_credit = size_of::<ChannelSlot<WorkerTask>>()
+        .checked_add(size_of::<ChannelSlot<Completion<D, F, I>>>())
+        .ok_or_else(|| capacity_error("bounded channel slot sizes exceed usize"))?;
+    let channel_bytes = outstanding
+        .checked_mul(slots_per_credit)
+        .ok_or_else(|| capacity_error("bounded channel storage exceeds Rust allocation limits"))?;
+    let per_worker_bookkeeping = size_of::<WorkerInfo>()
+        .checked_add(size_of::<(Sender<WorkerTask>, Receiver<WorkerTask>)>())
+        .and_then(|bytes| bytes.checked_add(size_of::<Sender<WorkerTask>>()))
+        .and_then(|bytes| bytes.checked_add(size_of::<JoinHandle<()>>()))
+        .ok_or_else(|| capacity_error("worker bookkeeping size exceeds usize"))?;
+    let fixed_bookkeeping = (4 * size_of::<Vec<()>>())
+        .checked_add(size_of::<Sender<Completion<D, F, I>>>())
+        .and_then(|bytes| bytes.checked_add(size_of::<Receiver<Completion<D, F, I>>>()));
+    let vector_bytes = workers
+        .checked_mul(per_worker_bookkeeping)
+        .and_then(|bytes| fixed_bookkeeping.and_then(|fixed| bytes.checked_add(fixed)))
+        .ok_or_else(|| capacity_error("worker vector storage exceeds Rust allocation limits"))?;
+    let aggregate_bytes = channel_bytes.checked_add(vector_bytes).ok_or_else(|| {
+        capacity_error("aggregate worker queue storage exceeds Rust allocation limits")
+    })?;
+    if aggregate_bytes > MAX_WORKER_QUEUE_ALLOCATION_BYTES {
+        return Err(capacity_error(format!(
+            "aggregate worker queue storage requires {aggregate_bytes} bytes, above the {MAX_WORKER_QUEUE_ALLOCATION_BYTES}-byte safety ceiling"
+        )));
+    }
+    Ok(())
+}
+
+fn preflight_channel_storage<T>(total_capacity: usize) -> Result<()> {
+    let mut reservation: Vec<MaybeUninit<ChannelSlot<T>>> = Vec::new();
     reservation
         .try_reserve_exact(total_capacity)
         .map_err(|error| {

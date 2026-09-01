@@ -65,5 +65,8 @@ Owned map loaders can select bounded Rust workers with `.workers(count)` and
 `.prefetch_factor(batches_per_worker)`. Map datasets are shared through
 `Arc`; workers fetch and transform in deterministic lanes, while collation
 runs on the coordinator. Results preserve sampler order unless
-`.in_order(false)` is selected. Timeout, persistent workers, pinning,
-streaming workers, and checkpointing are not implemented in this scope.
+`.in_order(false)` is selected. Build rejects concrete aggregate task,
+completion, and worker bookkeeping allocations above 64 MiB before sampler
+or batch-source callbacks. Positive-worker timeout and persistence requests
+also reject at build; pinning, streaming workers, and checkpointing are not
+implemented in this scope.

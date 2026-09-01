@@ -656,8 +656,6 @@ fn scalar_configuration_is_validated_and_prefetch_is_normalized() -> Result<(), 
         .prefetch_factor(5)
         .ordered(false)
         .pin_memory()
-        .persistent_workers(true)
-        .timeout(Duration::from_millis(1))
         .build()?;
     assert_eq!(
         explicit
@@ -667,7 +665,21 @@ fn scalar_configuration_is_validated_and_prefetch_is_normalized() -> Result<(), 
     );
     assert!(!explicit.is_ordered());
     assert!(explicit.pin_memory_enabled());
-    assert!(explicit.persistent_workers_enabled());
+    assert!(!explicit.persistent_workers_enabled());
+    assert_invalid(
+        DataLoader::builder(Rows(vec![1]))
+            .workers(2)
+            .timeout(Duration::from_millis(1))
+            .build(),
+        "timeout",
+    );
+    assert_invalid(
+        DataLoader::builder(Rows(vec![1]))
+            .workers(2)
+            .persistent_workers(true)
+            .build(),
+        "persistent_workers",
+    );
     Ok(())
 }
 

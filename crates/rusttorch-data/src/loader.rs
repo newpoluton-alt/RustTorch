@@ -11,7 +11,10 @@ use std::{
 use rusttorch_core::{Result, RustTorchError};
 
 use crate::sampler::validate_batch_size;
-use crate::worker::{WorkerBatch, WorkerFailure, WorkerPool, WorkerPoolConfiguration, WorkerTask};
+use crate::worker::{
+    WorkerBatch, WorkerFailure, WorkerPool, WorkerPoolConfiguration, WorkerTask,
+    validate_worker_pool_capacity,
+};
 use crate::{
     BatchSampler, BatchSource, CloneTransformFactory, Collate, Dataset, DefaultCollator,
     DefaultConverter, IdentityTransformFactory, LoaderError, NoWorkerInit, PipelineError,
@@ -62,15 +65,6 @@ type WorkerStageFailure<D, F, I> = WorkerFailure<
     <I as WorkerInit>::Error,
 >;
 
-// A bounded loader queues each outstanding batch in a task lane and in the
-// result/reassembly path. Reserve conservative allowances per credit and per
-// worker (channel state plus coordinator vectors) so caller-controlled counts
-// cannot reach crossbeam's infallible eager allocation with an impossible
-// size.
-const QUEUE_METADATA_BYTES_PER_CREDIT: usize = 256;
-const WORKER_BOOKKEEPING_BYTES: usize = 4 * 1024;
-const MAX_WORKER_QUEUE_METADATA_BYTES: usize = 64 * 1024 * 1024;
-
 impl Dataset for BuilderDatasetMarker {
     type Sample = ();
     type Error = Infallible;
@@ -112,6 +106,15 @@ pub trait LoaderPlan<Sample, C> {
     /// Typed dataset/collation pipeline error.
     type Error;
 
+    /// Panic stage used while reading the plan epoch.
+    const EPOCH_PANIC_STAGE: &'static str = "sampler epoch";
+    /// Panic stage used while creating a fresh plan iterator.
+    const CREATION_PANIC_STAGE: &'static str = "sampler creation";
+    /// Panic stage used while refilling from the plan iterator.
+    const REFILL_PANIC_STAGE: &'static str = "sampler refill";
+    /// Panic stage used while producing the visible item.
+    const FINISH_PANIC_STAGE: &'static str = "collation";
+
     /// Creates fresh index groups for the current epoch.
     fn iter(&self) -> Self::Iter;
     /// Returns the exact output count when known.
@@ -145,6 +148,11 @@ where
     type Iter = BatchSampler<S::Iter>;
     type Batch = C::Batch;
     type Error = C::Error;
+
+    const EPOCH_PANIC_STAGE: &'static str = "sampler epoch";
+    const CREATION_PANIC_STAGE: &'static str = "sampler creation";
+    const REFILL_PANIC_STAGE: &'static str = "sampler refill";
+    const FINISH_PANIC_STAGE: &'static str = "collation";
 
     fn iter(&self) -> Self::Iter {
         BatchSampler::from_validated(self.sampler.iter(), self.batch_size, self.drop_last)
@@ -196,6 +204,11 @@ where
     type Batch = C::Batch;
     type Error = C::Error;
 
+    const EPOCH_PANIC_STAGE: &'static str = "batch source epoch";
+    const CREATION_PANIC_STAGE: &'static str = "batch source creation";
+    const REFILL_PANIC_STAGE: &'static str = "batch source refill";
+    const FINISH_PANIC_STAGE: &'static str = "collation";
+
     fn iter(&self) -> Self::Iter {
         self.batches.iter()
     }
@@ -244,6 +257,11 @@ where
     type Iter = std::iter::Map<S::Iter, fn(usize) -> Vec<usize>>;
     type Batch = V::Batch;
     type Error = V::Error;
+
+    const EPOCH_PANIC_STAGE: &'static str = "sampler epoch";
+    const CREATION_PANIC_STAGE: &'static str = "sampler creation";
+    const REFILL_PANIC_STAGE: &'static str = "sampler refill";
+    const FINISH_PANIC_STAGE: &'static str = "conversion";
 
     fn iter(&self) -> Self::Iter {
         self.sampler.iter().map(singleton)
@@ -518,8 +536,9 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
     ///
     /// The worker count multiplied by this factor is checked before any
     /// worker starts and is also the global outstanding-work credit limit.
-    /// Capacities that overflow crossbeam's ring arithmetic or exceed the
-    /// loader's checked queue-metadata budget are rejected during build.
+    /// Capacities that overflow crossbeam's ring arithmetic or whose concrete
+    /// task, completion, and worker bookkeeping exceed the checked 64 MiB
+    /// queue-allocation ceiling are rejected during build.
     pub fn prefetch_factor(mut self, factor: usize) -> Self {
         self.configuration.prefetch_factor = Some(factor);
         self.explicit.prefetch_factor = true;
@@ -539,18 +558,18 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
     ///
     /// # Errors
     ///
-    /// Returns [`RustTorchError::InvalidConfiguration`] for incompatible
-    /// PyTorch-style arguments or zero-valued size controls.
+    /// Returns [`RustTorchError::InvalidConfiguration`] before plan callbacks
+    /// for incompatible arguments, unsupported positive-worker lifecycle
+    /// options, zero-valued controls, or unallocatable worker queue sizes.
     pub fn build(mut self) -> Result<OwnedDataLoader<D, P, C, F, I, X>>
     where
         D: Dataset,
+        F: TransformFactory<D::Sample>,
         P: LoaderPlanConfiguration,
+        I: WorkerInit,
     {
         validate_configuration(&self.configuration, self.explicit)?;
         let batch_size = validate_batch_size(self.configuration.batch_size)?;
-        self.plan
-            .apply_batch_options(batch_size, self.configuration.drop_last);
-        self.plan.apply_epoch(self.configuration.epoch);
         let effective_prefetch = match (
             self.configuration.workers,
             self.configuration.prefetch_factor,
@@ -572,7 +591,7 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
             (_, None) => unreachable!("positive workers always have an effective prefetch factor"),
         };
         if let Some(capacity) = outstanding_capacity {
-            validate_worker_queue_capacity(
+            validate_worker_pool_capacity::<D, F, I>(
                 self.configuration.workers,
                 effective_prefetch
                     .expect("positive workers have a prefetch factor")
@@ -580,6 +599,9 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
                 capacity,
             )?;
         }
+        self.plan
+            .apply_batch_options(batch_size, self.configuration.drop_last);
+        self.plan.apply_epoch(self.configuration.epoch);
         Ok(OwnedDataLoader {
             dataset: Arc::new(self.dataset),
             plan: self.plan,
@@ -1159,7 +1181,7 @@ where
         }
         if epoch_panicked {
             iterator.pending_error = Some(LoaderError::CoordinatorPanic {
-                stage: "sampler epoch",
+                stage: P::EPOCH_PANIC_STAGE,
                 batch: None,
             });
             return iterator;
@@ -1185,7 +1207,7 @@ where
             Ok(batches) => Some(batches),
             Err(_) => {
                 iterator.pending_error = Some(LoaderError::CoordinatorPanic {
-                    stage: "sampler creation",
+                    stage: P::CREATION_PANIC_STAGE,
                     batch: None,
                 });
                 return iterator;
@@ -1251,7 +1273,7 @@ where
             Ok(indices) => indices,
             Err(_) => {
                 self.pending_error = Some(LoaderError::CoordinatorPanic {
-                    stage: "sampler refill",
+                    stage: P::REFILL_PANIC_STAGE,
                     batch: Some(self.next_submission),
                 });
                 self.submission_closed = true;
@@ -1408,7 +1430,7 @@ where
                 source: PipelineError::Collate(source),
             }),
             Err(_) => Err(LoaderError::CoordinatorPanic {
-                stage: "collation",
+                stage: P::FINISH_PANIC_STAGE,
                 batch: Some(sequence),
             }),
         };
@@ -1605,6 +1627,18 @@ fn validate_configuration(
             "requires a positive worker count",
         ));
     }
+    if configuration.workers > 0 && configuration.timeout.is_some() {
+        return Err(invalid_configuration(
+            "timeout",
+            "positive-worker timeout execution is scheduled for DataLoader Task 8",
+        ));
+    }
+    if configuration.workers > 0 && configuration.persistent_workers {
+        return Err(invalid_configuration(
+            "persistent_workers",
+            "persistent worker execution is scheduled for DataLoader Task 8",
+        ));
+    }
     Ok(())
 }
 
@@ -1619,55 +1653,4 @@ fn invalid_configuration(field: &'static str, reason: impl Into<String>) -> Rust
         field,
         reason: reason.into(),
     }
-}
-
-fn validate_worker_queue_capacity(
-    workers: usize,
-    prefetch_factor: usize,
-    outstanding: usize,
-) -> Result<()> {
-    for capacity in [prefetch_factor, outstanding] {
-        let mark_bit = capacity
-            .checked_add(1)
-            .and_then(usize::checked_next_power_of_two)
-            .ok_or_else(|| {
-                invalid_configuration(
-                    "prefetch_factor",
-                    "bounded channel capacity exceeds crossbeam's representable ring",
-                )
-            })?;
-        mark_bit.checked_mul(2).ok_or_else(|| {
-            invalid_configuration(
-                "prefetch_factor",
-                "bounded channel capacity exceeds crossbeam's representable ring",
-            )
-        })?;
-    }
-
-    let worker_vector_bytes = workers
-        .checked_mul(WORKER_BOOKKEEPING_BYTES)
-        .ok_or_else(|| {
-            invalid_configuration(
-                "workers",
-                "worker bookkeeping capacity exceeds Rust allocation limits",
-            )
-        })?;
-    let queue_bytes = outstanding
-        .checked_mul(QUEUE_METADATA_BYTES_PER_CREDIT)
-        .and_then(|bytes| bytes.checked_add(worker_vector_bytes))
-        .ok_or_else(|| {
-            invalid_configuration(
-                "prefetch_factor",
-                "bounded queue capacity exceeds Rust allocation limits",
-            )
-        })?;
-    if queue_bytes > MAX_WORKER_QUEUE_METADATA_BYTES {
-        return Err(invalid_configuration(
-            "prefetch_factor",
-            format!(
-                "bounded queue metadata requires {queue_bytes} bytes, above the {MAX_WORKER_QUEUE_METADATA_BYTES}-byte safety ceiling"
-            ),
-        ));
-    }
-    Ok(())
 }
