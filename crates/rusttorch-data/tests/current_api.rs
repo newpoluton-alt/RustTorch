@@ -1,9 +1,10 @@
 use std::{cell::Cell, convert::Infallible};
 
 use rusttorch_data::{
-    AutoBatch, DataLoader, DataLoaderBuilder, Dataset, DefaultCollator, OwnedDataLoader,
-    SequentialSampler, StreamDataLoader, VecCollate, WorkerContext, WorkerRecord,
-    WorkerSourceFactory,
+    AutoBatch, DataLoader, DataLoaderBuilder, Dataset, DefaultCollator, IdentityTransformFactory,
+    LoaderIter, MemoryDisabled, NoWorkerInit, OwnedDataLoader, PinDisabled, SequentialSampler,
+    SerialExecution, StreamDataLoader, StreamDataLoaderBuilder, StreamLoaderIter, VecCollate,
+    WorkerContext, WorkerExecution, WorkerLoaderIter, WorkerRecord, WorkerSourceFactory,
 };
 
 struct Rows([i64; 3]);
@@ -38,6 +39,106 @@ fn owned_loader_generic_defaults_remain_source_compatible() {
     let mut loader: OwnedDataLoader<Rows, AutoBatch<SequentialSampler>, DefaultCollator> =
         builder.build().expect("default configuration is valid");
     assert_eq!(loader.iter().count(), 3);
+
+    let _: DataLoaderBuilder<
+        Rows,
+        AutoBatch<SequentialSampler>,
+        DefaultCollator,
+        IdentityTransformFactory,
+        NoWorkerInit,
+        SerialExecution,
+    > = DataLoader::builder(Rows([2, 3, 5]));
+    let mut serial: OwnedDataLoader<
+        Rows,
+        AutoBatch<SequentialSampler>,
+        DefaultCollator,
+        IdentityTransformFactory,
+        NoWorkerInit,
+        SerialExecution,
+    > = DataLoader::builder(Rows([2, 3, 5])).build().unwrap();
+    let _: LoaderIter<'_, Rows, AutoBatch<SequentialSampler>, DefaultCollator> = serial.iter();
+
+    let mut workers: OwnedDataLoader<
+        Rows,
+        AutoBatch<SequentialSampler>,
+        DefaultCollator,
+        IdentityTransformFactory,
+        NoWorkerInit,
+        WorkerExecution,
+    > = DataLoader::builder(Rows([2, 3, 5]))
+        .workers(1)
+        .build()
+        .unwrap();
+    let _: WorkerLoaderIter<
+        '_,
+        Rows,
+        AutoBatch<SequentialSampler>,
+        DefaultCollator,
+        IdentityTransformFactory,
+        NoWorkerInit,
+    > = workers.iter();
+
+    let _: StreamDataLoaderBuilder<
+        CellFactory,
+        VecCollate,
+        IdentityTransformFactory,
+        NoWorkerInit,
+    > = StreamDataLoaderBuilder::new(CellFactory).collate(VecCollate);
+    let mut stream: StreamDataLoader<
+        CellFactory,
+        VecCollate,
+        IdentityTransformFactory,
+        NoWorkerInit,
+    > = StreamDataLoaderBuilder::new(CellFactory)
+        .collate(VecCollate)
+        .build()
+        .unwrap();
+    let _: StreamLoaderIter<'_, CellFactory, VecCollate, IdentityTransformFactory, NoWorkerInit> =
+        stream.iter();
+}
+
+#[test]
+fn trailing_builder_states_are_defaulted_and_can_be_named() {
+    let _: DataLoaderBuilder<
+        Rows,
+        AutoBatch<SequentialSampler>,
+        DefaultCollator,
+        rusttorch_data::IdentityTransformFactory,
+        rusttorch_data::NoWorkerInit,
+        rusttorch_data::SerialExecution,
+        MemoryDisabled,
+        PinDisabled,
+    > = DataLoader::builder(Rows([2, 3, 5]));
+    let _: StreamDataLoaderBuilder<
+        CellFactory,
+        VecCollate,
+        rusttorch_data::IdentityTransformFactory,
+        rusttorch_data::NoWorkerInit,
+        MemoryDisabled,
+        PinDisabled,
+    > = StreamDataLoaderBuilder::new(CellFactory).collate(VecCollate);
+
+    let _: OwnedDataLoader<
+        Rows,
+        AutoBatch<SequentialSampler>,
+        DefaultCollator,
+        rusttorch_data::IdentityTransformFactory,
+        rusttorch_data::NoWorkerInit,
+        rusttorch_data::SerialExecution,
+        MemoryDisabled,
+        PinDisabled,
+    > = DataLoader::builder(Rows([2, 3, 5])).build().unwrap();
+    let _: StreamDataLoader<
+        CellFactory,
+        VecCollate,
+        rusttorch_data::IdentityTransformFactory,
+        rusttorch_data::NoWorkerInit,
+        MemoryDisabled,
+        PinDisabled,
+    > = StreamDataLoaderBuilder::new(CellFactory)
+        .collate(VecCollate)
+        .build()
+        .unwrap();
 }
 
 struct CellFactory;

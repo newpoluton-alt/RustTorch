@@ -11,6 +11,8 @@ mod collate;
 mod dataset;
 mod error;
 mod loader;
+mod memory;
+mod pin_memory;
 mod sampler;
 mod stream;
 mod transform;
@@ -31,6 +33,8 @@ pub use loader::{
     LoaderPlanConfiguration, NoBatch, OwnedDataLoader, SerialExecution, WorkerExecution,
     WorkerLoaderIter,
 };
+pub use memory::{MemoryDisabled, MemoryEnabled, MemoryFootprint};
+pub use pin_memory::{Auto, Explicit, PinDisabled, PinEnabled, PinMemory, PinMemoryStatus};
 pub use sampler::{
     BatchSampler, BatchSource, DistributedSampler, FnBatchSource, FnSampler, RandomSampler,
     Sampler, SequentialSampler, SubsetRandomSampler, WeightedRandomSampler,

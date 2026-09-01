@@ -21,6 +21,14 @@
 //! Lookup is linear in the deliberately bounded window; increase the factor
 //! only when wider source disorder justifies its memory and scan cost.
 //!
+//! With `prefetch_bytes` enabled, workers measure final post-transform records
+//! and carry cancellation-safe byte permits through the result queue and this
+//! reassembly window. Each ordered shard must then emit strictly increasing
+//! sequence IDs. One bounded front-waiter slot per shard distinguishes a slow
+//! expected record from a globally missing ID without weakening the byte cap.
+//! The coordinator's active item-bounded collation batch is outside the byte
+//! budget. Recursive pinning happens only after successful collation.
+//!
 //! ```
 //! use std::convert::Infallible;
 //! use rusttorch_data::{
@@ -76,13 +84,15 @@ use std::{
 
 use crossbeam_channel::{Receiver, RecvError, Sender, TryRecvError, after, bounded, select};
 
-use rusttorch_core::{Result, RustTorchError};
+use rusttorch_core::{Device, Result, RustTorchError, available_devices};
 
+use crate::memory::{BudgetError, ByteBudget, BytePermit, MemoryDisabled, MemoryEnabled};
 use crate::worker::WorkerRunContext;
 use crate::{
-    CancellationToken, CloneTransformFactory, Collate, Deadline, DefaultCollator,
-    IdentityTransformFactory, LoaderError, NoWorkerInit, PipelineError, TaskContext, Transform,
-    TransformFactory, WorkerContext, WorkerInfo, WorkerInit, with_worker_info,
+    Auto, CancellationToken, CloneTransformFactory, Collate, Deadline, DefaultCollator, Explicit,
+    IdentityTransformFactory, LoaderError, MemoryFootprint, NoWorkerInit, PinDisabled, PinEnabled,
+    PinMemory, PinMemoryStatus, PipelineError, TaskContext, Transform, TransformFactory,
+    WorkerContext, WorkerInfo, WorkerInit, with_worker_info,
 };
 
 /// A record's position in one ordered global stream generation.
@@ -182,6 +192,40 @@ type StreamPipelineError<S, C, F, I> = PipelineError<
 type StreamLoaderError<S, C, F, I> = LoaderError<StreamPipelineError<S, C, F, I>>;
 type ReassemblyEntry<T> = (u64, BufferedRecord<T>);
 type RetainedReassembly<T> = Mutex<Vec<ReassemblyEntry<T>>>;
+type StreamFootprint<S, F> = fn(&TransformOutput<S, F>) -> usize;
+
+#[doc(hidden)]
+pub trait StreamPinPolicy<S, C, F>
+where
+    S: WorkerSourceFactory,
+    F: TransformFactory<S::Sample>,
+    C: Collate<TransformOutput<S, F>>,
+{
+    fn pin(batch: C::Batch, device: Device) -> Result<C::Batch>;
+}
+
+impl<S, C, F> StreamPinPolicy<S, C, F> for PinDisabled
+where
+    S: WorkerSourceFactory,
+    F: TransformFactory<S::Sample>,
+    C: Collate<TransformOutput<S, F>>,
+{
+    fn pin(batch: C::Batch, _device: Device) -> Result<C::Batch> {
+        Ok(batch)
+    }
+}
+
+impl<S, C, F, Q> StreamPinPolicy<S, C, F> for PinEnabled<Q>
+where
+    S: WorkerSourceFactory,
+    F: TransformFactory<S::Sample>,
+    C: Collate<TransformOutput<S, F>>,
+    C::Batch: PinMemory,
+{
+    fn pin(batch: C::Batch, device: Device) -> Result<C::Batch> {
+        batch.pin_memory(device)
+    }
+}
 
 type StreamCompletionFor<S, F, I> = StreamCompletion<
     TransformOutput<S, F>,
@@ -196,11 +240,20 @@ enum StreamFailure<SE, TE, FE, IE> {
     Transform(TE),
     TransformInit(FE),
     WorkerInit(IE),
+    MemoryLimit {
+        limit: usize,
+        actual: usize,
+    },
+    Protocol {
+        sequence: Option<u64>,
+        reason: String,
+    },
     Panic,
 }
 
 enum StreamMessage<T> {
     Record(WorkerRecord<T>),
+    Waiting { sequence: u64 },
     End,
 }
 
@@ -210,6 +263,7 @@ struct StreamCompletion<T, SE, TE, FE, IE> {
     sequence: Option<u64>,
     logical_id: Option<u64>,
     holds_credit: bool,
+    permit: Option<BytePermit>,
     result: std::result::Result<StreamMessage<T>, StreamFailure<SE, TE, FE, IE>>,
 }
 
@@ -299,6 +353,7 @@ where
         .and_then(|bytes| bytes.checked_add(size_of::<Sender<StreamControl>>()))
         .and_then(|bytes| bytes.checked_add(size_of::<JoinHandle<()>>()))
         .and_then(|bytes| bytes.checked_add(size_of::<bool>()))
+        .and_then(|bytes| bytes.checked_add(size_of::<Option<u64>>()))
         .ok_or_else(|| capacity_error("stream worker bookkeeping exceeds usize"))?;
     let bookkeeping = workers
         .checked_mul(per_worker)
@@ -327,6 +382,7 @@ where
     preflight_channel_storage::<StreamControl>(workers)?;
     preflight_channel_storage::<StreamCompletionFor<S, F, I>>(outstanding)?;
     preflight_vec::<TransformOutput<S, F>>(batch_size, "stream batch")?;
+    preflight_vec::<Option<u64>>(workers, "stream byte waiter state")?;
     Ok(())
 }
 
@@ -377,6 +433,7 @@ where
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
 {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         source_factory: Arc<S>,
         transform_factory: Arc<F>,
@@ -385,6 +442,7 @@ where
         generation: u64,
         outstanding: usize,
         reassembly_slots: usize,
+        footprint: Option<StreamFootprint<S, F>>,
     ) -> Result<Self> {
         validate_stream_capacity::<S, F, I>(
             configuration.workers,
@@ -473,6 +531,8 @@ where
                         credit_receiver,
                         results,
                         shutdown,
+                        footprint,
+                        configuration.ordered,
                     );
                 })
                 .map_err(|error| RustTorchError::BackendUnavailable {
@@ -581,7 +641,7 @@ where
         let Some(active) = self.active.take() else {
             return Ok(());
         };
-        active.cancellation.cancel();
+        active.cancel();
         while !self.all_terminal() {
             let completion = self.results.as_ref().ok_or(())?.recv().map_err(|_| ())?;
             if completion.generation == generation {
@@ -612,7 +672,7 @@ where
 
     fn shutdown(&mut self) {
         if let Some(active) = self.active.take() {
-            active.cancellation.cancel();
+            active.cancel();
         }
         self.shutdown.cancel();
         self.controls.clear();
@@ -707,6 +767,8 @@ fn run_stream_worker<S, F, I>(
     credits: Receiver<()>,
     results: Sender<StreamCompletionFor<S, F, I>>,
     shutdown: CancellationToken,
+    footprint: Option<StreamFootprint<S, F>>,
+    ordered: bool,
 ) where
     S: WorkerSourceFactory,
     F: TransformFactory<S::Sample> + Send + Sync + 'static,
@@ -769,6 +831,8 @@ fn run_stream_worker<S, F, I>(
                     &shutdown,
                     &run,
                     &mut active,
+                    footprint,
+                    ordered,
                 );
                 active = None;
                 if shutdown.is_cancelled() {
@@ -814,6 +878,8 @@ fn run_stream_generation<S, F, I>(
     shutdown: &CancellationToken,
     run: &WorkerRunContext,
     active: &mut Option<(WorkerRunContext, Option<u64>, Option<u64>, bool)>,
+    footprint: Option<StreamFootprint<S, F>>,
+    ordered: bool,
 ) where
     S: WorkerSourceFactory,
     F: TransformFactory<S::Sample> + Send + Sync + 'static,
@@ -855,12 +921,13 @@ fn run_stream_generation<S, F, I>(
                 false,
                 StreamFailure::Source(error),
             );
-            run.cancellation.cancel();
+            run.cancel();
             send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, false);
             return;
         }
     };
 
+    let mut last_sequence = None;
     loop {
         let acquired = select! {
             recv(credits) -> credit => credit.is_ok(),
@@ -909,7 +976,7 @@ fn run_stream_generation<S, F, I>(
                     StreamFailure::Source(error),
                 );
                 active.as_mut().expect("active stream generation").3 = false;
-                run.cancellation.cancel();
+                run.cancel();
                 send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, false);
                 return;
             }
@@ -951,10 +1018,133 @@ fn run_stream_generation<S, F, I>(
                     StreamFailure::Transform(error),
                 );
                 active.as_mut().expect("active stream generation").3 = false;
-                run.cancellation.cancel();
+                run.cancel();
                 send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, false);
                 return;
             }
+        };
+        let permit = if let Some(footprint) = footprint {
+            let actual = footprint(&sample);
+            let budget = run
+                .byte_budget
+                .as_ref()
+                .expect("enabled stream byte accounting has a generation budget");
+            let acquired = if ordered {
+                let Some(sequence) = sequence else {
+                    drop(source);
+                    send_stream_failure(
+                        results,
+                        shutdown,
+                        info.id,
+                        run.generation,
+                        None,
+                        Some(logical_id),
+                        true,
+                        StreamFailure::Protocol {
+                            sequence: None,
+                            reason: "ordered byte-bounded stream record did not provide a sequence identifier".to_owned(),
+                        },
+                    );
+                    active.as_mut().expect("active stream generation").3 = false;
+                    run.cancel();
+                    send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, false);
+                    return;
+                };
+                if last_sequence.is_some_and(|previous| sequence <= previous) {
+                    drop(source);
+                    send_stream_failure(
+                        results,
+                        shutdown,
+                        info.id,
+                        run.generation,
+                        Some(sequence),
+                        Some(logical_id),
+                        true,
+                        StreamFailure::Protocol {
+                            sequence: Some(sequence),
+                            reason: format!(
+                                "worker {} emitted non-increasing sequence {sequence}",
+                                info.id
+                            ),
+                        },
+                    );
+                    active.as_mut().expect("active stream generation").3 = false;
+                    run.cancel();
+                    send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, false);
+                    return;
+                }
+                last_sequence = Some(sequence);
+                if !send_stream_completion(
+                    results,
+                    shutdown,
+                    Some(&run.cancellation),
+                    StreamCompletion {
+                        worker: info.id,
+                        generation: run.generation,
+                        sequence: Some(sequence),
+                        logical_id: Some(logical_id),
+                        holds_credit: false,
+                        permit: None,
+                        result: Ok(StreamMessage::Waiting { sequence }),
+                    },
+                ) {
+                    drop(source);
+                    send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, true);
+                    active.as_mut().expect("active stream generation").3 = false;
+                    return;
+                }
+                budget.acquire_ordered(sequence, actual)
+            } else {
+                budget.acquire(actual)
+            };
+            match acquired {
+                Ok(permit) => Some(permit),
+                Err(BudgetError::Cancelled) => {
+                    drop(source);
+                    send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, true);
+                    active.as_mut().expect("active stream generation").3 = false;
+                    return;
+                }
+                Err(BudgetError::Oversize { limit, actual }) => {
+                    drop(source);
+                    send_stream_failure(
+                        results,
+                        shutdown,
+                        info.id,
+                        run.generation,
+                        sequence,
+                        Some(logical_id),
+                        true,
+                        StreamFailure::MemoryLimit { limit, actual },
+                    );
+                    active.as_mut().expect("active stream generation").3 = false;
+                    run.cancel();
+                    send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, false);
+                    return;
+                }
+                Err(BudgetError::SequenceAlreadyAdmitted) => {
+                    drop(source);
+                    send_stream_failure(
+                        results,
+                        shutdown,
+                        info.id,
+                        run.generation,
+                        sequence,
+                        Some(logical_id),
+                        true,
+                        StreamFailure::Protocol {
+                            sequence,
+                            reason: "sequence was already admitted to the byte budget".to_owned(),
+                        },
+                    );
+                    active.as_mut().expect("active stream generation").3 = false;
+                    run.cancel();
+                    send_stream_end::<S, F, I>(results, shutdown, info.id, run.generation, false);
+                    return;
+                }
+            }
+        } else {
+            None
         };
         let sent = send_stream_completion(
             results,
@@ -966,6 +1156,7 @@ fn run_stream_generation<S, F, I>(
                 sequence,
                 logical_id: Some(logical_id),
                 holds_credit: true,
+                permit,
                 result: Ok(StreamMessage::Record(WorkerRecord {
                     sequence: record.sequence,
                     logical_id: record.logical_id,
@@ -1008,6 +1199,7 @@ fn send_stream_end<S, F, I>(
             sequence: None,
             logical_id: None,
             holds_credit,
+            permit: None,
             result: Ok(StreamMessage::End),
         },
     );
@@ -1034,6 +1226,7 @@ fn send_stream_failure<T, SE, TE, FE, IE>(
             sequence,
             logical_id,
             holds_credit,
+            permit: None,
             result: Err(failure),
         },
     );
@@ -1071,6 +1264,15 @@ struct StreamConfiguration {
     loader_seed: u64,
     epoch: u64,
     rank: usize,
+    prefetch_bytes: Option<NonZeroUsize>,
+    pin_memory: StreamPinRequest,
+}
+
+#[derive(Clone, Copy)]
+enum StreamPinRequest {
+    Disabled,
+    Auto,
+    Explicit(Device),
 }
 
 impl Default for StreamConfiguration {
@@ -1086,6 +1288,8 @@ impl Default for StreamConfiguration {
             loader_seed: 0,
             epoch: 0,
             rank: 0,
+            prefetch_bytes: None,
+            pin_memory: StreamPinRequest::Disabled,
         }
     }
 }
@@ -1096,12 +1300,15 @@ pub struct StreamDataLoaderBuilder<
     C = DefaultCollator,
     F = IdentityTransformFactory,
     I = NoWorkerInit,
+    M = MemoryDisabled,
+    N = PinDisabled,
 > {
     factory: S,
     collator: C,
     transform_factory: F,
     worker_init: I,
     configuration: StreamConfiguration,
+    states: PhantomData<(M, N)>,
 }
 
 impl<S> StreamDataLoaderBuilder<S>
@@ -1117,11 +1324,12 @@ where
             transform_factory: IdentityTransformFactory,
             worker_init: NoWorkerInit,
             configuration: StreamConfiguration::default(),
+            states: PhantomData,
         }
     }
 }
 
-impl<S, C, F, I> StreamDataLoaderBuilder<S, C, F, I> {
+impl<S, C, F, I, M, N> StreamDataLoaderBuilder<S, C, F, I, M, N> {
     /// Sets the positive stream worker count.
     pub fn workers(mut self, workers: usize) -> Self {
         self.configuration.workers = workers;
@@ -1147,6 +1355,55 @@ impl<S, C, F, I> StreamDataLoaderBuilder<S, C, F, I> {
     pub fn prefetch_factor(mut self, factor: usize) -> Self {
         self.configuration.prefetch_factor = factor;
         self
+    }
+
+    /// Enables a nonzero byte budget for final post-transform records.
+    ///
+    /// Ordered byte-bounded shards must emit strictly increasing sequence IDs.
+    /// The coordinator tracks one bounded front waiter per shard and reports a
+    /// protocol error when every active shard has advanced beyond a missing ID.
+    pub fn prefetch_bytes(
+        mut self,
+        limit: NonZeroUsize,
+    ) -> StreamDataLoaderBuilder<S, C, F, I, MemoryEnabled, N> {
+        self.configuration.prefetch_bytes = Some(limit);
+        StreamDataLoaderBuilder {
+            factory: self.factory,
+            collator: self.collator,
+            transform_factory: self.transform_factory,
+            worker_init: self.worker_init,
+            configuration: self.configuration,
+            states: PhantomData,
+        }
+    }
+
+    /// Enables automatic recursive pinning for CUDA device zero when available.
+    pub fn pin_memory(mut self) -> StreamDataLoaderBuilder<S, C, F, I, M, PinEnabled<Auto>> {
+        self.configuration.pin_memory = StreamPinRequest::Auto;
+        StreamDataLoaderBuilder {
+            factory: self.factory,
+            collator: self.collator,
+            transform_factory: self.transform_factory,
+            worker_init: self.worker_init,
+            configuration: self.configuration,
+            states: PhantomData,
+        }
+    }
+
+    /// Enables recursive pinning for one explicit, available CUDA device.
+    pub fn pin_memory_for(
+        mut self,
+        device: Device,
+    ) -> StreamDataLoaderBuilder<S, C, F, I, M, PinEnabled<Explicit>> {
+        self.configuration.pin_memory = StreamPinRequest::Explicit(device);
+        StreamDataLoaderBuilder {
+            factory: self.factory,
+            collator: self.collator,
+            transform_factory: self.transform_factory,
+            worker_init: self.worker_init,
+            configuration: self.configuration,
+            states: PhantomData,
+        }
     }
 
     /// Selects globally sequenced or completion-order delivery.
@@ -1191,13 +1448,14 @@ impl<S, C, F, I> StreamDataLoaderBuilder<S, C, F, I> {
     }
 
     /// Replaces coordinator collation.
-    pub fn collate<C2>(self, collator: C2) -> StreamDataLoaderBuilder<S, C2, F, I> {
+    pub fn collate<C2>(self, collator: C2) -> StreamDataLoaderBuilder<S, C2, F, I, M, N> {
         StreamDataLoaderBuilder {
             factory: self.factory,
             collator,
             transform_factory: self.transform_factory,
             worker_init: self.worker_init,
             configuration: self.configuration,
+            states: PhantomData,
         }
     }
 
@@ -1205,46 +1463,53 @@ impl<S, C, F, I> StreamDataLoaderBuilder<S, C, F, I> {
     pub fn transform<T>(
         self,
         transform: T,
-    ) -> StreamDataLoaderBuilder<S, C, CloneTransformFactory<T>, I> {
+    ) -> StreamDataLoaderBuilder<S, C, CloneTransformFactory<T>, I, M, N> {
         StreamDataLoaderBuilder {
             factory: self.factory,
             collator: self.collator,
             transform_factory: CloneTransformFactory::new(transform),
             worker_init: self.worker_init,
             configuration: self.configuration,
+            states: PhantomData,
         }
     }
 
     /// Replaces worker transform construction.
-    pub fn transform_factory<F2>(self, factory: F2) -> StreamDataLoaderBuilder<S, C, F2, I> {
+    pub fn transform_factory<F2>(self, factory: F2) -> StreamDataLoaderBuilder<S, C, F2, I, M, N> {
         StreamDataLoaderBuilder {
             factory: self.factory,
             collator: self.collator,
             transform_factory: factory,
             worker_init: self.worker_init,
             configuration: self.configuration,
+            states: PhantomData,
         }
     }
 
     /// Replaces worker initialization.
-    pub fn worker_init<I2>(self, worker_init: I2) -> StreamDataLoaderBuilder<S, C, F, I2> {
+    pub fn worker_init<I2>(self, worker_init: I2) -> StreamDataLoaderBuilder<S, C, F, I2, M, N> {
         StreamDataLoaderBuilder {
             factory: self.factory,
             collator: self.collator,
             transform_factory: self.transform_factory,
             worker_init,
             configuration: self.configuration,
+            states: PhantomData,
         }
     }
 
     /// Validates configuration and constructs the stream owner.
-    pub fn build(self) -> Result<StreamDataLoader<S, C, F, I>>
+    fn build_inner(
+        self,
+        footprint: Option<StreamFootprint<S, F>>,
+    ) -> Result<StreamDataLoader<S, C, F, I, M, N>>
     where
         S: WorkerSourceFactory,
         F: TransformFactory<S::Sample>,
         C: Collate<TransformOutput<S, F>>,
         I: WorkerInit,
     {
+        let pin_memory_status = resolve_stream_pin(self.configuration.pin_memory)?;
         if self.configuration.workers == 0 {
             return Err(invalid_configuration(
                 "workers",
@@ -1319,13 +1584,114 @@ impl<S, C, F, I> StreamDataLoaderBuilder<S, C, F, I> {
             next_generation: 0,
             persistent_pool: None,
             ordered_reassembly: Mutex::new(ordered_reassembly),
+            footprint,
+            pin_memory_status,
+            policies: PhantomData,
         })
     }
 }
 
+fn stream_resident_bytes<T: MemoryFootprint>(value: &T) -> usize {
+    value.resident_bytes()
+}
+
+fn resolve_stream_pin(request: StreamPinRequest) -> Result<PinMemoryStatus> {
+    match request {
+        StreamPinRequest::Disabled => Ok(PinMemoryStatus::Disabled),
+        StreamPinRequest::Auto => {
+            let capabilities = available_devices();
+            if capabilities.cuda && capabilities.cuda_device_count > 0 {
+                Ok(PinMemoryStatus::Enabled(Device::Cuda(0)))
+            } else {
+                Ok(PinMemoryStatus::DisabledNoAccelerator)
+            }
+        }
+        StreamPinRequest::Explicit(Device::Cuda(index)) => {
+            let capabilities = available_devices();
+            if capabilities.cuda && index < capabilities.cuda_device_count {
+                Ok(PinMemoryStatus::Enabled(Device::Cuda(index)))
+            } else {
+                Err(invalid_configuration(
+                    "pin_memory",
+                    format!(
+                        "CUDA device {index} was requested, but the linked runtime exposes {} available CUDA device(s)",
+                        capabilities.cuda_device_count
+                    ),
+                ))
+            }
+        }
+        StreamPinRequest::Explicit(device) => Err(invalid_configuration(
+            "pin_memory",
+            format!("only an available CUDA device can back pinned host memory, got {device:?}"),
+        )),
+    }
+}
+
+impl<S, C, F, I> StreamDataLoaderBuilder<S, C, F, I, MemoryDisabled, PinDisabled> {
+    /// Validates configuration and builds an item-bounded, unpinned stream.
+    pub fn build(self) -> Result<StreamDataLoader<S, C, F, I, MemoryDisabled, PinDisabled>>
+    where
+        S: WorkerSourceFactory,
+        F: TransformFactory<S::Sample>,
+        C: Collate<TransformOutput<S, F>>,
+        I: WorkerInit,
+    {
+        self.build_inner(None)
+    }
+}
+
+impl<S, C, F, I> StreamDataLoaderBuilder<S, C, F, I, MemoryEnabled, PinDisabled> {
+    /// Validates configuration and builds a byte-bounded, unpinned stream.
+    pub fn build(self) -> Result<StreamDataLoader<S, C, F, I, MemoryEnabled, PinDisabled>>
+    where
+        S: WorkerSourceFactory,
+        F: TransformFactory<S::Sample>,
+        TransformOutput<S, F>: MemoryFootprint,
+        C: Collate<TransformOutput<S, F>>,
+        I: WorkerInit,
+    {
+        self.build_inner(Some(stream_resident_bytes::<TransformOutput<S, F>>))
+    }
+}
+
+impl<S, C, F, I, Q> StreamDataLoaderBuilder<S, C, F, I, MemoryDisabled, PinEnabled<Q>> {
+    /// Validates configuration and builds an item-bounded pinned stream.
+    pub fn build(self) -> Result<StreamDataLoader<S, C, F, I, MemoryDisabled, PinEnabled<Q>>>
+    where
+        S: WorkerSourceFactory,
+        F: TransformFactory<S::Sample>,
+        C: Collate<TransformOutput<S, F>>,
+        C::Batch: PinMemory,
+        I: WorkerInit,
+    {
+        self.build_inner(None)
+    }
+}
+
+impl<S, C, F, I, Q> StreamDataLoaderBuilder<S, C, F, I, MemoryEnabled, PinEnabled<Q>> {
+    /// Validates configuration and builds a byte-bounded pinned stream.
+    pub fn build(self) -> Result<StreamDataLoader<S, C, F, I, MemoryEnabled, PinEnabled<Q>>>
+    where
+        S: WorkerSourceFactory,
+        F: TransformFactory<S::Sample>,
+        TransformOutput<S, F>: MemoryFootprint,
+        C: Collate<TransformOutput<S, F>>,
+        C::Batch: PinMemory,
+        I: WorkerInit,
+    {
+        self.build_inner(Some(stream_resident_bytes::<TransformOutput<S, F>>))
+    }
+}
+
 /// Owned, re-iterable explicitly sharded stream loader.
-pub struct StreamDataLoader<S, C, F = IdentityTransformFactory, I = NoWorkerInit>
-where
+pub struct StreamDataLoader<
+    S,
+    C,
+    F = IdentityTransformFactory,
+    I = NoWorkerInit,
+    M = MemoryDisabled,
+    N = PinDisabled,
+> where
     S: WorkerSourceFactory,
     F: TransformFactory<S::Sample>,
     C: Collate<TransformOutput<S, F>>,
@@ -1343,9 +1709,12 @@ where
     // `iter` has exclusive loader access; this wrapper preserves `Sync` for
     // output that is `Send` but not `Sync` without runtime contention.
     ordered_reassembly: RetainedReassembly<TransformOutput<S, F>>,
+    footprint: Option<StreamFootprint<S, F>>,
+    pin_memory_status: PinMemoryStatus,
+    policies: PhantomData<(M, N)>,
 }
 
-impl<S, C, F, I> StreamDataLoader<S, C, F, I>
+impl<S, C, F, I, M, N> StreamDataLoader<S, C, F, I, M, N>
 where
     S: WorkerSourceFactory,
     F: TransformFactory<S::Sample>,
@@ -1380,6 +1749,21 @@ where
             .expect("validated prefetch factor is nonzero")
     }
 
+    /// Returns the effective post-transform record byte budget.
+    pub fn effective_prefetch_bytes(&self) -> Option<NonZeroUsize> {
+        self.configuration.prefetch_bytes
+    }
+
+    /// Returns whether recursive batch pinning was requested.
+    pub fn pin_memory_enabled(&self) -> bool {
+        !matches!(self.pin_memory_status, PinMemoryStatus::Disabled)
+    }
+
+    /// Returns the effective recursive pinning behavior.
+    pub fn pin_memory_status(&self) -> PinMemoryStatus {
+        self.pin_memory_status
+    }
+
     /// Returns whether ordered delivery is enabled.
     pub fn is_ordered(&self) -> bool {
         self.configuration.ordered
@@ -1399,6 +1783,7 @@ where
 struct BufferedRecord<T> {
     worker: usize,
     record: WorkerRecord<T>,
+    permit: Option<BytePermit>,
 }
 
 enum StreamIteratorPool<'a, S, F, I>
@@ -1436,7 +1821,7 @@ where
     }
 }
 
-impl<S, C, F, I> StreamDataLoader<S, C, F, I>
+impl<S, C, F, I, M, N> StreamDataLoader<S, C, F, I, M, N>
 where
     S: WorkerSourceFactory,
     F: TransformFactory<S::Sample> + Send + Sync + 'static,
@@ -1447,9 +1832,10 @@ where
     C: Collate<TransformOutput<S, F>>,
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
+    N: StreamPinPolicy<S, C, F>,
 {
     /// Starts a fresh explicitly sharded worker generation.
-    pub fn iter(&mut self) -> StreamLoaderIter<'_, S, C, F, I> {
+    pub fn iter(&mut self) -> StreamLoaderIter<'_, S, C, F, I, M, N> {
         let ordered_reassembly = match self.ordered_reassembly.get_mut() {
             Ok(reassembly) => reassembly,
             Err(poisoned) => poisoned.into_inner(),
@@ -1461,6 +1847,11 @@ where
             generation,
             self.configuration.loader_seed,
             self.configuration.epoch,
+        )
+        .with_byte_budget(
+            self.configuration
+                .prefetch_bytes
+                .map(|limit| ByteBudget::new(limit.get())),
         );
         let mut pending_error = None;
         if let Some(next) = generation.checked_add(1) {
@@ -1483,6 +1874,19 @@ where
             )));
         }
 
+        let mut front_waiters = Vec::new();
+        if front_waiters
+            .try_reserve_exact(self.configuration.workers)
+            .is_err()
+        {
+            pending_error = Some(LoaderError::Configuration(invalid_configuration(
+                "prefetch_factor",
+                "stream byte waiter state allocation is unavailable",
+            )));
+        } else {
+            front_waiters.resize(self.configuration.workers, None);
+        }
+
         let mut pool = None;
         if pending_error.is_none() {
             if self.configuration.persistent_workers {
@@ -1495,6 +1899,7 @@ where
                         generation,
                         self.outstanding_capacity,
                         reassembly_allocation_slots,
+                        self.footprint,
                     ) {
                         Ok(created) => self.persistent_pool = Some(created),
                         Err(error) => pending_error = Some(LoaderError::Configuration(error)),
@@ -1520,6 +1925,7 @@ where
                     generation,
                     self.outstanding_capacity,
                     reassembly_allocation_slots,
+                    self.footprint,
                 ) {
                     Ok(mut created) => {
                         if created.start_generation(run_context.clone()).is_err() {
@@ -1551,13 +1957,15 @@ where
             pending_error,
             source_complete: false,
             exhausted: false,
+            front_waiters,
+            pin_memory_status: self.pin_memory_status,
             marker: PhantomData,
         }
     }
 }
 
 /// One borrowing iterator generation from a [`StreamDataLoader`].
-pub struct StreamLoaderIter<'a, S, C, F, I>
+pub struct StreamLoaderIter<'a, S, C, F, I, M = MemoryDisabled, N = PinDisabled>
 where
     S: WorkerSourceFactory,
     F: TransformFactory<S::Sample>,
@@ -1581,10 +1989,12 @@ where
     pending_error: Option<StreamLoaderError<S, C, F, I>>,
     source_complete: bool,
     exhausted: bool,
-    marker: PhantomData<&'a mut (S, C, F, I)>,
+    front_waiters: Vec<Option<u64>>,
+    pin_memory_status: PinMemoryStatus,
+    marker: PhantomData<&'a mut (S, C, F, I, M, N)>,
 }
 
-impl<S, C, F, I> StreamLoaderIter<'_, S, C, F, I>
+impl<S, C, F, I, M, N> StreamLoaderIter<'_, S, C, F, I, M, N>
 where
     S: WorkerSourceFactory,
     F: TransformFactory<S::Sample> + Send + Sync + 'static,
@@ -1595,6 +2005,7 @@ where
     C: Collate<TransformOutput<S, F>>,
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
+    N: StreamPinPolicy<S, C, F>,
 {
     fn return_credit(&mut self, worker: usize) -> std::result::Result<(), ()> {
         self.pool.as_ref().ok_or(())?.pool().return_credit(worker)
@@ -1606,7 +2017,7 @@ where
 
     fn close(&mut self, poisoned: bool) {
         self.exhausted = true;
-        self.run_context.cancellation.cancel();
+        self.run_context.cancel();
         let mut credit_failed = false;
         while let Some((_, buffered)) = self.completed.pop() {
             credit_failed |= self.return_credit(buffered.worker).is_err();
@@ -1636,7 +2047,7 @@ where
 
     fn consume(
         &mut self,
-        buffered: BufferedRecord<TransformOutput<S, F>>,
+        mut buffered: BufferedRecord<TransformOutput<S, F>>,
     ) -> std::result::Result<bool, StreamLoaderError<S, C, F, I>> {
         let next_sequence = if self.ordered {
             let Some(next) = buffered
@@ -1645,7 +2056,7 @@ where
                 .expect("ordered records are validated")
                 .checked_next()
             else {
-                self.run_context.cancellation.cancel();
+                self.run_context.cancel();
                 if self.return_credit(buffered.worker).is_err() {
                     self.close(true);
                     return Err(LoaderError::ChannelClosed {
@@ -1670,6 +2081,7 @@ where
         if let Some(next_sequence) = next_sequence {
             self.next_sequence = next_sequence;
         }
+        drop(buffered.permit.take());
         self.partial.push(buffered.record.sample);
         Ok(self.partial.len() == self.batch_size)
     }
@@ -1695,7 +2107,13 @@ where
                 stage: "stream collation",
                 batch: Some(batch),
             }),
-        };
+        }
+        .and_then(|value| match self.pin_memory_status {
+            PinMemoryStatus::Enabled(device) => {
+                N::pin(value, device).map_err(|source| LoaderError::PinMemory { batch, source })
+            }
+            PinMemoryStatus::Disabled | PinMemoryStatus::DisabledNoAccelerator => Ok(value),
+        });
         match result {
             Ok(batch) => match self.next_batch.checked_add(1) {
                 Some(next) => {
@@ -1756,6 +2174,17 @@ where
                 logical_id: None,
                 source: PipelineError::WorkerInit(source),
             },
+            StreamFailure::MemoryLimit { limit, actual } => LoaderError::MemoryLimit {
+                batch: None,
+                worker: Some(worker),
+                sequence,
+                logical_id,
+                limit,
+                actual,
+            },
+            StreamFailure::Protocol { sequence, reason } => {
+                LoaderError::StreamProtocol { sequence, reason }
+            }
             StreamFailure::Panic => LoaderError::StreamWorkerPanic {
                 worker,
                 batch,
@@ -1766,7 +2195,7 @@ where
     }
 }
 
-impl<S, C, F, I> Iterator for StreamLoaderIter<'_, S, C, F, I>
+impl<S, C, F, I, M, N> Iterator for StreamLoaderIter<'_, S, C, F, I, M, N>
 where
     S: WorkerSourceFactory,
     F: TransformFactory<S::Sample> + Send + Sync + 'static,
@@ -1777,6 +2206,7 @@ where
     C: Collate<TransformOutput<S, F>>,
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
+    N: StreamPinPolicy<S, C, F>,
 {
     type Item = std::result::Result<C::Batch, StreamLoaderError<S, C, F, I>>;
 
@@ -1820,6 +2250,39 @@ where
                     Some(expected),
                     format!(
                         "missing sequence {expected}; bounded reassembly window is full before buffered sequence {found}"
+                    ),
+                )));
+            }
+
+            if self.ordered
+                && self.run_context.byte_budget.is_some()
+                && let Some(pool) = self.pool.as_ref()
+                && self
+                    .front_waiters
+                    .iter()
+                    .enumerate()
+                    .any(|(worker, _)| !pool.pool().terminal.get(worker).copied().unwrap_or(false))
+                && self
+                    .front_waiters
+                    .iter()
+                    .enumerate()
+                    .all(|(worker, sequence)| {
+                        pool.pool().terminal.get(worker).copied().unwrap_or(false)
+                            || sequence.is_some_and(|sequence| sequence > self.next_sequence)
+                    })
+            {
+                let expected = self.next_sequence;
+                let found = self
+                    .front_waiters
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .min()
+                    .expect("a nonterminal byte-budget worker has a front waiter");
+                return Some(Err(self.protocol_error(
+                    Some(expected),
+                    format!(
+                        "missing sequence {expected}; all active byte-budget workers are waiting at sequence {found} or later"
                     ),
                 )));
             }
@@ -1876,7 +2339,7 @@ where
                 StreamReceive::Completion(completion) => completion,
                 StreamReceive::Timeout => {
                     let batch = self.next_batch;
-                    self.run_context.cancellation.cancel();
+                    self.run_context.cancel();
                     self.disarm_deadline();
                     self.close(false);
                     return Some(Err(LoaderError::Timeout { batch }));
@@ -1905,7 +2368,8 @@ where
 
             match completion.result {
                 Err(failure) => {
-                    self.run_context.cancellation.cancel();
+                    self.front_waiters[completion.worker] = None;
+                    self.run_context.cancel();
                     let fatal = matches!(
                         &failure,
                         StreamFailure::TransformInit(_)
@@ -1936,6 +2400,7 @@ where
                     return Some(Err(error));
                 }
                 Ok(StreamMessage::End) => {
+                    self.front_waiters[completion.worker] = None;
                     if self
                         .pool
                         .as_mut()
@@ -1950,10 +2415,15 @@ where
                         }));
                     }
                 }
+                Ok(StreamMessage::Waiting { sequence }) => {
+                    self.front_waiters[completion.worker] = Some(sequence);
+                }
                 Ok(StreamMessage::Record(record)) => {
+                    self.front_waiters[completion.worker] = None;
                     let buffered = BufferedRecord {
                         worker: completion.worker,
                         record,
+                        permit: completion.permit,
                     };
                     if !self.ordered {
                         match self.consume(buffered) {
@@ -1964,7 +2434,7 @@ where
                         continue;
                     }
                     let Some(sequence) = buffered.record.sequence else {
-                        self.run_context.cancellation.cancel();
+                        self.run_context.cancel();
                         if self.return_credit(buffered.worker).is_err() {
                             self.close(true);
                             return Some(Err(LoaderError::ChannelClosed {
@@ -1978,7 +2448,7 @@ where
                     };
                     let sequence = sequence.get();
                     if sequence < self.next_sequence {
-                        self.run_context.cancellation.cancel();
+                        self.run_context.cancel();
                         if self.return_credit(buffered.worker).is_err() {
                             self.close(true);
                             return Some(Err(LoaderError::ChannelClosed {
@@ -1998,7 +2468,7 @@ where
                         .iter()
                         .any(|(buffered_sequence, _)| *buffered_sequence == sequence)
                     {
-                        self.run_context.cancellation.cancel();
+                        self.run_context.cancel();
                         if self.return_credit(buffered.worker).is_err() {
                             self.close(true);
                             return Some(Err(LoaderError::ChannelClosed {
@@ -2017,7 +2487,7 @@ where
     }
 }
 
-impl<S, C, F, I> Drop for StreamLoaderIter<'_, S, C, F, I>
+impl<S, C, F, I, M, N> Drop for StreamLoaderIter<'_, S, C, F, I, M, N>
 where
     S: WorkerSourceFactory,
     F: TransformFactory<S::Sample>,
@@ -2025,7 +2495,7 @@ where
     I: WorkerInit,
 {
     fn drop(&mut self) {
-        self.run_context.cancellation.cancel();
+        self.run_context.cancel();
         let mut failed = false;
         while let Some((_, buffered)) = self.completed.pop() {
             failed |= self
@@ -2069,6 +2539,7 @@ mod tests {
             sequence: None,
             logical_id: None,
             holds_credit: false,
+            permit: None,
             result,
         }
     }

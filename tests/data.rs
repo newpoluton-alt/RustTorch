@@ -153,6 +153,18 @@ fn facade_reexports_task_transform_and_worker_context_contracts() {
 }
 
 #[test]
+fn facade_reexports_memory_and_pinning_contracts() {
+    use rusttorch::{
+        Device,
+        data::{Bytes, MemoryFootprint, PinMemory, PinMemoryStatus},
+    };
+
+    assert_eq!(Bytes(vec![1, 2, 3]).resident_bytes(), 3);
+    assert_eq!(7_i64.pin_memory(Device::Cpu).unwrap(), 7);
+    assert_eq!(PinMemoryStatus::Disabled, PinMemoryStatus::Disabled);
+}
+
+#[test]
 fn facade_reexports_typed_collation_contracts() {
     use rusttorch::{
         Kind, Tensor,

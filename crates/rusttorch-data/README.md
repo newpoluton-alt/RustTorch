@@ -105,4 +105,23 @@ an independently available credit when a source intentionally emits a wider
 out-of-order window. Ready records, failures, and end markers take precedence
 over an expiring per-`next` deadline.
 
-Pinning and checkpoint/resume are not implemented in this scope.
+Map and stream workers can additionally select
+`.prefetch_bytes(NonZeroUsize)`. This strict generation-scoped budget measures
+the final transformed values held in result queues and ordered reassembly;
+the coordinator releases their permits when it moves those values into its
+one active item-bounded collation batch. `MemoryFootprint` reports conservative
+logical payload rather than process RSS, so tensor views and allocator
+metadata are deliberately outside the estimate. Ordered byte-bounded streams
+also require each shard's sequence IDs to increase strictly. One bounded front
+waiter per shard lets a missing global ID fail as a typed protocol error rather
+than deadlocking the byte budget.
+
+`.pin_memory()` recursively pins each successfully collated batch for CUDA
+device zero when CUDA is available. CPU-only and MPS-only runtimes record
+`PinMemoryStatus::DisabledNoAccelerator` and preserve the exact batch type as a
+no-op. `.pin_memory_for(Device)` accepts only an available in-range CUDA device
+and rejects unsupported devices before source, transform, collator, or worker
+callbacks. `PinMemory` supports tensors and the built-in recursive container
+shapes; backend rejection remains a typed iteration error with its source.
+
+Checkpoint/resume is not implemented in this scope.

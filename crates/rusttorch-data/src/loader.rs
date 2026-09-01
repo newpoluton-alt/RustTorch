@@ -8,18 +8,20 @@ use std::{
     time::Duration,
 };
 
-use rusttorch_core::{Result, RustTorchError};
+use rusttorch_core::{Device, Result, RustTorchError, available_devices};
 
+use crate::memory::{ByteBudget, MemoryDisabled, MemoryEnabled};
 use crate::sampler::validate_batch_size;
 use crate::worker::{
     WorkerBatch, WorkerFailure, WorkerMessage, WorkerPool, WorkerPoolConfiguration, WorkerReceive,
     WorkerRunContext, WorkerSubmit, WorkerTask, validate_worker_pool_capacity,
 };
 use crate::{
-    BatchSampler, BatchSource, CloneTransformFactory, Collate, Dataset, Deadline, DefaultCollator,
-    DefaultConverter, IdentityTransformFactory, LoaderError, NoWorkerInit, PipelineError,
-    RandomSampler, Sampler, SequentialSampler, TaskContext, Transform, TransformFactory,
-    WorkerInit,
+    Auto, BatchSampler, BatchSource, CloneTransformFactory, Collate, Dataset, Deadline,
+    DefaultCollator, DefaultConverter, Explicit, IdentityTransformFactory, LoaderError,
+    MemoryFootprint, NoWorkerInit, PinDisabled, PinEnabled, PinMemory, PinMemoryStatus,
+    PipelineError, RandomSampler, Sampler, SequentialSampler, TaskContext, Transform,
+    TransformFactory, WorkerInit,
 };
 
 /// Type-level marker used only to make [`crate::DataLoader::builder`] inferable.
@@ -58,12 +60,46 @@ type IterResult<D, P, C, F, I> = std::result::Result<
     IterError<D, P, C, F, I>,
 >;
 type CompletedBatch<D, F> = (usize, WorkerBatch<TransformOutput<D, F>>);
+type FootprintFn<D, F> = fn(&[TransformOutput<D, F>]) -> usize;
 type WorkerStageFailure<D, F, I> = WorkerFailure<
     <D as Dataset>::Error,
     TransformFailure<D, F>,
     <F as TransformFactory<<D as Dataset>::Sample>>::Error,
     <I as WorkerInit>::Error,
 >;
+
+#[doc(hidden)]
+pub trait MapPinPolicy<D, P, C, F>
+where
+    D: Dataset,
+    F: TransformFactory<D::Sample>,
+    P: LoaderPlan<TransformOutput<D, F>, C>,
+{
+    fn pin(batch: P::Batch, device: Device) -> Result<P::Batch>;
+}
+
+impl<D, P, C, F> MapPinPolicy<D, P, C, F> for PinDisabled
+where
+    D: Dataset,
+    F: TransformFactory<D::Sample>,
+    P: LoaderPlan<TransformOutput<D, F>, C>,
+{
+    fn pin(batch: P::Batch, _device: Device) -> Result<P::Batch> {
+        Ok(batch)
+    }
+}
+
+impl<D, P, C, F, Q> MapPinPolicy<D, P, C, F> for PinEnabled<Q>
+where
+    D: Dataset,
+    F: TransformFactory<D::Sample>,
+    P: LoaderPlan<TransformOutput<D, F>, C>,
+    P::Batch: PinMemory,
+{
+    fn pin(batch: P::Batch, device: Device) -> Result<P::Batch> {
+        batch.pin_memory(device)
+    }
+}
 
 struct PendingSubmission {
     worker: usize,
@@ -315,6 +351,14 @@ struct ExplicitArguments {
     batch_sampler: bool,
     without_batching: bool,
     prefetch_factor: bool,
+    prefetch_bytes: bool,
+}
+
+#[derive(Clone, Copy)]
+enum PinRequest {
+    Disabled,
+    Auto,
+    Explicit(Device),
 }
 
 #[derive(Clone, Copy)]
@@ -325,8 +369,9 @@ struct LoaderConfiguration {
     persistent_workers: bool,
     timeout: Option<Duration>,
     ordered: bool,
-    pin_memory: bool,
+    pin_memory: PinRequest,
     prefetch_factor: Option<usize>,
+    prefetch_bytes: Option<NonZeroUsize>,
     loader_seed: u64,
     epoch: u64,
     rank: usize,
@@ -341,8 +386,9 @@ impl Default for LoaderConfiguration {
             persistent_workers: false,
             timeout: None,
             ordered: true,
-            pin_memory: false,
+            pin_memory: PinRequest::Disabled,
             prefetch_factor: None,
+            prefetch_bytes: None,
             loader_seed: 0,
             epoch: 0,
             rank: 0,
@@ -358,6 +404,8 @@ pub struct DataLoaderBuilder<
     F = IdentityTransformFactory,
     I = NoWorkerInit,
     X = SerialExecution,
+    M = MemoryDisabled,
+    N = PinDisabled,
 > {
     dataset: D,
     plan: P,
@@ -366,7 +414,7 @@ pub struct DataLoaderBuilder<
     worker_init: I,
     configuration: LoaderConfiguration,
     explicit: ExplicitArguments,
-    execution: PhantomData<X>,
+    states: PhantomData<(X, M, N)>,
 }
 
 impl<D> DataLoaderBuilder<D, AutoBatch<SequentialSampler>, DefaultCollator>
@@ -387,16 +435,16 @@ where
             worker_init: NoWorkerInit,
             configuration: LoaderConfiguration::default(),
             explicit: ExplicitArguments::default(),
-            execution: PhantomData,
+            states: PhantomData,
         }
     }
 }
 
-impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
+impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N> {
     fn map<P2, C2>(
         self,
         transform: impl FnOnce(P, C) -> (P2, C2),
-    ) -> DataLoaderBuilder<D, P2, C2, F, I, X> {
+    ) -> DataLoaderBuilder<D, P2, C2, F, I, X, M, N> {
         let (plan, collator) = transform(self.plan, self.collator);
         DataLoaderBuilder {
             dataset: self.dataset,
@@ -406,7 +454,7 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
             worker_init: self.worker_init,
             configuration: self.configuration,
             explicit: self.explicit,
-            execution: PhantomData,
+            states: PhantomData,
         }
     }
 
@@ -430,7 +478,10 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
     /// transform in deterministic worker lanes, and collate on the calling
     /// thread. Passing zero keeps serial execution, but selecting this method
     /// still requires worker-safe types at compile time.
-    pub fn workers(mut self, workers: usize) -> DataLoaderBuilder<D, P, C, F, I, WorkerExecution> {
+    pub fn workers(
+        mut self,
+        workers: usize,
+    ) -> DataLoaderBuilder<D, P, C, F, I, WorkerExecution, M, N> {
         self.configuration.workers = workers;
         DataLoaderBuilder {
             dataset: self.dataset,
@@ -440,7 +491,7 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
             worker_init: self.worker_init,
             configuration: self.configuration,
             explicit: self.explicit,
-            execution: PhantomData,
+            states: PhantomData,
         }
     }
 
@@ -466,7 +517,7 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
     pub fn transform<T>(
         self,
         transform: T,
-    ) -> DataLoaderBuilder<D, P, C, CloneTransformFactory<T>, I, X> {
+    ) -> DataLoaderBuilder<D, P, C, CloneTransformFactory<T>, I, X, M, N> {
         DataLoaderBuilder {
             dataset: self.dataset,
             plan: self.plan,
@@ -475,12 +526,12 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
             worker_init: self.worker_init,
             configuration: self.configuration,
             explicit: self.explicit,
-            execution: PhantomData,
+            states: PhantomData,
         }
     }
 
     /// Replaces transform construction with an explicit typed factory.
-    pub fn transform_factory<F2>(self, factory: F2) -> DataLoaderBuilder<D, P, C, F2, I, X> {
+    pub fn transform_factory<F2>(self, factory: F2) -> DataLoaderBuilder<D, P, C, F2, I, X, M, N> {
         DataLoaderBuilder {
             dataset: self.dataset,
             plan: self.plan,
@@ -489,12 +540,12 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
             worker_init: self.worker_init,
             configuration: self.configuration,
             explicit: self.explicit,
-            execution: PhantomData,
+            states: PhantomData,
         }
     }
 
     /// Stores the initializer used by future positive-worker execution.
-    pub fn worker_init<I2>(self, worker_init: I2) -> DataLoaderBuilder<D, P, C, F, I2, X> {
+    pub fn worker_init<I2>(self, worker_init: I2) -> DataLoaderBuilder<D, P, C, F, I2, X, M, N> {
         DataLoaderBuilder {
             dataset: self.dataset,
             plan: self.plan,
@@ -503,7 +554,7 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
             worker_init,
             configuration: self.configuration,
             explicit: self.explicit,
-            execution: PhantomData,
+            states: PhantomData,
         }
     }
 
@@ -542,13 +593,59 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
         self.ordered(in_order)
     }
 
-    /// Records a future recursive batch-pinning request.
+    /// Enables automatic recursive pinning for CUDA device zero when available.
     ///
-    /// Task 7 stores this setting but does not apply pinning; recursive
-    /// device-aware pinning is scheduled for Task 10.
-    pub fn pin_memory(mut self) -> Self {
-        self.configuration.pin_memory = true;
-        self
+    /// Enabling pinning requires the final batch type to implement
+    /// [`PinMemory`] at build time:
+    ///
+    /// ```compile_fail
+    /// use std::convert::Infallible;
+    /// use rusttorch_data::{DataLoader, Dataset, FnCollate};
+    ///
+    /// struct Rows;
+    /// struct Batch;
+    /// impl Dataset for Rows {
+    ///     type Sample = u8;
+    ///     type Error = Infallible;
+    ///     fn len(&self) -> usize { 1 }
+    ///     fn get(&self, _: usize) -> Result<u8, Infallible> { Ok(1) }
+    /// }
+    ///
+    /// let _ = DataLoader::builder(Rows)
+    ///     .collate(FnCollate::new(|_: Vec<u8>| Ok::<_, Infallible>(Batch)))
+    ///     .pin_memory()
+    ///     .build();
+    /// ```
+    pub fn pin_memory(mut self) -> DataLoaderBuilder<D, P, C, F, I, X, M, PinEnabled<Auto>> {
+        self.configuration.pin_memory = PinRequest::Auto;
+        DataLoaderBuilder {
+            dataset: self.dataset,
+            plan: self.plan,
+            collator: self.collator,
+            transform_factory: self.transform_factory,
+            worker_init: self.worker_init,
+            configuration: self.configuration,
+            explicit: self.explicit,
+            states: PhantomData,
+        }
+    }
+
+    /// Enables recursive pinning for one explicit, available CUDA device.
+    pub fn pin_memory_for(
+        mut self,
+        device: Device,
+    ) -> DataLoaderBuilder<D, P, C, F, I, X, M, PinEnabled<Explicit>> {
+        self.configuration.pin_memory = PinRequest::Explicit(device);
+        DataLoaderBuilder {
+            dataset: self.dataset,
+            plan: self.plan,
+            collator: self.collator,
+            transform_factory: self.transform_factory,
+            worker_init: self.worker_init,
+            configuration: self.configuration,
+            explicit: self.explicit,
+            states: PhantomData,
+        }
     }
 
     /// Sets bounded batches prefetched per worker.
@@ -565,11 +662,56 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
         self
     }
 
+    /// Enables a nonzero byte budget for final post-transform prefetched data.
+    ///
+    /// The coordinator's active collation batch is outside this queue budget
+    /// and remains bounded by the configured batch size.
+    ///
+    /// Enabling the budget requires the final transformed type to implement
+    /// [`MemoryFootprint`] at build time:
+    ///
+    /// ```compile_fail
+    /// use std::{convert::Infallible, num::NonZeroUsize};
+    /// use rusttorch_data::{DataLoader, Dataset, VecCollate};
+    ///
+    /// struct Sample;
+    /// struct Rows;
+    /// impl Dataset for Rows {
+    ///     type Sample = Sample;
+    ///     type Error = Infallible;
+    ///     fn len(&self) -> usize { 1 }
+    ///     fn get(&self, _: usize) -> Result<Sample, Infallible> { Ok(Sample) }
+    /// }
+    ///
+    /// let _ = DataLoader::builder(Rows)
+    ///     .workers(1)
+    ///     .collate(VecCollate)
+    ///     .prefetch_bytes(NonZeroUsize::MIN)
+    ///     .build();
+    /// ```
+    pub fn prefetch_bytes(
+        mut self,
+        limit: NonZeroUsize,
+    ) -> DataLoaderBuilder<D, P, C, F, I, X, MemoryEnabled, N> {
+        self.configuration.prefetch_bytes = Some(limit);
+        self.explicit.prefetch_bytes = true;
+        DataLoaderBuilder {
+            dataset: self.dataset,
+            plan: self.plan,
+            collator: self.collator,
+            transform_factory: self.transform_factory,
+            worker_init: self.worker_init,
+            configuration: self.configuration,
+            explicit: self.explicit,
+            states: PhantomData,
+        }
+    }
+
     /// Replaces automatic batching with explicit reusable index batches.
     pub fn batch_sampler<B>(
         mut self,
         batches: B,
-    ) -> DataLoaderBuilder<D, ExplicitBatches<B>, C, F, I, X> {
+    ) -> DataLoaderBuilder<D, ExplicitBatches<B>, C, F, I, X, M, N> {
         self.explicit.batch_sampler = true;
         self.map(|_, collator| (ExplicitBatches { batches }, collator))
     }
@@ -581,7 +723,11 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
     /// Returns [`RustTorchError::InvalidConfiguration`] before plan callbacks
     /// for incompatible zero-worker options, zero-valued controls, or
     /// unallocatable worker queue sizes.
-    pub fn build(mut self) -> Result<OwnedDataLoader<D, P, C, F, I, X>>
+    #[allow(clippy::type_complexity)]
+    fn build_inner(
+        mut self,
+        footprint: Option<FootprintFn<D, F>>,
+    ) -> Result<OwnedDataLoader<D, P, C, F, I, X, M, N>>
     where
         D: Dataset,
         F: TransformFactory<D::Sample>,
@@ -589,6 +735,7 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
         I: WorkerInit,
     {
         validate_configuration(&self.configuration, self.explicit)?;
+        let pin_memory_status = resolve_pin_request(self.configuration.pin_memory)?;
         let batch_size = validate_batch_size(self.configuration.batch_size)?;
         let effective_prefetch = match (
             self.configuration.workers,
@@ -632,24 +779,100 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X> {
             persistent_workers: self.configuration.persistent_workers,
             timeout: self.configuration.timeout,
             ordered: self.configuration.ordered,
-            pin_memory: self.configuration.pin_memory,
+            pin_memory_status,
+            footprint,
+            effective_prefetch_bytes: self.configuration.prefetch_bytes,
             effective_prefetch,
             outstanding_capacity,
             loader_seed: self.configuration.loader_seed,
             rank: self.configuration.rank,
             next_generation: 0,
             persistent_pool: None,
-            execution: PhantomData,
+            policies: PhantomData,
         })
     }
 }
 
-impl<D, S, C, F, I, X> DataLoaderBuilder<D, AutoBatch<S>, C, F, I, X>
+fn resident_bytes<T: MemoryFootprint>(values: &[T]) -> usize {
+    let mut total = 0usize;
+    for value in values {
+        let Some(next) = total.checked_add(value.resident_bytes()) else {
+            return usize::MAX;
+        };
+        total = next;
+    }
+    total
+}
+
+impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X, MemoryDisabled, PinDisabled> {
+    /// Validates configuration and builds an item-bounded, unpinned loader.
+    #[allow(clippy::type_complexity)]
+    pub fn build(self) -> Result<OwnedDataLoader<D, P, C, F, I, X, MemoryDisabled, PinDisabled>>
+    where
+        D: Dataset,
+        F: TransformFactory<D::Sample>,
+        P: LoaderPlanConfiguration,
+        I: WorkerInit,
+    {
+        self.build_inner(None)
+    }
+}
+
+impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X, MemoryEnabled, PinDisabled> {
+    /// Validates configuration and builds a byte-bounded, unpinned loader.
+    #[allow(clippy::type_complexity)]
+    pub fn build(self) -> Result<OwnedDataLoader<D, P, C, F, I, X, MemoryEnabled, PinDisabled>>
+    where
+        D: Dataset,
+        F: TransformFactory<D::Sample>,
+        TransformOutput<D, F>: MemoryFootprint,
+        P: LoaderPlanConfiguration,
+        I: WorkerInit,
+    {
+        self.build_inner(Some(resident_bytes::<TransformOutput<D, F>>))
+    }
+}
+
+impl<D, P, C, F, I, X, Q> DataLoaderBuilder<D, P, C, F, I, X, MemoryDisabled, PinEnabled<Q>> {
+    /// Validates configuration and builds an item-bounded pinned loader.
+    #[allow(clippy::type_complexity)]
+    pub fn build(self) -> Result<OwnedDataLoader<D, P, C, F, I, X, MemoryDisabled, PinEnabled<Q>>>
+    where
+        D: Dataset,
+        F: TransformFactory<D::Sample>,
+        P: LoaderPlanConfiguration + LoaderPlan<TransformOutput<D, F>, C>,
+        P::Batch: PinMemory,
+        I: WorkerInit,
+    {
+        self.build_inner(None)
+    }
+}
+
+impl<D, P, C, F, I, X, Q> DataLoaderBuilder<D, P, C, F, I, X, MemoryEnabled, PinEnabled<Q>> {
+    /// Validates configuration and builds a byte-bounded pinned loader.
+    #[allow(clippy::type_complexity)]
+    pub fn build(self) -> Result<OwnedDataLoader<D, P, C, F, I, X, MemoryEnabled, PinEnabled<Q>>>
+    where
+        D: Dataset,
+        F: TransformFactory<D::Sample>,
+        TransformOutput<D, F>: MemoryFootprint,
+        P: LoaderPlanConfiguration + LoaderPlan<TransformOutput<D, F>, C>,
+        P::Batch: PinMemory,
+        I: WorkerInit,
+    {
+        self.build_inner(Some(resident_bytes::<TransformOutput<D, F>>))
+    }
+}
+
+impl<D, S, C, F, I, X, M, N> DataLoaderBuilder<D, AutoBatch<S>, C, F, I, X, M, N>
 where
     D: Dataset,
 {
     /// Replaces the current sampler.
-    pub fn sampler<S2>(mut self, sampler: S2) -> DataLoaderBuilder<D, AutoBatch<S2>, C, F, I, X> {
+    pub fn sampler<S2>(
+        mut self,
+        sampler: S2,
+    ) -> DataLoaderBuilder<D, AutoBatch<S2>, C, F, I, X, M, N> {
         self.explicit.sampler = true;
         self.map(|plan, collator| {
             (
@@ -669,10 +892,11 @@ where
     ///
     /// Returns an invalid-configuration error for an empty dataset or an
     /// unallocatable permutation.
+    #[allow(clippy::type_complexity)]
     pub fn shuffle(
         mut self,
         seed: u64,
-    ) -> Result<DataLoaderBuilder<D, AutoBatch<RandomSampler>, C, F, I, X>> {
+    ) -> Result<DataLoaderBuilder<D, AutoBatch<RandomSampler>, C, F, I, X, M, N>> {
         self.explicit.shuffle = true;
         let sampler = RandomSampler::new(self.dataset.len(), seed)?;
         Ok(self.map(|plan, collator| {
@@ -690,7 +914,7 @@ where
     /// Disables automatic batching and selects default conversion.
     pub fn without_batching(
         mut self,
-    ) -> DataLoaderBuilder<D, NoBatch<S, DefaultConverter>, C, F, I, X> {
+    ) -> DataLoaderBuilder<D, NoBatch<S, DefaultConverter>, C, F, I, X, M, N> {
         self.explicit.without_batching = true;
         self.map(|plan, collator| {
             (
@@ -704,17 +928,23 @@ where
     }
 
     /// Replaces the automatic-batch collator.
-    pub fn collate<C2>(self, collator: C2) -> DataLoaderBuilder<D, AutoBatch<S>, C2, F, I, X> {
+    pub fn collate<C2>(
+        self,
+        collator: C2,
+    ) -> DataLoaderBuilder<D, AutoBatch<S>, C2, F, I, X, M, N> {
         self.map(|plan, _| (plan, collator))
     }
 }
 
-impl<D, B, C, F, I, X> DataLoaderBuilder<D, ExplicitBatches<B>, C, F, I, X>
+impl<D, B, C, F, I, X, M, N> DataLoaderBuilder<D, ExplicitBatches<B>, C, F, I, X, M, N>
 where
     D: Dataset,
 {
     /// Selects a sampler; build rejects its conflict with the earlier batch sampler.
-    pub fn sampler<S>(mut self, sampler: S) -> DataLoaderBuilder<D, AutoBatch<S>, C, F, I, X> {
+    pub fn sampler<S>(
+        mut self,
+        sampler: S,
+    ) -> DataLoaderBuilder<D, AutoBatch<S>, C, F, I, X, M, N> {
         self.explicit.sampler = true;
         let batch_size =
             NonZeroUsize::new(self.configuration.batch_size).unwrap_or(NonZeroUsize::MIN);
@@ -737,10 +967,11 @@ where
     ///
     /// Returns an invalid-configuration error for an empty dataset or an
     /// unallocatable permutation.
+    #[allow(clippy::type_complexity)]
     pub fn shuffle(
         mut self,
         seed: u64,
-    ) -> Result<DataLoaderBuilder<D, AutoBatch<RandomSampler>, C, F, I, X>> {
+    ) -> Result<DataLoaderBuilder<D, AutoBatch<RandomSampler>, C, F, I, X, M, N>> {
         self.explicit.shuffle = true;
         let sampler = RandomSampler::new(self.dataset.len(), seed)?;
         let batch_size =
@@ -761,7 +992,7 @@ where
     /// Disables batching; build rejects its conflict with the earlier batch sampler.
     pub fn without_batching(
         mut self,
-    ) -> DataLoaderBuilder<D, NoBatch<SequentialSampler, DefaultConverter>, C, F, I, X> {
+    ) -> DataLoaderBuilder<D, NoBatch<SequentialSampler, DefaultConverter>, C, F, I, X, M, N> {
         self.explicit.without_batching = true;
         let length = self.dataset.len();
         self.map(|_, collator| {
@@ -779,17 +1010,20 @@ where
     pub fn collate<C2>(
         self,
         collator: C2,
-    ) -> DataLoaderBuilder<D, ExplicitBatches<B>, C2, F, I, X> {
+    ) -> DataLoaderBuilder<D, ExplicitBatches<B>, C2, F, I, X, M, N> {
         self.map(|plan, _| (plan, collator))
     }
 }
 
-impl<D, S, V, C, F, I, X> DataLoaderBuilder<D, NoBatch<S, V>, C, F, I, X>
+impl<D, S, V, C, F, I, X, M, N> DataLoaderBuilder<D, NoBatch<S, V>, C, F, I, X, M, N>
 where
     D: Dataset,
 {
     /// Replaces the no-batching sampler.
-    pub fn sampler<S2>(mut self, sampler: S2) -> DataLoaderBuilder<D, NoBatch<S2, V>, C, F, I, X> {
+    pub fn sampler<S2>(
+        mut self,
+        sampler: S2,
+    ) -> DataLoaderBuilder<D, NoBatch<S2, V>, C, F, I, X, M, N> {
         self.explicit.sampler = true;
         self.map(|plan, collator| {
             (
@@ -812,7 +1046,7 @@ where
     pub fn shuffle(
         mut self,
         seed: u64,
-    ) -> Result<DataLoaderBuilder<D, NoBatch<RandomSampler, V>, C, F, I, X>> {
+    ) -> Result<DataLoaderBuilder<D, NoBatch<RandomSampler, V>, C, F, I, X, M, N>> {
         self.explicit.shuffle = true;
         let sampler = RandomSampler::new(self.dataset.len(), seed)?;
         Ok(self.map(|plan, collator| {
@@ -827,7 +1061,10 @@ where
     }
 
     /// Replaces the no-batching converter.
-    pub fn convert<V2>(self, converter: V2) -> DataLoaderBuilder<D, NoBatch<S, V2>, C, F, I, X> {
+    pub fn convert<V2>(
+        self,
+        converter: V2,
+    ) -> DataLoaderBuilder<D, NoBatch<S, V2>, C, F, I, X, M, N> {
         self.map(|plan, collator| {
             (
                 NoBatch {
@@ -856,6 +1093,8 @@ pub struct OwnedDataLoader<
     F = IdentityTransformFactory,
     I = NoWorkerInit,
     X = SerialExecution,
+    M = MemoryDisabled,
+    N = PinDisabled,
 > where
     D: Dataset,
     F: TransformFactory<D::Sample>,
@@ -870,25 +1109,28 @@ pub struct OwnedDataLoader<
     persistent_workers: bool,
     timeout: Option<Duration>,
     ordered: bool,
-    pin_memory: bool,
+    pin_memory_status: PinMemoryStatus,
+    footprint: Option<FootprintFn<D, F>>,
+    effective_prefetch_bytes: Option<NonZeroUsize>,
     effective_prefetch: Option<NonZeroUsize>,
     outstanding_capacity: Option<usize>,
     loader_seed: u64,
     rank: usize,
     next_generation: u64,
     persistent_pool: Option<WorkerPool<D, F, I>>,
-    execution: PhantomData<X>,
+    policies: PhantomData<(X, M, N)>,
 }
 
-impl<D, P, C, F, I> OwnedDataLoader<D, P, C, F, I, SerialExecution>
+impl<D, P, C, F, I, M, N> OwnedDataLoader<D, P, C, F, I, SerialExecution, M, N>
 where
     D: Dataset,
     F: TransformFactory<D::Sample>,
     P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
     I: WorkerInit,
+    N: MapPinPolicy<D, P, C, F>,
 {
     /// Starts a fresh finite iteration for the configured epoch.
-    pub fn iter(&mut self) -> LoaderIter<'_, D, P, C, F, I> {
+    pub fn iter(&mut self) -> LoaderIter<'_, D, P, C, F, I, M, N> {
         let (transform, transform_error) = match self.transform_factory.create(None) {
             Ok(transform) => (Some(transform), None),
             Err(error) => (None, Some(error)),
@@ -910,12 +1152,14 @@ where
             epoch,
             rank: self.rank,
             run_context,
+            pin_memory_status: self.pin_memory_status,
             output: PhantomData,
+            policies: PhantomData,
         }
     }
 }
 
-impl<D, P, C, F, I, X> OwnedDataLoader<D, P, C, F, I, X>
+impl<D, P, C, F, I, X, M, N> OwnedDataLoader<D, P, C, F, I, X, M, N>
 where
     D: Dataset,
     F: TransformFactory<D::Sample>,
@@ -959,7 +1203,17 @@ where
 
     /// Returns whether pinning was requested.
     pub fn pin_memory_enabled(&self) -> bool {
-        self.pin_memory
+        !matches!(self.pin_memory_status, PinMemoryStatus::Disabled)
+    }
+
+    /// Returns the effective recursive pinning behavior.
+    pub fn pin_memory_status(&self) -> PinMemoryStatus {
+        self.pin_memory_status
+    }
+
+    /// Returns the effective post-transform prefetch byte budget.
+    pub fn effective_prefetch_bytes(&self) -> Option<NonZeroUsize> {
+        self.effective_prefetch_bytes
     }
 
     /// Returns the active timeout, if any.
@@ -974,8 +1228,16 @@ where
 }
 
 /// One fresh iteration borrowed from an [`OwnedDataLoader`].
-pub struct LoaderIter<'a, D, P, C, F = IdentityTransformFactory, I = NoWorkerInit>
-where
+pub struct LoaderIter<
+    'a,
+    D,
+    P,
+    C,
+    F = IdentityTransformFactory,
+    I = NoWorkerInit,
+    M = MemoryDisabled,
+    N = PinDisabled,
+> where
     D: Dataset,
     F: TransformFactory<D::Sample>,
     P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
@@ -994,15 +1256,18 @@ where
     epoch: u64,
     rank: usize,
     run_context: WorkerRunContext,
+    pin_memory_status: PinMemoryStatus,
     output: PhantomData<fn() -> I>,
+    policies: PhantomData<(M, N)>,
 }
 
-impl<D, P, C, F, I> Iterator for LoaderIter<'_, D, P, C, F, I>
+impl<D, P, C, F, I, M, N> Iterator for LoaderIter<'_, D, P, C, F, I, M, N>
 where
     D: Dataset,
     F: TransformFactory<D::Sample>,
     P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
     I: WorkerInit,
+    N: MapPinPolicy<D, P, C, F>,
 {
     type Item = std::result::Result<
         P::Batch,
@@ -1089,14 +1354,19 @@ where
                 None => self.exhausted = true,
             }
         }
-        let result = self
-            .plan
-            .finish(self.collator, transformed)
-            .map_err(|source| LoaderError::Pipeline {
-                batch: Some(batch),
-                worker: None,
-                source: PipelineError::Collate(source),
-            });
+        let result =
+            self.plan
+                .finish(self.collator, transformed)
+                .map_err(|source| LoaderError::Pipeline {
+                    batch: Some(batch),
+                    worker: None,
+                    source: PipelineError::Collate(source),
+                })
+                .and_then(|value| match self.pin_memory_status {
+                    PinMemoryStatus::Enabled(device) => N::pin(value, device)
+                        .map_err(|source| LoaderError::PinMemory { batch, source }),
+                    PinMemoryStatus::Disabled | PinMemoryStatus::DisabledNoAccelerator => Ok(value),
+                });
         if result.is_err() {
             self.exhausted = true;
         } else if let Some(next) = self.next_batch.checked_add(1) {
@@ -1109,8 +1379,16 @@ where
 }
 
 /// One positive-worker iteration borrowed from an [`OwnedDataLoader`].
-pub struct WorkerLoaderIter<'a, D, P, C, F = IdentityTransformFactory, I = NoWorkerInit>
-where
+pub struct WorkerLoaderIter<
+    'a,
+    D,
+    P,
+    C,
+    F = IdentityTransformFactory,
+    I = NoWorkerInit,
+    M = MemoryDisabled,
+    N = PinDisabled,
+> where
     D: Dataset,
     F: TransformFactory<D::Sample>,
     P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
@@ -1142,6 +1420,8 @@ where
     source_exhausted: bool,
     submission_closed: bool,
     exhausted: bool,
+    pin_memory_status: PinMemoryStatus,
+    policies: PhantomData<(M, N)>,
 }
 
 enum IteratorPool<'a, D, F, I>
@@ -1197,7 +1477,7 @@ where
     }
 }
 
-impl<D, P, C, F, I> OwnedDataLoader<D, P, C, F, I, WorkerExecution>
+impl<D, P, C, F, I, M, N> OwnedDataLoader<D, P, C, F, I, WorkerExecution, M, N>
 where
     D: Dataset + Send + Sync + 'static,
     D::Sample: Send + 'static,
@@ -1210,10 +1490,11 @@ where
     P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
+    N: MapPinPolicy<D, P, C, F>,
 {
     /// Starts a fresh generation on a bounded worker pool, or the explicit
     /// zero-worker path.
-    pub fn iter(&mut self) -> WorkerLoaderIter<'_, D, P, C, F, I> {
+    pub fn iter(&mut self) -> WorkerLoaderIter<'_, D, P, C, F, I, M, N> {
         let (epoch, epoch_panicked) = if self.workers == 0 {
             (self.plan.epoch(), false)
         } else {
@@ -1253,6 +1534,8 @@ where
             source_exhausted: false,
             submission_closed: false,
             exhausted: false,
+            pin_memory_status: self.pin_memory_status,
+            policies: PhantomData,
         };
 
         if epoch_panicked {
@@ -1302,7 +1585,11 @@ where
             rank: self.rank,
         };
         let run_context =
-            WorkerRunContext::new(iterator.generation, self.loader_seed, iterator.epoch);
+            WorkerRunContext::new(iterator.generation, self.loader_seed, iterator.epoch)
+                .with_byte_budget(
+                    self.effective_prefetch_bytes
+                        .map(|limit| ByteBudget::new(limit.get())),
+                );
         iterator.run_context = Some(run_context.clone());
 
         if self.persistent_workers {
@@ -1312,6 +1599,8 @@ where
                     Arc::clone(&self.transform_factory),
                     Arc::clone(&self.worker_init),
                     configuration,
+                    self.footprint,
+                    self.ordered,
                 ) {
                     Ok(pool) => self.persistent_pool = Some(pool),
                     Err(error) => {
@@ -1338,6 +1627,8 @@ where
                 Arc::clone(&self.transform_factory),
                 Arc::clone(&self.worker_init),
                 configuration,
+                self.footprint,
+                self.ordered,
             ) {
                 Ok(mut pool) => {
                     if pool.start_generation(run_context).is_err() {
@@ -1356,7 +1647,7 @@ where
     }
 }
 
-impl<D, P, C, F, I> WorkerLoaderIter<'_, D, P, C, F, I>
+impl<D, P, C, F, I, M, N> WorkerLoaderIter<'_, D, P, C, F, I, M, N>
 where
     D: Dataset + Send + Sync + 'static,
     D::Sample: Send + 'static,
@@ -1369,6 +1660,7 @@ where
     P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
+    N: MapPinPolicy<D, P, C, F>,
 {
     fn fill_available(&mut self) {
         while self.outstanding < self.capacity && !self.source_exhausted && !self.submission_closed
@@ -1479,6 +1771,9 @@ where
 
     fn stop_inner(&mut self, poisoned: bool) {
         self.exhausted = true;
+        if let Some(run_context) = &self.run_context {
+            run_context.cancel();
+        }
         if let Some(mut pool) = self.pool.take() {
             let should_poison = poisoned
                 || (pool.is_persistent() && pool.pool_mut().quiesce(self.generation).is_err());
@@ -1565,14 +1860,19 @@ where
             }
             self.next_logical_sample += 1;
         }
-        let result = self
-            .plan
-            .finish(self.collator, transformed)
-            .map_err(|source| LoaderError::Pipeline {
-                batch: Some(batch),
-                worker: None,
-                source: PipelineError::Collate(source),
-            });
+        let result =
+            self.plan
+                .finish(self.collator, transformed)
+                .map_err(|source| LoaderError::Pipeline {
+                    batch: Some(batch),
+                    worker: None,
+                    source: PipelineError::Collate(source),
+                })
+                .and_then(|value| match self.pin_memory_status {
+                    PinMemoryStatus::Enabled(device) => N::pin(value, device)
+                        .map_err(|source| LoaderError::PinMemory { batch, source }),
+                    PinMemoryStatus::Disabled | PinMemoryStatus::DisabledNoAccelerator => Ok(value),
+                });
         if result.is_err() {
             self.exhausted = true;
         } else {
@@ -1590,8 +1890,15 @@ where
         self.outstanding -= 1;
         self.next_visible = self.next_visible.saturating_add(1);
         let sequence = batch.batch_sequence;
+        let WorkerBatch {
+            batch_sequence,
+            samples,
+            permit,
+            ..
+        } = batch;
+        drop(permit);
         let result = match catch_unwind(AssertUnwindSafe(|| {
-            self.plan.finish(self.collator, batch.samples)
+            self.plan.finish(self.collator, samples)
         })) {
             Ok(result) => result.map_err(|source| LoaderError::Pipeline {
                 batch: Some(sequence),
@@ -1603,6 +1910,15 @@ where
                 batch: Some(sequence),
             }),
         };
+        let result = result.and_then(|value| match self.pin_memory_status {
+            PinMemoryStatus::Enabled(device) => {
+                N::pin(value, device).map_err(|source| LoaderError::PinMemory {
+                    batch: batch_sequence,
+                    source,
+                })
+            }
+            PinMemoryStatus::Disabled | PinMemoryStatus::DisabledNoAccelerator => Ok(value),
+        });
         if result.is_ok() {
             self.fill_available();
         } else {
@@ -1647,12 +1963,20 @@ where
                     actual,
                 }
             }
+            WorkerFailure::MemoryLimit { limit, actual } => LoaderError::MemoryLimit {
+                batch,
+                worker: Some(worker),
+                sequence: None,
+                logical_id: None,
+                limit,
+                actual,
+            },
             WorkerFailure::Panic => LoaderError::WorkerPanic { worker, batch },
         }
     }
 }
 
-impl<D, P, C, F, I> Iterator for WorkerLoaderIter<'_, D, P, C, F, I>
+impl<D, P, C, F, I, M, N> Iterator for WorkerLoaderIter<'_, D, P, C, F, I, M, N>
 where
     D: Dataset + Send + Sync + 'static,
     D::Sample: Send + 'static,
@@ -1665,6 +1989,7 @@ where
     P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
+    N: MapPinPolicy<D, P, C, F>,
 {
     type Item = std::result::Result<
         P::Batch,
@@ -1735,7 +2060,7 @@ where
                 WorkerReceive::Completion(completion) => completion,
                 WorkerReceive::Timeout => {
                     let batch = self.next_visible;
-                    run_context.cancellation.cancel();
+                    run_context.cancel();
                     run_context.deadline.disarm();
                     self.stop();
                     return Some(Err(LoaderError::Timeout { batch }));
@@ -1844,6 +2169,12 @@ fn validate_configuration(
             "requires a positive worker count",
         ));
     }
+    if explicit.prefetch_bytes && configuration.workers == 0 {
+        return Err(invalid_configuration(
+            "prefetch_bytes",
+            "requires a positive worker count",
+        ));
+    }
     if configuration.prefetch_factor == Some(0) {
         return Err(invalid_configuration(
             "prefetch_factor",
@@ -1857,6 +2188,38 @@ fn validate_configuration(
         ));
     }
     Ok(())
+}
+
+fn resolve_pin_request(request: PinRequest) -> Result<PinMemoryStatus> {
+    match request {
+        PinRequest::Disabled => Ok(PinMemoryStatus::Disabled),
+        PinRequest::Auto => {
+            let capabilities = available_devices();
+            if capabilities.cuda && capabilities.cuda_device_count > 0 {
+                Ok(PinMemoryStatus::Enabled(Device::Cuda(0)))
+            } else {
+                Ok(PinMemoryStatus::DisabledNoAccelerator)
+            }
+        }
+        PinRequest::Explicit(Device::Cuda(index)) => {
+            let capabilities = available_devices();
+            if capabilities.cuda && index < capabilities.cuda_device_count {
+                Ok(PinMemoryStatus::Enabled(Device::Cuda(index)))
+            } else {
+                Err(invalid_configuration(
+                    "pin_memory",
+                    format!(
+                        "CUDA device {index} was requested, but the linked runtime exposes {} available CUDA device(s)",
+                        capabilities.cuda_device_count
+                    ),
+                ))
+            }
+        }
+        PinRequest::Explicit(device) => Err(invalid_configuration(
+            "pin_memory",
+            format!("only an available CUDA device can back pinned host memory, got {device:?}"),
+        )),
+    }
 }
 
 fn batch_count(length: usize, batch_size: NonZeroUsize, drop_last: bool) -> usize {

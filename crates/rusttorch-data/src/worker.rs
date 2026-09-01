@@ -12,6 +12,7 @@ use crossbeam_channel::{
 };
 use rusttorch_core::{Result, RustTorchError};
 
+use crate::memory::{BudgetError, ByteBudget, BytePermit};
 use crate::{
     CancellationToken, Dataset, Deadline, TaskContext, Transform, TransformFactory, WorkerContext,
     WorkerInfo, WorkerInit, with_worker_info,
@@ -34,6 +35,7 @@ pub(crate) struct WorkerBatch<T> {
     pub(crate) generation: u64,
     pub(crate) batch_sequence: u64,
     pub(crate) samples: Vec<T>,
+    pub(crate) permit: Option<BytePermit>,
 }
 
 pub(crate) enum WorkerFailure<DE, TE, FE, IE> {
@@ -42,6 +44,7 @@ pub(crate) enum WorkerFailure<DE, TE, FE, IE> {
     TransformInit(FE),
     WorkerInit(IE),
     InvalidBatchCardinality { expected: usize, actual: usize },
+    MemoryLimit { limit: usize, actual: usize },
     Panic,
 }
 
@@ -78,6 +81,12 @@ type Failure<D, F, I> = WorkerFailure<
     <I as WorkerInit>::Error,
 >;
 
+type WorkerFootprint<D, F> = fn(
+    &[<<F as TransformFactory<<D as Dataset>::Sample>>::Transform as Transform<
+        <D as Dataset>::Sample,
+    >>::Output],
+) -> usize;
+
 const MAX_WORKER_QUEUE_ALLOCATION_BYTES: usize = 64 * 1024 * 1024;
 const CROSSBEAM_CHANNEL_CONTROL_BLOCK_ALLOWANCE_BYTES: usize = 2 * 1024;
 
@@ -95,6 +104,7 @@ pub(crate) struct WorkerRunContext {
     pub(crate) epoch: u64,
     pub(crate) cancellation: CancellationToken,
     pub(crate) deadline: Deadline,
+    pub(crate) byte_budget: Option<Arc<ByteBudget>>,
 }
 
 impl WorkerRunContext {
@@ -107,6 +117,19 @@ impl WorkerRunContext {
             epoch,
             cancellation,
             deadline,
+            byte_budget: None,
+        }
+    }
+
+    pub(crate) fn with_byte_budget(mut self, byte_budget: Option<Arc<ByteBudget>>) -> Self {
+        self.byte_budget = byte_budget;
+        self
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.cancellation.cancel();
+        if let Some(byte_budget) = &self.byte_budget {
+            byte_budget.cancel();
         }
     }
 
@@ -173,6 +196,8 @@ where
         factory: Arc<F>,
         initializer: Arc<I>,
         configuration: WorkerPoolConfiguration,
+        footprint: Option<WorkerFootprint<D, F>>,
+        ordered: bool,
     ) -> Result<Self> {
         validate_worker_pool_capacity::<D, F, I>(
             configuration.workers,
@@ -255,6 +280,8 @@ where
                         task_receiver,
                         results,
                         shutdown,
+                        footprint,
+                        ordered,
                     );
                 })
                 .map_err(|error| RustTorchError::BackendUnavailable {
@@ -367,7 +394,7 @@ where
         let Some(active) = self.active.take() else {
             return Ok(());
         };
-        active.cancellation.cancel();
+        active.cancel();
         let worker_count = self.workers();
         let mut quiesced = Vec::new();
         if quiesced.try_reserve_exact(worker_count).is_err() {
@@ -446,7 +473,7 @@ where
 
     pub(crate) fn shutdown(&mut self) {
         if let Some(active) = self.active.take() {
-            active.cancellation.cancel();
+            active.cancel();
         }
         self.shutdown.cancel();
         self.controls.clear();
@@ -602,6 +629,8 @@ fn run_worker<D, F, I>(
     tasks: Receiver<WorkerTask>,
     results: Sender<Completion<D, F, I>>,
     shutdown: CancellationToken,
+    footprint: Option<WorkerFootprint<D, F>>,
+    ordered: bool,
 ) where
     D: Dataset + Send + Sync + 'static,
     D::Sample: Send + 'static,
@@ -660,6 +689,8 @@ fn run_worker<D, F, I>(
                     &shutdown,
                     &run,
                     &mut active,
+                    footprint,
+                    ordered,
                 );
                 active = None;
                 if shutdown.is_cancelled() {
@@ -704,6 +735,8 @@ fn run_generation<D, F, I>(
     shutdown: &CancellationToken,
     run: &WorkerRunContext,
     active: &mut Option<(WorkerRunContext, Option<u64>)>,
+    footprint: Option<WorkerFootprint<D, F>>,
+    ordered: bool,
 ) where
     D: Dataset + Send + Sync + 'static,
     D::Sample: Send + 'static,
@@ -746,7 +779,7 @@ fn run_generation<D, F, I>(
                     Some(task.batch_sequence),
                     WorkerFailure::Dataset(error),
                 ) {
-                    run.cancellation.cancel();
+                    run.cancel();
                 }
                 break;
             }
@@ -763,7 +796,7 @@ fn run_generation<D, F, I>(
                     actual: samples.len(),
                 },
             ) {
-                run.cancellation.cancel();
+                run.cancel();
             }
             break;
         }
@@ -793,7 +826,7 @@ fn run_generation<D, F, I>(
                         Some(task.batch_sequence),
                         WorkerFailure::Transform(error),
                     ) {
-                        run.cancellation.cancel();
+                        run.cancel();
                     }
                     break;
                 }
@@ -802,10 +835,55 @@ fn run_generation<D, F, I>(
         if transformed.len() != expected || context.check().is_err() {
             break;
         }
+        let permit = if let Some(footprint) = footprint {
+            let actual = footprint(&transformed);
+            let budget = run
+                .byte_budget
+                .as_ref()
+                .expect("enabled byte accounting has a generation budget");
+            let acquired = if ordered {
+                budget.acquire_ordered(task.batch_sequence, actual)
+            } else {
+                budget.acquire(actual)
+            };
+            match acquired {
+                Ok(permit) => Some(permit),
+                Err(BudgetError::Oversize { limit, actual }) => {
+                    if send_generation_failure::<D, F, I>(
+                        results,
+                        shutdown,
+                        run,
+                        info.id,
+                        Some(task.batch_sequence),
+                        WorkerFailure::MemoryLimit { limit, actual },
+                    ) {
+                        run.cancel();
+                    }
+                    break;
+                }
+                Err(BudgetError::Cancelled) => break,
+                Err(BudgetError::SequenceAlreadyAdmitted) => {
+                    if send_generation_failure::<D, F, I>(
+                        results,
+                        shutdown,
+                        run,
+                        info.id,
+                        Some(task.batch_sequence),
+                        WorkerFailure::Panic,
+                    ) {
+                        run.cancel();
+                    }
+                    break;
+                }
+            }
+        } else {
+            None
+        };
         let batch = WorkerBatch {
             generation: task.generation,
             batch_sequence: task.batch_sequence,
             samples: transformed,
+            permit,
         };
         if !send_completion(
             results,

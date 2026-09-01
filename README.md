@@ -104,6 +104,15 @@ fn main() {
 Use the separate `rusttorch-data` package when an application wants the data
 layer without the facade; it provides the same loader surface directly.
 
+Owned map and explicitly sharded stream loaders support strict
+post-transform queue budgets through `.prefetch_bytes(...)` and recursive
+post-collation batch pinning through `.pin_memory()` or
+`.pin_memory_for(Device)`. Automatic pinning uses CUDA device zero when CUDA is
+available and otherwise reports a typed no-accelerator no-op. The byte estimate
+is a conservative logical payload bound for prefetched values, not a claim
+about whole-process RSS; the coordinator's active item-bounded collation batch
+is outside it.
+
 The first setup may download a large official LibTorch artifact into Cargo
 build storage. RustTorch links LibTorch dynamically, so the platform loader
 must also be able to find its shared libraries at runtime.
@@ -206,8 +215,8 @@ worker threads, cooperative per-batch timeouts and cancellation, loader-owned
 persistent worker pools, and ordered or completion-order delivery. Stream
 records merge globally before batching, so `drop_last` removes at most one
 global tail. Rust cannot force-cancel a blocking foreign or native call, so
-drop waits for non-cooperative work to return. Pinned memory and loader
-checkpoint/resume remain planned; distributed sampling is available without
+drop waits for non-cooperative work to return. Loader checkpoint/resume remains
+planned; distributed sampling is available without
 distributed training orchestration.
 
 ## Contributing
