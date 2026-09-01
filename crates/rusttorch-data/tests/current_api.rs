@@ -1,8 +1,9 @@
-use std::convert::Infallible;
+use std::{cell::Cell, convert::Infallible};
 
 use rusttorch_data::{
     AutoBatch, DataLoader, DataLoaderBuilder, Dataset, DefaultCollator, OwnedDataLoader,
-    SequentialSampler,
+    SequentialSampler, StreamDataLoader, VecCollate, WorkerContext, WorkerRecord,
+    WorkerSourceFactory,
 };
 
 struct Rows([i64; 3]);
@@ -37,4 +38,23 @@ fn owned_loader_generic_defaults_remain_source_compatible() {
     let mut loader: OwnedDataLoader<Rows, AutoBatch<SequentialSampler>, DefaultCollator> =
         builder.build().expect("default configuration is valid");
     assert_eq!(loader.iter().count(), 3);
+}
+
+struct CellFactory;
+
+impl WorkerSourceFactory for CellFactory {
+    type Sample = Cell<u8>;
+    type Error = Infallible;
+    type Source = std::iter::Empty<Result<WorkerRecord<Cell<u8>>, Infallible>>;
+
+    fn create(&self, _worker: WorkerContext) -> Result<Self::Source, Self::Error> {
+        Ok(std::iter::empty())
+    }
+}
+
+fn assert_sync<T: Sync>() {}
+
+#[test]
+fn stream_loader_remains_sync_for_send_but_not_sync_output() {
+    assert_sync::<StreamDataLoader<CellFactory, VecCollate>>();
 }

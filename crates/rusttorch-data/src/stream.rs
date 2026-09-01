@@ -69,7 +69,7 @@ use std::{
     mem::{MaybeUninit, size_of},
     num::NonZeroUsize,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{Arc, atomic::AtomicUsize},
+    sync::{Arc, Mutex, atomic::AtomicUsize},
     thread::{self, JoinHandle},
     time::Duration,
 };
@@ -180,6 +180,8 @@ type StreamPipelineError<S, C, F, I> = PipelineError<
     <I as WorkerInit>::Error,
 >;
 type StreamLoaderError<S, C, F, I> = LoaderError<StreamPipelineError<S, C, F, I>>;
+type ReassemblyEntry<T> = (u64, BufferedRecord<T>);
+type RetainedReassembly<T> = Mutex<Vec<ReassemblyEntry<T>>>;
 
 type StreamCompletionFor<S, F, I> = StreamCompletion<
     TransformOutput<S, F>,
@@ -286,7 +288,7 @@ where
         .and_then(|bytes| bytes.checked_mul(2))
         .ok_or_else(|| capacity_error("stream batch storage exceeds usize"))?;
     let reassembly_bytes = reassembly_slots
-        .checked_mul(size_of::<(u64, BufferedRecord<TransformOutput<S, F>>)>())
+        .checked_mul(size_of::<ReassemblyEntry<TransformOutput<S, F>>>())
         .ok_or_else(|| capacity_error("ordered stream reassembly exceeds usize"))?;
     let per_worker = size_of::<WorkerInfo>()
         .checked_add(size_of::<(Sender<()>, Receiver<()>)>())
@@ -1316,7 +1318,7 @@ impl<S, C, F, I> StreamDataLoaderBuilder<S, C, F, I> {
             exact_len,
             next_generation: 0,
             persistent_pool: None,
-            ordered_reassembly,
+            ordered_reassembly: Mutex::new(ordered_reassembly),
         })
     }
 }
@@ -1338,7 +1340,9 @@ where
     exact_len: Option<usize>,
     next_generation: u64,
     persistent_pool: Option<StreamWorkerPool<S, F, I>>,
-    ordered_reassembly: Vec<(u64, BufferedRecord<TransformOutput<S, F>>)>,
+    // `iter` has exclusive loader access; this wrapper preserves `Sync` for
+    // output that is `Send` but not `Sync` without runtime contention.
+    ordered_reassembly: RetainedReassembly<TransformOutput<S, F>>,
 }
 
 impl<S, C, F, I> StreamDataLoader<S, C, F, I>
@@ -1446,8 +1450,12 @@ where
 {
     /// Starts a fresh explicitly sharded worker generation.
     pub fn iter(&mut self) -> StreamLoaderIter<'_, S, C, F, I> {
-        self.ordered_reassembly.clear();
-        let reassembly_allocation_slots = self.ordered_reassembly.capacity();
+        let ordered_reassembly = match self.ordered_reassembly.get_mut() {
+            Ok(reassembly) => reassembly,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        ordered_reassembly.clear();
+        let reassembly_allocation_slots = ordered_reassembly.capacity();
         let generation = self.next_generation;
         let run_context = WorkerRunContext::new(
             generation,
@@ -1536,7 +1544,7 @@ where
             drop_last: self.configuration.drop_last,
             expected_records: self.exact_len,
             reassembly_capacity: self.outstanding_capacity,
-            completed: &mut self.ordered_reassembly,
+            completed: ordered_reassembly,
             partial,
             next_sequence: 0,
             next_batch: 0,
@@ -1566,7 +1574,7 @@ where
     drop_last: bool,
     expected_records: Option<usize>,
     reassembly_capacity: usize,
-    completed: &'a mut Vec<(u64, BufferedRecord<TransformOutput<S, F>>)>,
+    completed: &'a mut Vec<ReassemblyEntry<TransformOutput<S, F>>>,
     partial: Vec<TransformOutput<S, F>>,
     next_sequence: u64,
     next_batch: u64,
