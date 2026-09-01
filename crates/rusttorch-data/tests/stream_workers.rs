@@ -1812,6 +1812,111 @@ fn large_inline_batch_and_reassembly_storage_are_rejected_before_callbacks() {
     }
 }
 
+const SPARSE_INLINE_BYTES: usize = 6 * 1024 * 1024;
+type SparseInline = [u8; SPARSE_INLINE_BYTES];
+const OVERSIZED_INLINE_BYTES: usize = 17 * 1024 * 1024;
+
+#[derive(Clone)]
+struct InlineBoundaryFactory<const BYTES: usize> {
+    exact_calls: Arc<AtomicUsize>,
+    create_calls: Arc<AtomicUsize>,
+}
+
+impl<const BYTES: usize> WorkerSourceFactory for InlineBoundaryFactory<BYTES> {
+    type Sample = [u8; BYTES];
+    type Error = Infallible;
+    type Source = std::iter::Empty<Result<WorkerRecord<[u8; BYTES]>, Infallible>>;
+
+    fn create(&self, _worker: WorkerContext) -> Result<Self::Source, Self::Error> {
+        self.create_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(std::iter::empty())
+    }
+
+    fn exact_len(&self) -> Option<usize> {
+        self.exact_calls.fetch_add(1, Ordering::SeqCst);
+        Some(0)
+    }
+}
+
+#[test]
+fn sparse_one_entry_reassembly_uses_one_concrete_vec_slot() {
+    let exact_calls = Arc::new(AtomicUsize::new(0));
+    let create_calls = Arc::new(AtomicUsize::new(0));
+    let init_calls = Arc::new(AtomicUsize::new(0));
+    let collate_calls = Arc::new(AtomicUsize::new(0));
+    let result = StreamDataLoaderBuilder::new(InlineBoundaryFactory::<SPARSE_INLINE_BYTES> {
+        exact_calls: Arc::clone(&exact_calls),
+        create_calls: Arc::clone(&create_calls),
+    })
+    .workers(1)
+    .prefetch_factor(1)
+    .batch_size(1)
+    .worker_init(FnWorkerInit::new({
+        let init_calls = Arc::clone(&init_calls);
+        move |_: &WorkerContext| {
+            init_calls.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(())
+        }
+    }))
+    .collate(FnCollate::new({
+        let collate_calls = Arc::clone(&collate_calls);
+        move |samples: Vec<SparseInline>| {
+            collate_calls.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(samples)
+        }
+    }))
+    .build();
+
+    assert!(result.is_ok());
+    assert_eq!(exact_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(create_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(init_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(collate_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn oversized_one_entry_vec_aggregate_is_rejected_before_every_callback() {
+    let exact_calls = Arc::new(AtomicUsize::new(0));
+    let create_calls = Arc::new(AtomicUsize::new(0));
+    let init_calls = Arc::new(AtomicUsize::new(0));
+    let collate_calls = Arc::new(AtomicUsize::new(0));
+    let result = StreamDataLoaderBuilder::new(InlineBoundaryFactory::<OVERSIZED_INLINE_BYTES> {
+        exact_calls: Arc::clone(&exact_calls),
+        create_calls: Arc::clone(&create_calls),
+    })
+    .workers(1)
+    .prefetch_factor(1)
+    .batch_size(1)
+    .persistent_workers(true)
+    .worker_init(FnWorkerInit::new({
+        let init_calls = Arc::clone(&init_calls);
+        move |_: &WorkerContext| {
+            init_calls.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(())
+        }
+    }))
+    .collate(FnCollate::new({
+        let collate_calls = Arc::clone(&collate_calls);
+        move |samples: Vec<[u8; OVERSIZED_INLINE_BYTES]>| {
+            collate_calls.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(samples)
+        }
+    }))
+    .build();
+
+    assert!(matches!(
+        result,
+        Err(RustTorchError::InvalidConfiguration {
+            field: "prefetch_factor",
+            ..
+        })
+    ));
+    assert_eq!(exact_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(create_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(init_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(collate_calls.load(Ordering::SeqCst), 0);
+}
+
 #[test]
 fn ordinary_zero_worker_stream_helpers_remain_source_compatible() -> Result<(), RustTorchError> {
     let ordinary = batches([Ok::<_, Infallible>(1), Ok(2), Ok(3)].into_iter(), 2, false)?

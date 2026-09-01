@@ -16,6 +16,10 @@
 //! higher IDs must increase the factor or shard the lower ID onto a worker that
 //! keeps an independent credit available. A worker already producing the
 //! missing low ID holds its credit outside reassembly and is allowed to finish.
+//! The ordered window is one loader-owned flat slot vector reserved and
+//! aggregate-checked before source callbacks, then reused across generations.
+//! Lookup is linear in the deliberately bounded window; increase the factor
+//! only when wider source disorder justifies its memory and scan cost.
 //!
 //! ```
 //! use std::convert::Infallible;
@@ -61,7 +65,6 @@
 //! native code until that call returns.
 
 use std::{
-    collections::BTreeMap,
     marker::PhantomData,
     mem::{MaybeUninit, size_of},
     num::NonZeroUsize,
@@ -241,20 +244,12 @@ struct CapacitySlot<T> {
     message: MaybeUninit<T>,
 }
 
-#[allow(dead_code)]
-#[repr(C)]
-struct ReassemblyNodeAllowance<T> {
-    key: u64,
-    record: BufferedRecord<T>,
-    links_and_metadata: [usize; 4],
-}
-
 fn validate_stream_capacity<S, F, I>(
     workers: usize,
     prefetch_factor: usize,
     outstanding: usize,
     batch_size: usize,
-    ordered: bool,
+    reassembly_slots: usize,
 ) -> Result<()>
 where
     S: WorkerSourceFactory,
@@ -290,13 +285,9 @@ where
         .checked_mul(size_of::<TransformOutput<S, F>>())
         .and_then(|bytes| bytes.checked_mul(2))
         .ok_or_else(|| capacity_error("stream batch storage exceeds usize"))?;
-    let reassembly_bytes = if ordered {
-        outstanding
-            .checked_mul(size_of::<ReassemblyNodeAllowance<TransformOutput<S, F>>>())
-            .ok_or_else(|| capacity_error("ordered stream reassembly exceeds usize"))?
-    } else {
-        0
-    };
+    let reassembly_bytes = reassembly_slots
+        .checked_mul(size_of::<(u64, BufferedRecord<TransformOutput<S, F>>)>())
+        .ok_or_else(|| capacity_error("ordered stream reassembly exceeds usize"))?;
     let per_worker = size_of::<WorkerInfo>()
         .checked_add(size_of::<(Sender<()>, Receiver<()>)>())
         .and_then(|bytes| {
@@ -334,12 +325,6 @@ where
     preflight_channel_storage::<StreamControl>(workers)?;
     preflight_channel_storage::<StreamCompletionFor<S, F, I>>(outstanding)?;
     preflight_vec::<TransformOutput<S, F>>(batch_size, "stream batch")?;
-    if ordered {
-        preflight_vec::<ReassemblyNodeAllowance<TransformOutput<S, F>>>(
-            outstanding,
-            "ordered stream reassembly",
-        )?;
-    }
     Ok(())
 }
 
@@ -397,13 +382,14 @@ where
         configuration: StreamConfiguration,
         generation: u64,
         outstanding: usize,
+        reassembly_slots: usize,
     ) -> Result<Self> {
         validate_stream_capacity::<S, F, I>(
             configuration.workers,
             configuration.prefetch_factor,
             outstanding,
             configuration.batch_size,
-            configuration.ordered,
+            reassembly_slots,
         )?;
 
         let (result_sender, result_receiver) =
@@ -1300,7 +1286,24 @@ impl<S, C, F, I> StreamDataLoaderBuilder<S, C, F, I> {
             self.configuration.prefetch_factor,
             outstanding_capacity,
             self.configuration.batch_size,
-            self.configuration.ordered,
+            usize::from(self.configuration.ordered) * outstanding_capacity,
+        )?;
+        let mut ordered_reassembly = Vec::new();
+        if self.configuration.ordered {
+            ordered_reassembly
+                .try_reserve_exact(outstanding_capacity)
+                .map_err(|error| {
+                    capacity_error(format!(
+                        "ordered stream reassembly capacity is unavailable: {error}"
+                    ))
+                })?;
+        }
+        validate_stream_capacity::<S, F, I>(
+            self.configuration.workers,
+            self.configuration.prefetch_factor,
+            outstanding_capacity,
+            self.configuration.batch_size,
+            ordered_reassembly.capacity(),
         )?;
         let exact_len = self.factory.exact_len();
         Ok(StreamDataLoader {
@@ -1313,6 +1316,7 @@ impl<S, C, F, I> StreamDataLoaderBuilder<S, C, F, I> {
             exact_len,
             next_generation: 0,
             persistent_pool: None,
+            ordered_reassembly,
         })
     }
 }
@@ -1334,6 +1338,7 @@ where
     exact_len: Option<usize>,
     next_generation: u64,
     persistent_pool: Option<StreamWorkerPool<S, F, I>>,
+    ordered_reassembly: Vec<(u64, BufferedRecord<TransformOutput<S, F>>)>,
 }
 
 impl<S, C, F, I> StreamDataLoader<S, C, F, I>
@@ -1441,6 +1446,8 @@ where
 {
     /// Starts a fresh explicitly sharded worker generation.
     pub fn iter(&mut self) -> StreamLoaderIter<'_, S, C, F, I> {
+        self.ordered_reassembly.clear();
+        let reassembly_allocation_slots = self.ordered_reassembly.capacity();
         let generation = self.next_generation;
         let run_context = WorkerRunContext::new(
             generation,
@@ -1479,6 +1486,7 @@ where
                         self.configuration,
                         generation,
                         self.outstanding_capacity,
+                        reassembly_allocation_slots,
                     ) {
                         Ok(created) => self.persistent_pool = Some(created),
                         Err(error) => pending_error = Some(LoaderError::Configuration(error)),
@@ -1503,6 +1511,7 @@ where
                     self.configuration,
                     generation,
                     self.outstanding_capacity,
+                    reassembly_allocation_slots,
                 ) {
                     Ok(mut created) => {
                         if created.start_generation(run_context.clone()).is_err() {
@@ -1527,7 +1536,7 @@ where
             drop_last: self.configuration.drop_last,
             expected_records: self.exact_len,
             reassembly_capacity: self.outstanding_capacity,
-            completed: BTreeMap::new(),
+            completed: &mut self.ordered_reassembly,
             partial,
             next_sequence: 0,
             next_batch: 0,
@@ -1557,7 +1566,7 @@ where
     drop_last: bool,
     expected_records: Option<usize>,
     reassembly_capacity: usize,
-    completed: BTreeMap<u64, BufferedRecord<TransformOutput<S, F>>>,
+    completed: &'a mut Vec<(u64, BufferedRecord<TransformOutput<S, F>>)>,
     partial: Vec<TransformOutput<S, F>>,
     next_sequence: u64,
     next_batch: u64,
@@ -1591,7 +1600,7 @@ where
         self.exhausted = true;
         self.run_context.cancellation.cancel();
         let mut credit_failed = false;
-        while let Some((_, buffered)) = self.completed.pop_first() {
+        while let Some((_, buffered)) = self.completed.pop() {
             credit_failed |= self.return_credit(buffered.worker).is_err();
         }
         if let Some(mut pool) = self.pool.take() {
@@ -1778,8 +1787,12 @@ where
         let mut deadline_armed = false;
         loop {
             if self.ordered
-                && let Some(buffered) = self.completed.remove(&self.next_sequence)
+                && let Some(index) = self
+                    .completed
+                    .iter()
+                    .position(|(sequence, _)| *sequence == self.next_sequence)
             {
+                let (_, buffered) = self.completed.swap_remove(index);
                 match self.consume(buffered) {
                     Ok(true) => return Some(self.finish_batch()),
                     Ok(false) => continue,
@@ -1791,8 +1804,9 @@ where
                 let expected = self.next_sequence;
                 let found = self
                     .completed
-                    .first_key_value()
-                    .map(|(&sequence, _)| sequence)
+                    .iter()
+                    .map(|(sequence, _)| *sequence)
+                    .min()
                     .expect("a full ordered reassembly window is nonempty");
                 return Some(Err(self.protocol_error(
                     Some(expected),
@@ -1808,7 +1822,7 @@ where
                 .is_some_and(|pool| pool.pool().all_terminal())
             {
                 if self.ordered
-                    && let Some((&found, _)) = self.completed.first_key_value()
+                    && let Some(found) = self.completed.iter().map(|(sequence, _)| *sequence).min()
                 {
                     let expected = self.next_sequence;
                     return Some(Err(self.protocol_error(
@@ -1971,7 +1985,11 @@ where
                             ),
                         )));
                     }
-                    if self.completed.contains_key(&sequence) {
+                    if self
+                        .completed
+                        .iter()
+                        .any(|(buffered_sequence, _)| *buffered_sequence == sequence)
+                    {
                         self.run_context.cancellation.cancel();
                         if self.return_credit(buffered.worker).is_err() {
                             self.close(true);
@@ -1984,7 +2002,7 @@ where
                             format!("duplicate buffered sequence {sequence}"),
                         )));
                     }
-                    self.completed.insert(sequence, buffered);
+                    self.completed.push((sequence, buffered));
                 }
             }
         }
@@ -2001,7 +2019,7 @@ where
     fn drop(&mut self) {
         self.run_context.cancellation.cancel();
         let mut failed = false;
-        while let Some((_, buffered)) = self.completed.pop_first() {
+        while let Some((_, buffered)) = self.completed.pop() {
             failed |= self
                 .pool
                 .as_ref()

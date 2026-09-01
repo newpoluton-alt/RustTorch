@@ -91,6 +91,11 @@ collation and drops at most one global tail. Persistent stream pools recreate
 sources with fresh generation cancellation and seeds while retaining their
 threads, initializer calls, and transform state.
 
+Ordered reassembly uses one loader-owned flat slot vector whose actual retained
+capacity is aggregate-checked before source callbacks and reused across
+generations. Lookup is linear in the deliberately bounded window, so larger
+prefetch factors trade wider disorder tolerance for memory and scan cost.
+
 Ordered reassembly supports delayed IDs while some worker credit remains
 outside the reassembly window. If all `workers * prefetch_factor` credits are
 held by higher IDs and the next global ID is absent, the loader reports a typed
