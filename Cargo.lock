@@ -780,6 +780,8 @@ dependencies = [
  "rand",
  "rand_chacha",
  "rusttorch-core",
+ "serde",
+ "serde_json",
  "tch",
  "thiserror 2.0.20",
 ]

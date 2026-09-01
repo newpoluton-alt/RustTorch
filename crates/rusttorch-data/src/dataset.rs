@@ -4,7 +4,7 @@ use rand::{SeedableRng, seq::SliceRandom};
 use rand_chacha::ChaCha12Rng;
 use rusttorch_core::{Result, RustTorchError, Tensor};
 
-use crate::{Dataset, WorkerContext};
+use crate::{Checkpointable, Dataset, DatasetCheckpoint, ReplaySafeDataset, WorkerContext};
 
 /// A map-style dataset backed by tensors with a shared first dimension.
 ///
@@ -60,6 +60,27 @@ impl TensorDataset {
             })?,
         })
     }
+
+    /// Deep-copies the backing tensors for exact replay-safe loading.
+    ///
+    /// The returned dataset also deep-copies every fetched row, so callers
+    /// cannot mutate its private backing storage through a sample view.
+    ///
+    /// # Errors
+    ///
+    /// Returns the preserved LibTorch backend error when allocation or copy
+    /// fails.
+    pub fn into_replay_safe(self) -> Result<ReplaySafeTensorDataset> {
+        let tensors = self
+            .tensors
+            .iter()
+            .map(deep_copy_tensor)
+            .collect::<Result<Vec<_>>>()?;
+        Ok(ReplaySafeTensorDataset {
+            tensors,
+            len: self.len,
+        })
+    }
 }
 
 impl Dataset for TensorDataset {
@@ -79,6 +100,183 @@ impl Dataset for TensorDataset {
             .iter()
             .map(|tensor| tensor.f_get(index).map_err(RustTorchError::from))
             .collect()
+    }
+}
+
+/// Tensor dataset with private backing storage and independently owned rows.
+pub struct ReplaySafeTensorDataset {
+    tensors: Vec<Tensor>,
+    len: usize,
+}
+
+impl Dataset for ReplaySafeTensorDataset {
+    type Sample = Vec<Tensor>;
+    type Error = RustTorchError;
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn get(&self, index: usize) -> std::result::Result<Self::Sample, Self::Error> {
+        let index = i64::try_from(index).map_err(|_| RustTorchError::InvalidConfiguration {
+            field: "index",
+            reason: "must fit in LibTorch's signed index range".to_owned(),
+        })?;
+        self.tensors
+            .iter()
+            .map(|tensor| {
+                let row = tensor.f_get(index).map_err(RustTorchError::from)?;
+                deep_copy_tensor(&row)
+            })
+            .collect()
+    }
+}
+
+impl ReplaySafeDataset for ReplaySafeTensorDataset {}
+
+impl DatasetCheckpoint for ReplaySafeTensorDataset {
+    type State = ();
+
+    fn snapshot_dataset(&self) -> Self::State {}
+
+    fn validate_dataset_state(&self, _state: &Self::State) -> Result<()> {
+        Ok(())
+    }
+
+    fn restore_dataset_validated(&mut self, _state: &Self::State) {}
+}
+
+fn deep_copy_tensor(tensor: &Tensor) -> Result<Tensor> {
+    let mut copied = tensor.f_empty_like().map_err(RustTorchError::from)?;
+    copied.f_copy_(tensor).map_err(RustTorchError::from)?;
+    Ok(copied)
+}
+
+/// Explicit exact-checkpoint adapter for a replay-safe map dataset.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ReplaySafeMap<D> {
+    dataset: D,
+}
+
+impl<D> ReplaySafeMap<D> {
+    /// Wraps a dataset that explicitly implements [`ReplaySafeDataset`].
+    pub fn new(dataset: D) -> Self {
+        Self { dataset }
+    }
+
+    /// Returns the wrapped dataset.
+    pub fn into_inner(self) -> D {
+        self.dataset
+    }
+}
+
+impl<D> Dataset for ReplaySafeMap<D>
+where
+    D: ReplaySafeDataset,
+{
+    type Sample = D::Sample;
+    type Error = D::Error;
+
+    fn len(&self) -> usize {
+        self.dataset.len()
+    }
+
+    fn get(&self, index: usize) -> std::result::Result<Self::Sample, Self::Error> {
+        self.dataset.get(index)
+    }
+
+    fn get_batch(&self, indices: &[usize]) -> std::result::Result<Vec<Self::Sample>, Self::Error> {
+        self.dataset.get_batch(indices)
+    }
+
+    fn get_batch_with_context(
+        &self,
+        indices: &[usize],
+        context: &WorkerContext,
+    ) -> std::result::Result<Vec<Self::Sample>, Self::Error> {
+        self.dataset.get_batch_with_context(indices, context)
+    }
+}
+
+impl<D> ReplaySafeDataset for ReplaySafeMap<D> where D: ReplaySafeDataset {}
+
+impl<D> DatasetCheckpoint for ReplaySafeMap<D>
+where
+    D: ReplaySafeDataset,
+{
+    type State = ();
+
+    fn snapshot_dataset(&self) -> Self::State {}
+
+    fn validate_dataset_state(&self, _state: &Self::State) -> Result<()> {
+        Ok(())
+    }
+
+    fn restore_dataset_validated(&mut self, _state: &Self::State) {}
+}
+
+/// Explicit serial exact-checkpoint adapter for a transactional dataset.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TransactionalMap<D> {
+    dataset: D,
+}
+
+impl<D> TransactionalMap<D> {
+    /// Wraps a dataset that implements [`Checkpointable`].
+    pub fn new(dataset: D) -> Self {
+        Self { dataset }
+    }
+
+    /// Returns the wrapped dataset.
+    pub fn into_inner(self) -> D {
+        self.dataset
+    }
+}
+
+impl<D> Dataset for TransactionalMap<D>
+where
+    D: Dataset + Checkpointable,
+{
+    type Sample = D::Sample;
+    type Error = D::Error;
+
+    fn len(&self) -> usize {
+        self.dataset.len()
+    }
+
+    fn get(&self, index: usize) -> std::result::Result<Self::Sample, Self::Error> {
+        self.dataset.get(index)
+    }
+
+    fn get_batch(&self, indices: &[usize]) -> std::result::Result<Vec<Self::Sample>, Self::Error> {
+        self.dataset.get_batch(indices)
+    }
+
+    fn get_batch_with_context(
+        &self,
+        indices: &[usize],
+        context: &WorkerContext,
+    ) -> std::result::Result<Vec<Self::Sample>, Self::Error> {
+        self.dataset.get_batch_with_context(indices, context)
+    }
+}
+
+impl<D> DatasetCheckpoint for TransactionalMap<D>
+where
+    D: Dataset + Checkpointable,
+{
+    type State = D::State;
+
+    fn snapshot_dataset(&self) -> Self::State {
+        self.dataset.save_state()
+    }
+
+    fn validate_dataset_state(&self, state: &Self::State) -> Result<()> {
+        self.dataset.validate_state(state)
+    }
+
+    fn restore_dataset_validated(&mut self, state: &Self::State) {
+        self.dataset.load_validated(state);
     }
 }
 
@@ -184,6 +382,27 @@ impl_stack_dataset!(A:0, B:1, C:2, D:3, E:4, F:5);
 impl_stack_dataset!(A:0, B:1, C:2, D:3, E:4, F:5, G:6);
 impl_stack_dataset!(A:0, B:1, C:2, D:3, E:4, F:5, G:6, H:7);
 
+trait ReplaySafeStackTuple {}
+
+macro_rules! impl_replay_safe_stack_tuple {
+    ($($type:ident),+ $(,)?) => {
+        impl<$($type),+> ReplaySafeStackTuple for ($($type,)+)
+        where
+            $($type: ReplaySafeDataset),+
+        {}
+    };
+}
+
+impl_replay_safe_stack_tuple!(A, B);
+impl_replay_safe_stack_tuple!(A, B, C);
+impl_replay_safe_stack_tuple!(A, B, C, D);
+impl_replay_safe_stack_tuple!(A, B, C, D, E);
+impl_replay_safe_stack_tuple!(A, B, C, D, E, F);
+impl_replay_safe_stack_tuple!(A, B, C, D, E, F, G);
+impl_replay_safe_stack_tuple!(A, B, C, D, E, F, G, H);
+
+impl<T> ReplaySafeDataset for StackDataset<T> where T: StackTuple + ReplaySafeStackTuple {}
+
 /// A dataset that maps one global index across consecutive child datasets.
 pub struct ConcatDataset<D> {
     datasets: Vec<D>,
@@ -249,6 +468,8 @@ where
     }
 }
 
+impl<D> ReplaySafeDataset for ConcatDataset<D> where D: ReplaySafeDataset {}
+
 /// A dataset containing selected indices from another dataset.
 pub struct Subset<D> {
     dataset: D,
@@ -291,6 +512,8 @@ where
         self.dataset.get(self.indices[index])
     }
 }
+
+impl<D> ReplaySafeDataset for Subset<D> where D: ReplaySafeDataset {}
 
 /// One requested output length for [`random_split`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -447,3 +670,5 @@ where
         self.as_ref().get_batch_with_context(indices, context)
     }
 }
+
+impl<D> ReplaySafeDataset for Arc<D> where D: ReplaySafeDataset + ?Sized {}

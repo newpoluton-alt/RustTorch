@@ -3,7 +3,10 @@ use std::convert::Infallible;
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
 
-use crate::{CancellationToken, Deadline, LoaderCancelled, WaitOutcome, WorkerContext};
+use crate::{
+    CancellationToken, Deadline, LoaderCancelled, Stateless, WaitOutcome, WorkerCheckpoint,
+    WorkerContext,
+};
 
 /// Version of RustTorch's deterministic task-RNG seed derivation.
 pub const TASK_RNG_DERIVATION_VERSION: u32 = 1;
@@ -200,6 +203,20 @@ where
 /// Identity sample transform used by the default factory.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct IdentityTransform;
+
+impl Stateless for IdentityTransform {}
+
+impl WorkerCheckpoint for IdentityTransform {
+    type State = ();
+
+    fn snapshot(&self) -> Self::State {}
+
+    fn validate_snapshot(&self, _state: &Self::State) -> rusttorch_core::Result<()> {
+        Ok(())
+    }
+
+    fn restore_validated(&mut self, _state: &Self::State) {}
+}
 
 impl<Input> Transform<Input> for IdentityTransform {
     type Output = Input;

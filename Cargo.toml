@@ -41,6 +41,8 @@ thiserror = "2.0"
 rand = "0.8"
 rand_chacha = "0.3"
 crossbeam-channel = "0.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 rusttorch-core = { version = "=0.1.0", path = "crates/rusttorch-core", default-features = false }
 rusttorch-data = { version = "=0.1.0", path = "crates/rusttorch-data", default-features = false }
 
@@ -55,7 +57,7 @@ rusttorch-data.workspace = true
 tch.workspace = true
 
 [dev-dependencies]
-serde_json = "1.0"
+serde_json.workspace = true
 
 [package.metadata.docs.rs]
 no-default-features = true

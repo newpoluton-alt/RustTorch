@@ -124,4 +124,77 @@ and rejects unsupported devices before source, transform, collator, or worker
 callbacks. `PinMemory` supports tensors and the built-in recursive container
 shapes; backend rejection remains a typed iteration error with its source.
 
-Checkpoint/resume is not implemented in this scope.
+## Exact serial checkpoint and resume
+
+Owned map loaders can save a versioned, fully typed `LoaderState` at the next
+consumer-visible batch boundary. Exact mode is opt-in: wrap immutable data in
+`ReplaySafeMap` (or use `TensorDataset::into_replay_safe`) or wrap a stateful
+dataset in `TransactionalMap`, then assign an exact caller-owned dataset
+identity. The default identity transform and built-in collators are already
+checkpointable.
+
+```rust
+use std::convert::Infallible;
+
+use rusttorch_data::{
+    DataLoader, Dataset, LoaderState, ReplaySafeDataset, ReplaySafeMap,
+    VecCollate,
+};
+
+#[derive(Clone)]
+struct Rows(Vec<i64>);
+
+impl Dataset for Rows {
+    type Sample = i64;
+    type Error = Infallible;
+
+    fn len(&self) -> usize { self.0.len() }
+    fn get(&self, index: usize) -> Result<i64, Infallible> { Ok(self.0[index]) }
+}
+
+impl ReplaySafeDataset for Rows {}
+
+let rows = || ReplaySafeMap::new(Rows(vec![2, 3, 5]));
+let mut loader = DataLoader::builder(rows())
+    .batch_size(2)
+    .collate(VecCollate)
+    .dataset_identity("training-rows-v1".to_owned())
+    .build()?;
+let mut iteration = loader.iter();
+assert_eq!(iteration.next().unwrap()?, [2, 3]);
+let state = iteration.checkpoint()?;
+
+// Storage is caller-selected; `LoaderState` implements serde traits.
+let json = serde_json::to_string(&state)?;
+let restored: LoaderState<_, _, _, _> = serde_json::from_str(&json)?;
+let mut resumed = DataLoader::builder(rows())
+    .batch_size(2)
+    .collate(VecCollate)
+    .dataset_identity("training-rows-v1".to_owned())
+    .resume_from(restored)
+    .build()?;
+assert_eq!(resumed.iter().next().unwrap()?, [5]);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The example chooses `serde_json`, which applications add as their own storage
+dependency; `rusttorch-data` intentionally depends only on serde's format-neutral
+traits in production.
+
+`checkpoint()` is valid initially and after `next()` returns a successful,
+fully pinned visible batch. It is deliberately unavailable after an error,
+end-of-input, or a hidden `drop_last` tail. Resume rejects schema, identity,
+seed, epoch, sampler, batching, ordering, rank/world, pinning, derivation
+version, or cursor drift before applying component state. Stateful transforms
+opt in with `.checkpoint_transactional()`; explicitly stateless transforms use
+`.checkpoint_stateless()`. Stateful collators/converters implement
+`Checkpointable`.
+
+This exact contract currently applies only to the serial type state with zero
+workers, no prefetch, ordered output, and no byte-budget type state. Do not call
+`.workers(0)`: selecting that setter intentionally chooses the worker execution
+type whose checkpoint barrier is not implemented yet. Positive-worker,
+prefetched, and stream checkpoint/resume remain unsupported. The checkpoint
+storage format, atomic file replacement, retention, and encryption policy are
+owned by the application; malformed storage errors are never treated as a
+request to start fresh.

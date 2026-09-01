@@ -7,6 +7,7 @@ use std::{convert::Infallible, marker::PhantomData};
 
 use rusttorch_core::{Result, RustTorchError};
 
+mod checkpoint;
 mod collate;
 mod dataset;
 mod error;
@@ -19,25 +20,35 @@ mod transform;
 mod worker;
 mod worker_context;
 
+pub use checkpoint::{
+    CheckpointActive, CheckpointBuildError, CheckpointDisabled, CheckpointFresh,
+    CheckpointIteration, CheckpointPinRequest, CheckpointPinStatus, CheckpointResume,
+    Checkpointable, DatasetCheckpoint, LOADER_STATE_SCHEMA_VERSION, LoaderConfiguration,
+    LoaderState, ReplaySafeDataset, Stateless, StatelessTransformFactory, StatelessWorker,
+    TransactionalCheckpoint, TransactionalTransformFactory, TransactionalWorker, WorkerCheckpoint,
+};
 pub use collate::{
     Bytes, Collate, CollateError, DefaultCollate, DefaultCollator, DefaultConvert,
     DefaultConverter, FnCollate, VecCollate,
 };
 pub use dataset::{
-    ConcatDataset, SplitLength, StackDataset, StackTuple, Subset, TensorDataset, chain_datasets,
-    random_split,
+    ConcatDataset, ReplaySafeMap, ReplaySafeTensorDataset, SplitLength, StackDataset, StackTuple,
+    Subset, TensorDataset, TransactionalMap, chain_datasets, random_split,
 };
 pub use error::{LoaderError, PipelineError};
 pub use loader::{
-    AutoBatch, BuilderDatasetMarker, DataLoaderBuilder, ExplicitBatches, LoaderIter, LoaderPlan,
-    LoaderPlanConfiguration, NoBatch, OwnedDataLoader, SerialExecution, WorkerExecution,
-    WorkerLoaderIter,
+    AutoBatch, BuilderDatasetMarker, CheckpointPlan, DataLoaderBuilder, ExplicitBatches,
+    LoaderIter, LoaderPlan, LoaderPlanConfiguration, NoBatch, OwnedDataLoader,
+    PlanCheckpointIdentity, SerialExecution, WorkerExecution, WorkerLoaderIter,
 };
 pub use memory::{MemoryDisabled, MemoryEnabled, MemoryFootprint};
 pub use pin_memory::{Auto, Explicit, PinDisabled, PinEnabled, PinMemory, PinMemoryStatus};
 pub use sampler::{
-    BatchSampler, BatchSource, DistributedSampler, FnBatchSource, FnSampler, RandomSampler,
-    Sampler, SequentialSampler, SubsetRandomSampler, WeightedRandomSampler,
+    BatchSampler, BatchSamplerState, BatchSource, BatchSourceCheckpoint, DistributedConfiguration,
+    DistributedSampler, DistributedSamplerState, FnBatchSource, FnSampler, RandomReplacement,
+    RandomSampler, RandomSamplerState, Sampler, SamplerCheckpoint, SequentialSampler,
+    SequentialSamplerState, SubsetRandomSampler, SubsetRandomSamplerState, WeightedRandomSampler,
+    WeightedRandomSamplerState,
 };
 pub use stream::{
     LogicalSampleId, SequenceId, StreamDataLoader, StreamDataLoaderBuilder, StreamLoaderIter,

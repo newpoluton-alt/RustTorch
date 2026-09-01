@@ -5,7 +5,9 @@ use std::{
     fmt,
 };
 
-use rusttorch_core::{RustTorchError, Tensor};
+use rusttorch_core::{Result, RustTorchError, Tensor};
+
+use crate::Checkpointable;
 
 /// Converts an owned group of samples into one batch.
 ///
@@ -37,6 +39,18 @@ pub trait Collate<Sample> {
 /// ```
 #[derive(Clone, Copy, Debug, Default)]
 pub struct VecCollate;
+
+impl Checkpointable for VecCollate {
+    type State = ();
+
+    fn save_state(&self) -> Self::State {}
+
+    fn validate_state(&self, _state: &Self::State) -> Result<()> {
+        Ok(())
+    }
+
+    fn load_validated(&mut self, _state: &Self::State) {}
+}
 
 impl<Sample> Collate<Sample> for VecCollate {
     type Batch = Vec<Sample>;
@@ -304,6 +318,18 @@ pub trait DefaultCollate: Sized {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DefaultCollator;
 
+impl Checkpointable for DefaultCollator {
+    type State = ();
+
+    fn save_state(&self) -> Self::State {}
+
+    fn validate_state(&self, _state: &Self::State) -> Result<()> {
+        Ok(())
+    }
+
+    fn load_validated(&mut self, _state: &Self::State) {}
+}
+
 impl<Sample> Collate<Sample> for DefaultCollator
 where
     Sample: DefaultCollate,
@@ -526,6 +552,18 @@ pub trait DefaultConvert: Sized {
 /// ```
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DefaultConverter;
+
+impl Checkpointable for DefaultConverter {
+    type State = ();
+
+    fn save_state(&self) -> Self::State {}
+
+    fn validate_state(&self, _state: &Self::State) -> Result<()> {
+        Ok(())
+    }
+
+    fn load_validated(&mut self, _state: &Self::State) {}
+}
 
 impl DefaultConverter {
     /// Converts one sample without adding a batch dimension.

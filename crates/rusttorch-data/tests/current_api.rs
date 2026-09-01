@@ -1,10 +1,11 @@
 use std::{cell::Cell, convert::Infallible};
 
 use rusttorch_data::{
-    AutoBatch, DataLoader, DataLoaderBuilder, Dataset, DefaultCollator, IdentityTransformFactory,
-    LoaderIter, MemoryDisabled, NoWorkerInit, OwnedDataLoader, PinDisabled, SequentialSampler,
-    SerialExecution, StreamDataLoader, StreamDataLoaderBuilder, StreamLoaderIter, VecCollate,
-    WorkerContext, WorkerExecution, WorkerLoaderIter, WorkerRecord, WorkerSourceFactory,
+    AutoBatch, CheckpointDisabled, DataLoader, DataLoaderBuilder, Dataset, DefaultCollator,
+    IdentityTransformFactory, LoaderIter, MemoryDisabled, NoWorkerInit, OwnedDataLoader,
+    PinDisabled, SequentialSampler, SerialExecution, StreamDataLoader, StreamDataLoaderBuilder,
+    StreamLoaderIter, VecCollate, WorkerContext, WorkerExecution, WorkerLoaderIter, WorkerRecord,
+    WorkerSourceFactory,
 };
 
 struct Rows([i64; 3]);
@@ -76,6 +77,24 @@ fn owned_loader_generic_defaults_remain_source_compatible() {
         DefaultCollator,
         IdentityTransformFactory,
         NoWorkerInit,
+        MemoryDisabled,
+        PinDisabled,
+    > = workers.iter();
+
+    let mut workers = DataLoader::builder(Rows([2, 3, 5]))
+        .workers(1)
+        .build()
+        .unwrap();
+    let _: WorkerLoaderIter<
+        '_,
+        Rows,
+        AutoBatch<SequentialSampler>,
+        DefaultCollator,
+        IdentityTransformFactory,
+        NoWorkerInit,
+        MemoryDisabled,
+        PinDisabled,
+        CheckpointDisabled,
     > = workers.iter();
 
     let _: StreamDataLoaderBuilder<
@@ -109,6 +128,17 @@ fn trailing_builder_states_are_defaulted_and_can_be_named() {
         MemoryDisabled,
         PinDisabled,
     > = DataLoader::builder(Rows([2, 3, 5]));
+    let _: DataLoaderBuilder<
+        Rows,
+        AutoBatch<SequentialSampler>,
+        DefaultCollator,
+        rusttorch_data::IdentityTransformFactory,
+        rusttorch_data::NoWorkerInit,
+        rusttorch_data::SerialExecution,
+        MemoryDisabled,
+        PinDisabled,
+        CheckpointDisabled,
+    > = DataLoader::builder(Rows([2, 3, 5]));
     let _: StreamDataLoaderBuilder<
         CellFactory,
         VecCollate,
@@ -128,6 +158,30 @@ fn trailing_builder_states_are_defaulted_and_can_be_named() {
         MemoryDisabled,
         PinDisabled,
     > = DataLoader::builder(Rows([2, 3, 5])).build().unwrap();
+    let _: OwnedDataLoader<
+        Rows,
+        AutoBatch<SequentialSampler>,
+        DefaultCollator,
+        rusttorch_data::IdentityTransformFactory,
+        rusttorch_data::NoWorkerInit,
+        rusttorch_data::SerialExecution,
+        MemoryDisabled,
+        PinDisabled,
+        CheckpointDisabled,
+    > = DataLoader::builder(Rows([2, 3, 5])).build().unwrap();
+
+    let mut named = DataLoader::builder(Rows([2, 3, 5])).build().unwrap();
+    let _: LoaderIter<
+        '_,
+        Rows,
+        AutoBatch<SequentialSampler>,
+        DefaultCollator,
+        IdentityTransformFactory,
+        NoWorkerInit,
+        MemoryDisabled,
+        PinDisabled,
+        CheckpointDisabled,
+    > = named.iter();
     let _: StreamDataLoader<
         CellFactory,
         VecCollate,

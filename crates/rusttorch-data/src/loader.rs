@@ -10,18 +10,24 @@ use std::{
 
 use rusttorch_core::{Device, Result, RustTorchError, available_devices};
 
+use crate::checkpoint::{StatelessTransformFactory, TransactionalTransformFactory};
 use crate::memory::{ByteBudget, MemoryDisabled, MemoryEnabled, MemoryPolicy};
-use crate::sampler::validate_batch_size;
+use crate::sampler::{
+    BatchSourceCheckpoint, DistributedConfiguration, SamplerCheckpoint, validate_batch_size,
+};
 use crate::worker::{
     WorkerBatch, WorkerFailure, WorkerMessage, WorkerPool, WorkerPoolConfiguration, WorkerReceive,
     WorkerRunContext, WorkerSubmit, WorkerTask, validate_worker_pool_capacity,
 };
 use crate::{
-    Auto, BatchSampler, BatchSource, CloneTransformFactory, Collate, Dataset, Deadline,
-    DefaultCollator, DefaultConverter, Explicit, IdentityTransformFactory, LoaderError,
-    MemoryFootprint, NoWorkerInit, PinDisabled, PinEnabled, PinMemory, PinMemoryStatus,
-    PipelineError, RandomSampler, Sampler, SequentialSampler, TaskContext, Transform,
-    TransformFactory, WorkerInit,
+    Auto, BatchSampler, BatchSource, CheckpointActive, CheckpointBuildError, CheckpointDisabled,
+    CheckpointFresh, CheckpointIteration, CheckpointPinRequest, CheckpointPinStatus,
+    CheckpointResume, Checkpointable, CloneTransformFactory, Collate, Dataset, DatasetCheckpoint,
+    Deadline, DefaultCollator, DefaultConverter, Explicit, IdentityTransformFactory,
+    LOADER_STATE_SCHEMA_VERSION, LoaderError, LoaderState, MemoryFootprint, NoWorkerInit,
+    PinDisabled, PinEnabled, PinMemory, PinMemoryStatus, PipelineError, RandomSampler, Sampler,
+    SequentialSampler, TASK_RNG_DERIVATION_VERSION, TaskContext, Transform, TransformFactory,
+    WORKER_SEED_DERIVATION_VERSION, WorkerCheckpoint, WorkerInit,
 };
 
 /// Type-level marker used only to make [`crate::DataLoader::builder`] inferable.
@@ -37,6 +43,26 @@ pub struct SerialExecution;
 /// Execution capability selected by [`DataLoaderBuilder::workers`].
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WorkerExecution;
+
+trait SerialBoundaryPolicy {
+    fn begin_next(&mut self);
+    fn commit_visible(&mut self);
+}
+
+impl SerialBoundaryPolicy for CheckpointDisabled {
+    fn begin_next(&mut self) {}
+    fn commit_visible(&mut self) {}
+}
+
+impl SerialBoundaryPolicy for CheckpointIteration {
+    fn begin_next(&mut self) {
+        self.boundary_valid = false;
+    }
+
+    fn commit_visible(&mut self) {
+        self.boundary_valid = true;
+    }
+}
 
 type TransformOutput<D, F> =
     <<F as TransformFactory<<D as Dataset>::Sample>>::Transform as Transform<
@@ -186,6 +212,35 @@ pub trait LoaderPlanConfiguration {
     fn apply_epoch(&mut self, epoch: u64);
 }
 
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct PlanCheckpointIdentity {
+    batch_size: Option<usize>,
+    drop_last: bool,
+    sampler_kind: String,
+    distributed: Option<DistributedConfiguration>,
+}
+
+#[doc(hidden)]
+pub trait CheckpointPlan<Sample, C>: LoaderPlan<Sample, C> {
+    type State;
+    type CoordinatorState;
+
+    fn checkpoint_identity(&self) -> PlanCheckpointIdentity;
+    fn checkpoint_state(&self, next_batch: u64, next_logical_sample: u64) -> Result<Self::State>;
+    fn validate_checkpoint_state(
+        &self,
+        state: &Self::State,
+        epoch: u64,
+        next_batch: u64,
+        next_logical_sample: u64,
+    ) -> Result<()>;
+    fn restore_checkpoint_iter_validated(&mut self, state: &Self::State) -> Self::Iter;
+    fn save_coordinator(&self, collator: &C) -> Self::CoordinatorState;
+    fn validate_coordinator(&self, collator: &C, state: &Self::CoordinatorState) -> Result<()>;
+    fn restore_coordinator_validated(&mut self, collator: &mut C, state: &Self::CoordinatorState);
+}
+
 impl<Sample, S, C> LoaderPlan<Sample, C> for AutoBatch<S>
 where
     S: Sampler,
@@ -241,6 +296,70 @@ where
     }
 }
 
+impl<Sample, S, C> CheckpointPlan<Sample, C> for AutoBatch<S>
+where
+    S: SamplerCheckpoint,
+    C: Collate<Sample> + Checkpointable,
+{
+    type State = S::State;
+    type CoordinatorState = C::State;
+
+    fn checkpoint_identity(&self) -> PlanCheckpointIdentity {
+        PlanCheckpointIdentity {
+            batch_size: Some(self.batch_size.get()),
+            drop_last: self.drop_last,
+            sampler_kind: self.sampler.kind().to_owned(),
+            distributed: self.sampler.distributed_configuration(),
+        }
+    }
+
+    fn checkpoint_state(&self, next_batch: u64, next_logical_sample: u64) -> Result<Self::State> {
+        validate_auto_batch_boundary(
+            self.sampler.exact_len(),
+            self.batch_size,
+            self.drop_last,
+            next_batch,
+            next_logical_sample,
+        )?;
+        self.sampler.checkpoint_state(next_logical_sample)
+    }
+
+    fn validate_checkpoint_state(
+        &self,
+        state: &Self::State,
+        epoch: u64,
+        next_batch: u64,
+        next_logical_sample: u64,
+    ) -> Result<()> {
+        validate_auto_batch_boundary(
+            self.sampler.exact_len(),
+            self.batch_size,
+            self.drop_last,
+            next_batch,
+            next_logical_sample,
+        )?;
+        self.sampler
+            .validate_checkpoint_state(state, epoch, next_logical_sample)
+    }
+
+    fn restore_checkpoint_iter_validated(&mut self, state: &Self::State) -> Self::Iter {
+        let iterator = self.sampler.restore_checkpoint_iter_validated(state);
+        BatchSampler::from_validated(iterator, self.batch_size, self.drop_last)
+    }
+
+    fn save_coordinator(&self, collator: &C) -> Self::CoordinatorState {
+        collator.save_state()
+    }
+
+    fn validate_coordinator(&self, collator: &C, state: &Self::CoordinatorState) -> Result<()> {
+        collator.validate_state(state)
+    }
+
+    fn restore_coordinator_validated(&mut self, collator: &mut C, state: &Self::CoordinatorState) {
+        collator.load_validated(state);
+    }
+}
+
 impl<Sample, B, C> LoaderPlan<Sample, C> for ExplicitBatches<B>
 where
     B: BatchSource,
@@ -288,6 +407,56 @@ where
 
     fn apply_epoch(&mut self, epoch: u64) {
         self.batches.set_epoch(epoch);
+    }
+}
+
+impl<Sample, B, C> CheckpointPlan<Sample, C> for ExplicitBatches<B>
+where
+    B: BatchSourceCheckpoint,
+    C: Collate<Sample> + Checkpointable,
+{
+    type State = B::State;
+    type CoordinatorState = C::State;
+
+    fn checkpoint_identity(&self) -> PlanCheckpointIdentity {
+        PlanCheckpointIdentity {
+            batch_size: None,
+            drop_last: false,
+            sampler_kind: self.batches.kind(),
+            distributed: self.batches.distributed_configuration(),
+        }
+    }
+
+    fn checkpoint_state(&self, next_batch: u64, next_logical_sample: u64) -> Result<Self::State> {
+        self.batches
+            .checkpoint_state(next_batch, next_logical_sample)
+    }
+
+    fn validate_checkpoint_state(
+        &self,
+        state: &Self::State,
+        epoch: u64,
+        next_batch: u64,
+        next_logical_sample: u64,
+    ) -> Result<()> {
+        self.batches
+            .validate_checkpoint_state(state, epoch, next_batch, next_logical_sample)
+    }
+
+    fn restore_checkpoint_iter_validated(&mut self, state: &Self::State) -> Self::Iter {
+        self.batches.restore_checkpoint_iter_validated(state)
+    }
+
+    fn save_coordinator(&self, collator: &C) -> Self::CoordinatorState {
+        collator.save_state()
+    }
+
+    fn validate_coordinator(&self, collator: &C, state: &Self::CoordinatorState) -> Result<()> {
+        collator.validate_state(state)
+    }
+
+    fn restore_coordinator_validated(&mut self, collator: &mut C, state: &Self::CoordinatorState) {
+        collator.load_validated(state);
     }
 }
 
@@ -345,6 +514,69 @@ where
     }
 }
 
+impl<Sample, S, V, C> CheckpointPlan<Sample, C> for NoBatch<S, V>
+where
+    S: SamplerCheckpoint,
+    V: Collate<Sample> + Checkpointable,
+{
+    type State = S::State;
+    type CoordinatorState = V::State;
+
+    fn checkpoint_identity(&self) -> PlanCheckpointIdentity {
+        PlanCheckpointIdentity {
+            batch_size: None,
+            drop_last: false,
+            sampler_kind: self.sampler.kind().to_owned(),
+            distributed: self.sampler.distributed_configuration(),
+        }
+    }
+
+    fn checkpoint_state(&self, next_batch: u64, next_logical_sample: u64) -> Result<Self::State> {
+        if next_batch != next_logical_sample {
+            return Err(invalid_configuration(
+                "checkpoint",
+                "no-batch cursor must advance one batch per logical sample",
+            ));
+        }
+        self.sampler.checkpoint_state(next_logical_sample)
+    }
+
+    fn validate_checkpoint_state(
+        &self,
+        state: &Self::State,
+        epoch: u64,
+        next_batch: u64,
+        next_logical_sample: u64,
+    ) -> Result<()> {
+        if next_batch != next_logical_sample {
+            return Err(invalid_configuration(
+                "checkpoint",
+                "no-batch cursor must advance one batch per logical sample",
+            ));
+        }
+        self.sampler
+            .validate_checkpoint_state(state, epoch, next_logical_sample)
+    }
+
+    fn restore_checkpoint_iter_validated(&mut self, state: &Self::State) -> Self::Iter {
+        self.sampler
+            .restore_checkpoint_iter_validated(state)
+            .map(singleton as fn(usize) -> Vec<usize>)
+    }
+
+    fn save_coordinator(&self, _collator: &C) -> Self::CoordinatorState {
+        self.converter.save_state()
+    }
+
+    fn validate_coordinator(&self, _collator: &C, state: &Self::CoordinatorState) -> Result<()> {
+        self.converter.validate_state(state)
+    }
+
+    fn restore_coordinator_validated(&mut self, _collator: &mut C, state: &Self::CoordinatorState) {
+        self.converter.load_validated(state);
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct ExplicitArguments {
     batch_size: bool,
@@ -365,7 +597,7 @@ enum PinRequest {
 }
 
 #[derive(Clone, Copy)]
-struct LoaderConfiguration {
+struct BuilderConfiguration {
     batch_size: usize,
     drop_last: bool,
     workers: usize,
@@ -380,7 +612,7 @@ struct LoaderConfiguration {
     rank: usize,
 }
 
-impl Default for LoaderConfiguration {
+impl Default for BuilderConfiguration {
     fn default() -> Self {
         Self {
             batch_size: 1,
@@ -409,14 +641,16 @@ pub struct DataLoaderBuilder<
     X = SerialExecution,
     M = MemoryDisabled,
     N = PinDisabled,
+    K = CheckpointDisabled,
 > {
     dataset: D,
     plan: P,
     collator: C,
     transform_factory: F,
     worker_init: I,
-    configuration: LoaderConfiguration,
+    configuration: BuilderConfiguration,
     explicit: ExplicitArguments,
+    checkpoint: K,
     states: PhantomData<(X, M, N)>,
 }
 
@@ -436,18 +670,19 @@ where
             collator: DefaultCollator,
             transform_factory: IdentityTransformFactory,
             worker_init: NoWorkerInit,
-            configuration: LoaderConfiguration::default(),
+            configuration: BuilderConfiguration::default(),
             explicit: ExplicitArguments::default(),
+            checkpoint: CheckpointDisabled,
             states: PhantomData,
         }
     }
 }
 
-impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N> {
+impl<D, P, C, F, I, X, M, N, K> DataLoaderBuilder<D, P, C, F, I, X, M, N, K> {
     fn map<P2, C2>(
         self,
         transform: impl FnOnce(P, C) -> (P2, C2),
-    ) -> DataLoaderBuilder<D, P2, C2, F, I, X, M, N> {
+    ) -> DataLoaderBuilder<D, P2, C2, F, I, X, M, N, K> {
         let (plan, collator) = transform(self.plan, self.collator);
         DataLoaderBuilder {
             dataset: self.dataset,
@@ -457,6 +692,7 @@ impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N> {
             worker_init: self.worker_init,
             configuration: self.configuration,
             explicit: self.explicit,
+            checkpoint: self.checkpoint,
             states: PhantomData,
         }
     }
@@ -484,7 +720,7 @@ impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N> {
     pub fn workers(
         mut self,
         workers: usize,
-    ) -> DataLoaderBuilder<D, P, C, F, I, WorkerExecution, M, N> {
+    ) -> DataLoaderBuilder<D, P, C, F, I, WorkerExecution, M, N, K> {
         self.configuration.workers = workers;
         DataLoaderBuilder {
             dataset: self.dataset,
@@ -494,6 +730,7 @@ impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N> {
             worker_init: self.worker_init,
             configuration: self.configuration,
             explicit: self.explicit,
+            checkpoint: self.checkpoint,
             states: PhantomData,
         }
     }
@@ -520,7 +757,7 @@ impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N> {
     pub fn transform<T>(
         self,
         transform: T,
-    ) -> DataLoaderBuilder<D, P, C, CloneTransformFactory<T>, I, X, M, N> {
+    ) -> DataLoaderBuilder<D, P, C, CloneTransformFactory<T>, I, X, M, N, K> {
         DataLoaderBuilder {
             dataset: self.dataset,
             plan: self.plan,
@@ -529,12 +766,16 @@ impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N> {
             worker_init: self.worker_init,
             configuration: self.configuration,
             explicit: self.explicit,
+            checkpoint: self.checkpoint,
             states: PhantomData,
         }
     }
 
     /// Replaces transform construction with an explicit typed factory.
-    pub fn transform_factory<F2>(self, factory: F2) -> DataLoaderBuilder<D, P, C, F2, I, X, M, N> {
+    pub fn transform_factory<F2>(
+        self,
+        factory: F2,
+    ) -> DataLoaderBuilder<D, P, C, F2, I, X, M, N, K> {
         DataLoaderBuilder {
             dataset: self.dataset,
             plan: self.plan,
@@ -543,12 +784,49 @@ impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N> {
             worker_init: self.worker_init,
             configuration: self.configuration,
             explicit: self.explicit,
+            checkpoint: self.checkpoint,
+            states: PhantomData,
+        }
+    }
+
+    /// Marks the current factory's transform as explicitly stateless for
+    /// exact checkpointing.
+    pub fn checkpoint_stateless(
+        self,
+    ) -> DataLoaderBuilder<D, P, C, StatelessTransformFactory<F>, I, X, M, N, K> {
+        DataLoaderBuilder {
+            dataset: self.dataset,
+            plan: self.plan,
+            collator: self.collator,
+            transform_factory: StatelessTransformFactory(self.transform_factory),
+            worker_init: self.worker_init,
+            configuration: self.configuration,
+            explicit: self.explicit,
+            checkpoint: self.checkpoint,
+            states: PhantomData,
+        }
+    }
+
+    /// Marks the current factory's transform as transactional for exact
+    /// checkpointing.
+    pub fn checkpoint_transactional(
+        self,
+    ) -> DataLoaderBuilder<D, P, C, TransactionalTransformFactory<F>, I, X, M, N, K> {
+        DataLoaderBuilder {
+            dataset: self.dataset,
+            plan: self.plan,
+            collator: self.collator,
+            transform_factory: TransactionalTransformFactory(self.transform_factory),
+            worker_init: self.worker_init,
+            configuration: self.configuration,
+            explicit: self.explicit,
+            checkpoint: self.checkpoint,
             states: PhantomData,
         }
     }
 
     /// Stores the initializer used by future positive-worker execution.
-    pub fn worker_init<I2>(self, worker_init: I2) -> DataLoaderBuilder<D, P, C, F, I2, X, M, N> {
+    pub fn worker_init<I2>(self, worker_init: I2) -> DataLoaderBuilder<D, P, C, F, I2, X, M, N, K> {
         DataLoaderBuilder {
             dataset: self.dataset,
             plan: self.plan,
@@ -557,6 +835,7 @@ impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N> {
             worker_init,
             configuration: self.configuration,
             explicit: self.explicit,
+            checkpoint: self.checkpoint,
             states: PhantomData,
         }
     }
@@ -619,7 +898,7 @@ impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N> {
     ///     .pin_memory()
     ///     .build();
     /// ```
-    pub fn pin_memory(mut self) -> DataLoaderBuilder<D, P, C, F, I, X, M, PinEnabled<Auto>> {
+    pub fn pin_memory(mut self) -> DataLoaderBuilder<D, P, C, F, I, X, M, PinEnabled<Auto>, K> {
         self.configuration.pin_memory = PinRequest::Auto;
         DataLoaderBuilder {
             dataset: self.dataset,
@@ -629,6 +908,7 @@ impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N> {
             worker_init: self.worker_init,
             configuration: self.configuration,
             explicit: self.explicit,
+            checkpoint: self.checkpoint,
             states: PhantomData,
         }
     }
@@ -637,7 +917,7 @@ impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N> {
     pub fn pin_memory_for(
         mut self,
         device: Device,
-    ) -> DataLoaderBuilder<D, P, C, F, I, X, M, PinEnabled<Explicit>> {
+    ) -> DataLoaderBuilder<D, P, C, F, I, X, M, PinEnabled<Explicit>, K> {
         self.configuration.pin_memory = PinRequest::Explicit(device);
         DataLoaderBuilder {
             dataset: self.dataset,
@@ -647,6 +927,7 @@ impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N> {
             worker_init: self.worker_init,
             configuration: self.configuration,
             explicit: self.explicit,
+            checkpoint: self.checkpoint,
             states: PhantomData,
         }
     }
@@ -695,7 +976,7 @@ impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N> {
     pub fn prefetch_bytes(
         mut self,
         limit: NonZeroUsize,
-    ) -> DataLoaderBuilder<D, P, C, F, I, X, MemoryEnabled, N> {
+    ) -> DataLoaderBuilder<D, P, C, F, I, X, MemoryEnabled, N, K> {
         self.configuration.prefetch_bytes = Some(limit);
         self.explicit.prefetch_bytes = true;
         DataLoaderBuilder {
@@ -706,6 +987,7 @@ impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N> {
             worker_init: self.worker_init,
             configuration: self.configuration,
             explicit: self.explicit,
+            checkpoint: self.checkpoint,
             states: PhantomData,
         }
     }
@@ -714,7 +996,7 @@ impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N> {
     pub fn batch_sampler<B>(
         mut self,
         batches: B,
-    ) -> DataLoaderBuilder<D, ExplicitBatches<B>, C, F, I, X, M, N> {
+    ) -> DataLoaderBuilder<D, ExplicitBatches<B>, C, F, I, X, M, N, K> {
         self.explicit.batch_sampler = true;
         self.map(|_, collator| (ExplicitBatches { batches }, collator))
     }
@@ -730,7 +1012,7 @@ impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N> {
     fn build_inner(
         mut self,
         footprint: Option<FootprintFn<D, F>>,
-    ) -> Result<OwnedDataLoader<D, P, C, F, I, X, M, N>>
+    ) -> Result<OwnedDataLoader<D, P, C, F, I, X, M, N, K>>
     where
         D: Dataset,
         F: TransformFactory<D::Sample>,
@@ -792,8 +1074,55 @@ impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N> {
             rank: self.configuration.rank,
             next_generation: 0,
             persistent_pool: None,
+            checkpoint: self.checkpoint,
             policies: PhantomData,
         })
+    }
+}
+
+impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N, CheckpointDisabled> {
+    /// Enables exact checkpointing with a caller-defined dataset identity.
+    ///
+    /// The identity must describe the exact dataset contents, not merely its
+    /// Rust type or path. Empty identities are rejected by [`Self::build`].
+    pub fn dataset_identity(
+        self,
+        identity: String,
+    ) -> DataLoaderBuilder<D, P, C, F, I, X, M, N, CheckpointFresh> {
+        DataLoaderBuilder {
+            dataset: self.dataset,
+            plan: self.plan,
+            collator: self.collator,
+            transform_factory: self.transform_factory,
+            worker_init: self.worker_init,
+            configuration: self.configuration,
+            explicit: self.explicit,
+            checkpoint: CheckpointFresh { identity },
+            states: PhantomData,
+        }
+    }
+}
+
+impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N, CheckpointFresh> {
+    /// Selects a typed serial loader checkpoint for validated resume.
+    pub fn resume_from<S>(
+        self,
+        state: S,
+    ) -> DataLoaderBuilder<D, P, C, F, I, X, M, N, CheckpointResume<S>> {
+        DataLoaderBuilder {
+            dataset: self.dataset,
+            plan: self.plan,
+            collator: self.collator,
+            transform_factory: self.transform_factory,
+            worker_init: self.worker_init,
+            configuration: self.configuration,
+            explicit: self.explicit,
+            checkpoint: CheckpointResume {
+                identity: self.checkpoint.identity,
+                state,
+            },
+            states: PhantomData,
+        }
     }
 }
 
@@ -808,10 +1137,14 @@ fn resident_bytes<T: MemoryFootprint>(values: &[T]) -> usize {
     total
 }
 
-impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X, MemoryDisabled, PinDisabled> {
+impl<D, P, C, F, I, X>
+    DataLoaderBuilder<D, P, C, F, I, X, MemoryDisabled, PinDisabled, CheckpointDisabled>
+{
     /// Validates configuration and builds an item-bounded, unpinned loader.
     #[allow(clippy::type_complexity)]
-    pub fn build(self) -> Result<OwnedDataLoader<D, P, C, F, I, X, MemoryDisabled, PinDisabled>>
+    pub fn build(
+        self,
+    ) -> Result<OwnedDataLoader<D, P, C, F, I, X, MemoryDisabled, PinDisabled, CheckpointDisabled>>
     where
         D: Dataset,
         F: TransformFactory<D::Sample>,
@@ -822,10 +1155,14 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X, MemoryDisabled, PinDi
     }
 }
 
-impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X, MemoryEnabled, PinDisabled> {
+impl<D, P, C, F, I, X>
+    DataLoaderBuilder<D, P, C, F, I, X, MemoryEnabled, PinDisabled, CheckpointDisabled>
+{
     /// Validates configuration and builds a byte-bounded, unpinned loader.
     #[allow(clippy::type_complexity)]
-    pub fn build(self) -> Result<OwnedDataLoader<D, P, C, F, I, X, MemoryEnabled, PinDisabled>>
+    pub fn build(
+        self,
+    ) -> Result<OwnedDataLoader<D, P, C, F, I, X, MemoryEnabled, PinDisabled, CheckpointDisabled>>
     where
         D: Dataset,
         F: TransformFactory<D::Sample>,
@@ -837,10 +1174,14 @@ impl<D, P, C, F, I, X> DataLoaderBuilder<D, P, C, F, I, X, MemoryEnabled, PinDis
     }
 }
 
-impl<D, P, C, F, I, X, Q> DataLoaderBuilder<D, P, C, F, I, X, MemoryDisabled, PinEnabled<Q>> {
+impl<D, P, C, F, I, X, Q>
+    DataLoaderBuilder<D, P, C, F, I, X, MemoryDisabled, PinEnabled<Q>, CheckpointDisabled>
+{
     /// Validates configuration and builds an item-bounded pinned loader.
     #[allow(clippy::type_complexity)]
-    pub fn build(self) -> Result<OwnedDataLoader<D, P, C, F, I, X, MemoryDisabled, PinEnabled<Q>>>
+    pub fn build(
+        self,
+    ) -> Result<OwnedDataLoader<D, P, C, F, I, X, MemoryDisabled, PinEnabled<Q>, CheckpointDisabled>>
     where
         D: Dataset,
         F: TransformFactory<D::Sample>,
@@ -852,10 +1193,14 @@ impl<D, P, C, F, I, X, Q> DataLoaderBuilder<D, P, C, F, I, X, MemoryDisabled, Pi
     }
 }
 
-impl<D, P, C, F, I, X, Q> DataLoaderBuilder<D, P, C, F, I, X, MemoryEnabled, PinEnabled<Q>> {
+impl<D, P, C, F, I, X, Q>
+    DataLoaderBuilder<D, P, C, F, I, X, MemoryEnabled, PinEnabled<Q>, CheckpointDisabled>
+{
     /// Validates configuration and builds a byte-bounded pinned loader.
     #[allow(clippy::type_complexity)]
-    pub fn build(self) -> Result<OwnedDataLoader<D, P, C, F, I, X, MemoryEnabled, PinEnabled<Q>>>
+    pub fn build(
+        self,
+    ) -> Result<OwnedDataLoader<D, P, C, F, I, X, MemoryEnabled, PinEnabled<Q>, CheckpointDisabled>>
     where
         D: Dataset,
         F: TransformFactory<D::Sample>,
@@ -868,7 +1213,192 @@ impl<D, P, C, F, I, X, Q> DataLoaderBuilder<D, P, C, F, I, X, MemoryEnabled, Pin
     }
 }
 
-impl<D, S, C, F, I, X, M, N> DataLoaderBuilder<D, AutoBatch<S>, C, F, I, X, M, N>
+#[allow(private_bounds)]
+impl<D, P, C, F, I, N>
+    DataLoaderBuilder<D, P, C, F, I, SerialExecution, MemoryDisabled, N, CheckpointFresh>
+where
+    D: DatasetCheckpoint,
+    F: TransformFactory<D::Sample>,
+    F::Transform: WorkerCheckpoint,
+    P: LoaderPlanConfiguration
+        + LoaderPlan<TransformOutput<D, F>, C>
+        + CheckpointPlan<TransformOutput<D, F>, C>,
+    I: WorkerInit,
+    N: MapPinPolicy<D, P, C, F>,
+{
+    /// Builds a fresh exact serial loader without constructing its transform.
+    #[allow(clippy::type_complexity)]
+    pub fn build(
+        mut self,
+    ) -> Result<
+        OwnedDataLoader<
+            D,
+            P,
+            C,
+            F,
+            I,
+            SerialExecution,
+            MemoryDisabled,
+            N,
+            CheckpointActive<P::Iter, F::Transform>,
+        >,
+    > {
+        validate_exact_builder(
+            &self.configuration,
+            self.explicit,
+            &self.checkpoint.identity,
+        )?;
+        let pin_memory_status = resolve_pin_request(self.configuration.pin_memory)?;
+        let batch_size = validate_batch_size(self.configuration.batch_size)?;
+        self.plan
+            .apply_batch_options(batch_size, self.configuration.drop_last);
+        self.plan.apply_epoch(self.configuration.epoch);
+        let identity = self.plan.checkpoint_identity();
+        validate_distributed_rank(&identity, self.configuration.rank)?;
+        let checkpoint_configuration =
+            checkpoint_configuration(&identity, &self.configuration, pin_memory_status)?;
+
+        Ok(OwnedDataLoader {
+            dataset: Arc::new(self.dataset),
+            plan: self.plan,
+            collator: self.collator,
+            transform_factory: Arc::new(self.transform_factory),
+            worker_init: Arc::new(self.worker_init),
+            workers: 0,
+            persistent_workers: false,
+            timeout: None,
+            ordered: true,
+            pin_memory_status,
+            footprint: None,
+            effective_prefetch_bytes: None,
+            effective_prefetch: None,
+            outstanding_capacity: None,
+            loader_seed: self.configuration.loader_seed,
+            rank: self.configuration.rank,
+            next_generation: 0,
+            persistent_pool: None,
+            checkpoint: CheckpointActive {
+                identity: self.checkpoint.identity,
+                configuration: checkpoint_configuration,
+                pending: None,
+            },
+            policies: PhantomData,
+        })
+    }
+}
+
+#[allow(private_bounds)]
+impl<D, P, C, F, I, N, DS, SS, TS, CS>
+    DataLoaderBuilder<
+        D,
+        P,
+        C,
+        F,
+        I,
+        SerialExecution,
+        MemoryDisabled,
+        N,
+        CheckpointResume<LoaderState<DS, SS, TS, CS>>,
+    >
+where
+    D: DatasetCheckpoint<State = DS>,
+    F: TransformFactory<D::Sample>,
+    F::Transform: WorkerCheckpoint<State = TS>,
+    P: LoaderPlanConfiguration
+        + LoaderPlan<TransformOutput<D, F>, C>
+        + CheckpointPlan<TransformOutput<D, F>, C, State = SS, CoordinatorState = CS>,
+    I: WorkerInit,
+    N: MapPinPolicy<D, P, C, F>,
+{
+    /// Validates and restores an exact serial loader transactionally.
+    #[allow(clippy::type_complexity)]
+    pub fn build(
+        mut self,
+    ) -> std::result::Result<
+        OwnedDataLoader<
+            D,
+            P,
+            C,
+            F,
+            I,
+            SerialExecution,
+            MemoryDisabled,
+            N,
+            CheckpointActive<P::Iter, F::Transform>,
+        >,
+        CheckpointBuildError<F::Error>,
+    > {
+        let CheckpointResume {
+            identity: requested_identity,
+            state,
+        } = self.checkpoint;
+        validate_exact_builder(&self.configuration, self.explicit, &requested_identity)?;
+        let pin_memory_status = resolve_pin_request(self.configuration.pin_memory)?;
+        let batch_size = validate_batch_size(self.configuration.batch_size)?;
+        self.plan
+            .apply_batch_options(batch_size, self.configuration.drop_last);
+        let plan_identity = self.plan.checkpoint_identity();
+        validate_distributed_rank(&plan_identity, self.configuration.rank)?;
+        let expected_configuration =
+            checkpoint_configuration(&plan_identity, &self.configuration, pin_memory_status)?;
+        validate_loader_state_envelope(&state, &requested_identity, &expected_configuration)?;
+
+        self.dataset.validate_dataset_state(&state.dataset)?;
+        self.plan.validate_checkpoint_state(
+            &state.sampler,
+            state.epoch,
+            state.next_batch,
+            state.next_logical_sample,
+        )?;
+        let mut transform = self
+            .transform_factory
+            .create(None)
+            .map_err(CheckpointBuildError::TransformFactory)?;
+        transform.validate_snapshot(&state.transform)?;
+        self.plan
+            .validate_coordinator(&self.collator, &state.collate)?;
+
+        self.dataset.restore_dataset_validated(&state.dataset);
+        let batches = self.plan.restore_checkpoint_iter_validated(&state.sampler);
+        transform.restore_validated(&state.transform);
+        self.plan
+            .restore_coordinator_validated(&mut self.collator, &state.collate);
+
+        Ok(OwnedDataLoader {
+            dataset: Arc::new(self.dataset),
+            plan: self.plan,
+            collator: self.collator,
+            transform_factory: Arc::new(self.transform_factory),
+            worker_init: Arc::new(self.worker_init),
+            workers: 0,
+            persistent_workers: false,
+            timeout: None,
+            ordered: true,
+            pin_memory_status,
+            footprint: None,
+            effective_prefetch_bytes: None,
+            effective_prefetch: None,
+            outstanding_capacity: None,
+            loader_seed: self.configuration.loader_seed,
+            rank: self.configuration.rank,
+            next_generation: 0,
+            persistent_pool: None,
+            checkpoint: CheckpointActive {
+                identity: requested_identity,
+                configuration: expected_configuration,
+                pending: Some(crate::checkpoint::PendingSerial {
+                    batches,
+                    transform,
+                    next_batch: state.next_batch,
+                    next_logical_sample: state.next_logical_sample,
+                }),
+            },
+            policies: PhantomData,
+        })
+    }
+}
+
+impl<D, S, C, F, I, X, M, N, K> DataLoaderBuilder<D, AutoBatch<S>, C, F, I, X, M, N, K>
 where
     D: Dataset,
 {
@@ -876,7 +1406,7 @@ where
     pub fn sampler<S2>(
         mut self,
         sampler: S2,
-    ) -> DataLoaderBuilder<D, AutoBatch<S2>, C, F, I, X, M, N> {
+    ) -> DataLoaderBuilder<D, AutoBatch<S2>, C, F, I, X, M, N, K> {
         self.explicit.sampler = true;
         self.map(|plan, collator| {
             (
@@ -900,7 +1430,7 @@ where
     pub fn shuffle(
         mut self,
         seed: u64,
-    ) -> Result<DataLoaderBuilder<D, AutoBatch<RandomSampler>, C, F, I, X, M, N>> {
+    ) -> Result<DataLoaderBuilder<D, AutoBatch<RandomSampler>, C, F, I, X, M, N, K>> {
         self.explicit.shuffle = true;
         let sampler = RandomSampler::new(self.dataset.len(), seed)?;
         Ok(self.map(|plan, collator| {
@@ -918,7 +1448,7 @@ where
     /// Disables automatic batching and selects default conversion.
     pub fn without_batching(
         mut self,
-    ) -> DataLoaderBuilder<D, NoBatch<S, DefaultConverter>, C, F, I, X, M, N> {
+    ) -> DataLoaderBuilder<D, NoBatch<S, DefaultConverter>, C, F, I, X, M, N, K> {
         self.explicit.without_batching = true;
         self.map(|plan, collator| {
             (
@@ -935,12 +1465,12 @@ where
     pub fn collate<C2>(
         self,
         collator: C2,
-    ) -> DataLoaderBuilder<D, AutoBatch<S>, C2, F, I, X, M, N> {
+    ) -> DataLoaderBuilder<D, AutoBatch<S>, C2, F, I, X, M, N, K> {
         self.map(|plan, _| (plan, collator))
     }
 }
 
-impl<D, B, C, F, I, X, M, N> DataLoaderBuilder<D, ExplicitBatches<B>, C, F, I, X, M, N>
+impl<D, B, C, F, I, X, M, N, K> DataLoaderBuilder<D, ExplicitBatches<B>, C, F, I, X, M, N, K>
 where
     D: Dataset,
 {
@@ -948,7 +1478,7 @@ where
     pub fn sampler<S>(
         mut self,
         sampler: S,
-    ) -> DataLoaderBuilder<D, AutoBatch<S>, C, F, I, X, M, N> {
+    ) -> DataLoaderBuilder<D, AutoBatch<S>, C, F, I, X, M, N, K> {
         self.explicit.sampler = true;
         let batch_size =
             NonZeroUsize::new(self.configuration.batch_size).unwrap_or(NonZeroUsize::MIN);
@@ -975,7 +1505,7 @@ where
     pub fn shuffle(
         mut self,
         seed: u64,
-    ) -> Result<DataLoaderBuilder<D, AutoBatch<RandomSampler>, C, F, I, X, M, N>> {
+    ) -> Result<DataLoaderBuilder<D, AutoBatch<RandomSampler>, C, F, I, X, M, N, K>> {
         self.explicit.shuffle = true;
         let sampler = RandomSampler::new(self.dataset.len(), seed)?;
         let batch_size =
@@ -996,7 +1526,8 @@ where
     /// Disables batching; build rejects its conflict with the earlier batch sampler.
     pub fn without_batching(
         mut self,
-    ) -> DataLoaderBuilder<D, NoBatch<SequentialSampler, DefaultConverter>, C, F, I, X, M, N> {
+    ) -> DataLoaderBuilder<D, NoBatch<SequentialSampler, DefaultConverter>, C, F, I, X, M, N, K>
+    {
         self.explicit.without_batching = true;
         let length = self.dataset.len();
         self.map(|_, collator| {
@@ -1014,12 +1545,12 @@ where
     pub fn collate<C2>(
         self,
         collator: C2,
-    ) -> DataLoaderBuilder<D, ExplicitBatches<B>, C2, F, I, X, M, N> {
+    ) -> DataLoaderBuilder<D, ExplicitBatches<B>, C2, F, I, X, M, N, K> {
         self.map(|plan, _| (plan, collator))
     }
 }
 
-impl<D, S, V, C, F, I, X, M, N> DataLoaderBuilder<D, NoBatch<S, V>, C, F, I, X, M, N>
+impl<D, S, V, C, F, I, X, M, N, K> DataLoaderBuilder<D, NoBatch<S, V>, C, F, I, X, M, N, K>
 where
     D: Dataset,
 {
@@ -1027,7 +1558,7 @@ where
     pub fn sampler<S2>(
         mut self,
         sampler: S2,
-    ) -> DataLoaderBuilder<D, NoBatch<S2, V>, C, F, I, X, M, N> {
+    ) -> DataLoaderBuilder<D, NoBatch<S2, V>, C, F, I, X, M, N, K> {
         self.explicit.sampler = true;
         self.map(|plan, collator| {
             (
@@ -1050,7 +1581,7 @@ where
     pub fn shuffle(
         mut self,
         seed: u64,
-    ) -> Result<DataLoaderBuilder<D, NoBatch<RandomSampler, V>, C, F, I, X, M, N>> {
+    ) -> Result<DataLoaderBuilder<D, NoBatch<RandomSampler, V>, C, F, I, X, M, N, K>> {
         self.explicit.shuffle = true;
         let sampler = RandomSampler::new(self.dataset.len(), seed)?;
         Ok(self.map(|plan, collator| {
@@ -1068,7 +1599,7 @@ where
     pub fn convert<V2>(
         self,
         converter: V2,
-    ) -> DataLoaderBuilder<D, NoBatch<S, V2>, C, F, I, X, M, N> {
+    ) -> DataLoaderBuilder<D, NoBatch<S, V2>, C, F, I, X, M, N, K> {
         self.map(|plan, collator| {
             (
                 NoBatch {
@@ -1100,6 +1631,7 @@ pub struct OwnedDataLoader<
     X = SerialExecution,
     M = MemoryDisabled,
     N = PinDisabled,
+    K = CheckpointDisabled,
 > where
     D: Dataset,
     F: TransformFactory<D::Sample>,
@@ -1124,11 +1656,12 @@ pub struct OwnedDataLoader<
     rank: usize,
     next_generation: u64,
     persistent_pool: Option<WorkerPool<D, F, I, M>>,
+    checkpoint: K,
     policies: PhantomData<(X, M, N)>,
 }
 
 #[allow(private_bounds)]
-impl<D, P, C, F, I, M, N> OwnedDataLoader<D, P, C, F, I, SerialExecution, M, N>
+impl<D, P, C, F, I, M, N> OwnedDataLoader<D, P, C, F, I, SerialExecution, M, N, CheckpointDisabled>
 where
     D: Dataset,
     F: TransformFactory<D::Sample>,
@@ -1138,7 +1671,7 @@ where
     N: MapPinPolicy<D, P, C, F>,
 {
     /// Starts a fresh finite iteration for the configured epoch.
-    pub fn iter(&mut self) -> LoaderIter<'_, D, P, C, F, I, M, N> {
+    pub fn iter(&mut self) -> LoaderIter<'_, D, P, C, F, I, M, N, CheckpointDisabled> {
         let (transform, transform_error) = match self.transform_factory.create(None) {
             Ok(transform) => (Some(transform), None),
             Err(error) => (None, Some(error)),
@@ -1161,14 +1694,107 @@ where
             rank: self.rank,
             run_context,
             pin_memory_status: self.pin_memory_status,
+            checkpoint: CheckpointDisabled,
             output: PhantomData,
             policies: PhantomData,
         }
     }
 }
 
+#[allow(private_bounds, private_interfaces)]
+impl<D, P, C, F, I, N>
+    OwnedDataLoader<
+        D,
+        P,
+        C,
+        F,
+        I,
+        SerialExecution,
+        MemoryDisabled,
+        N,
+        CheckpointActive<P::Iter, F::Transform>,
+    >
+where
+    D: DatasetCheckpoint,
+    F: TransformFactory<D::Sample>,
+    F::Transform: WorkerCheckpoint,
+    P: LoaderPlan<TransformOutput<D, F>, C> + CheckpointPlan<TransformOutput<D, F>, C>,
+    I: WorkerInit,
+    N: MapPinPolicy<D, P, C, F>,
+{
+    /// Starts the retained resumed cursor once, then fresh exact iterations.
+    pub fn iter(
+        &mut self,
+    ) -> LoaderIter<'_, D, P, C, F, I, MemoryDisabled, N, CheckpointIteration> {
+        let pending = self.checkpoint.pending.take();
+        let (batches, transform, transform_error, next_batch, next_logical_sample) = match pending {
+            Some(pending) => (
+                Some(pending.batches),
+                Some(pending.transform),
+                None,
+                pending.next_batch,
+                pending.next_logical_sample,
+            ),
+            None => match self.transform_factory.create(None) {
+                Ok(transform) => (Some(self.plan.iter()), Some(transform), None, 0, 0),
+                Err(error) => (None, None, Some(error), 0, 0),
+            },
+        };
+        let epoch = self.plan.epoch();
+        let run_context = WorkerRunContext::new(0, self.loader_seed, epoch);
+        LoaderIter {
+            dataset: self.dataset.as_ref(),
+            plan: &mut self.plan,
+            collator: &mut self.collator,
+            batches,
+            transform,
+            transform_error,
+            next_batch,
+            next_logical_sample,
+            exhausted: false,
+            loader_seed: self.loader_seed,
+            epoch,
+            rank: self.rank,
+            run_context,
+            pin_memory_status: self.pin_memory_status,
+            checkpoint: CheckpointIteration {
+                identity: self.checkpoint.identity.clone(),
+                configuration: self.checkpoint.configuration.clone(),
+                boundary_valid: true,
+            },
+            output: PhantomData,
+            policies: PhantomData,
+        }
+    }
+
+    /// Selects the epoch used by future iterations.
+    ///
+    /// Calling this before the retained resumed cursor is consumed deliberately
+    /// discards that cursor and its restored transform, so the selected epoch
+    /// starts as an ordinary fresh iteration instead of mixing two epochs.
+    pub fn set_epoch(&mut self, epoch: u64) {
+        self.plan.set_epoch(epoch);
+        self.checkpoint.pending = None;
+    }
+}
+
 #[allow(private_bounds)]
-impl<D, P, C, F, I, X, M, N> OwnedDataLoader<D, P, C, F, I, X, M, N>
+impl<D, P, C, F, I, X, M, N> OwnedDataLoader<D, P, C, F, I, X, M, N, CheckpointDisabled>
+where
+    D: Dataset,
+    F: TransformFactory<D::Sample>,
+    P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
+    I: WorkerInit,
+    M: MemoryPolicy,
+{
+    /// Selects the epoch used by future iterations.
+    pub fn set_epoch(&mut self, epoch: u64) {
+        self.plan.set_epoch(epoch);
+    }
+}
+
+#[allow(private_bounds)]
+impl<D, P, C, F, I, X, M, N, K> OwnedDataLoader<D, P, C, F, I, X, M, N, K>
 where
     D: Dataset,
     F: TransformFactory<D::Sample>,
@@ -1189,11 +1815,6 @@ where
     /// Returns the current epoch.
     pub fn epoch(&self) -> u64 {
         self.plan.epoch()
-    }
-
-    /// Selects the epoch used by future iterations.
-    pub fn set_epoch(&mut self, epoch: u64) {
-        self.plan.set_epoch(epoch);
     }
 
     /// Returns the configured worker count.
@@ -1247,6 +1868,7 @@ pub struct LoaderIter<
     I = NoWorkerInit,
     M = MemoryDisabled,
     N = PinDisabled,
+    K = CheckpointDisabled,
 > where
     D: Dataset,
     F: TransformFactory<D::Sample>,
@@ -1267,17 +1889,81 @@ pub struct LoaderIter<
     rank: usize,
     run_context: WorkerRunContext,
     pin_memory_status: PinMemoryStatus,
+    checkpoint: K,
     output: PhantomData<fn() -> I>,
     policies: PhantomData<(M, N)>,
 }
 
-impl<D, P, C, F, I, M, N> Iterator for LoaderIter<'_, D, P, C, F, I, M, N>
+#[allow(private_bounds, private_interfaces)]
+impl<D, P, C, F, I, N> LoaderIter<'_, D, P, C, F, I, MemoryDisabled, N, CheckpointIteration>
+where
+    D: DatasetCheckpoint,
+    F: TransformFactory<D::Sample>,
+    F::Transform: WorkerCheckpoint,
+    P: LoaderPlan<TransformOutput<D, F>, C> + CheckpointPlan<TransformOutput<D, F>, C>,
+    I: WorkerInit,
+    N: MapPinPolicy<D, P, C, F>,
+{
+    /// Captures the exact next-visible-batch boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LoaderError::Checkpoint`] after an error, end-of-input, or
+    /// while a `next` call has advanced work that did not become visible.
+    #[allow(clippy::type_complexity)]
+    pub fn checkpoint(
+        &mut self,
+    ) -> std::result::Result<
+        LoaderState<
+            D::State,
+            P::State,
+            <F::Transform as WorkerCheckpoint>::State,
+            P::CoordinatorState,
+        >,
+        IterError<D, P, C, F, I>,
+    > {
+        if !self.checkpoint.boundary_valid {
+            return Err(LoaderError::Checkpoint {
+                reason: "the active iterator is not at a consumer-visible batch boundary"
+                    .to_owned(),
+            });
+        }
+        let transform = self
+            .transform
+            .as_ref()
+            .ok_or_else(|| LoaderError::Checkpoint {
+                reason: "the serial transform was not constructed".to_owned(),
+            })?;
+        let sampler = self
+            .plan
+            .checkpoint_state(self.next_batch, self.next_logical_sample)
+            .map_err(LoaderError::Configuration)?;
+        Ok(LoaderState {
+            schema_version: LOADER_STATE_SCHEMA_VERSION,
+            dataset_identity: self.checkpoint.identity.clone(),
+            epoch: self.epoch,
+            iterator_generation: 0,
+            next_batch: self.next_batch,
+            next_logical_sample: self.next_logical_sample,
+            dataset: self.dataset.snapshot_dataset(),
+            sampler,
+            transform: transform.snapshot(),
+            collate: self.plan.save_coordinator(self.collator),
+            rng_derivation_version: TASK_RNG_DERIVATION_VERSION,
+            worker_seed_derivation_version: WORKER_SEED_DERIVATION_VERSION,
+            configuration: self.checkpoint.configuration.clone(),
+        })
+    }
+}
+
+impl<D, P, C, F, I, M, N, K> Iterator for LoaderIter<'_, D, P, C, F, I, M, N, K>
 where
     D: Dataset,
     F: TransformFactory<D::Sample>,
     P: LoaderPlan<<F::Transform as Transform<D::Sample>>::Output, C>,
     I: WorkerInit,
     N: MapPinPolicy<D, P, C, F>,
+    K: SerialBoundaryPolicy,
 {
     type Item = std::result::Result<
         P::Batch,
@@ -1296,6 +1982,7 @@ where
         if self.exhausted {
             return None;
         }
+        self.checkpoint.begin_next();
         if let Some(source) = self.transform_error.take() {
             self.exhausted = true;
             return Some(Err(LoaderError::Pipeline {
@@ -1381,6 +2068,7 @@ where
             self.exhausted = true;
         } else if let Some(next) = self.next_batch.checked_add(1) {
             self.next_batch = next;
+            self.checkpoint.commit_visible();
         } else {
             self.exhausted = true;
         }
@@ -1399,6 +2087,7 @@ pub struct WorkerLoaderIter<
     I = NoWorkerInit,
     M = MemoryDisabled,
     N = PinDisabled,
+    K = CheckpointDisabled,
 > where
     D: Dataset,
     F: TransformFactory<D::Sample>,
@@ -1433,6 +2122,7 @@ pub struct WorkerLoaderIter<
     submission_closed: bool,
     exhausted: bool,
     pin_memory_status: PinMemoryStatus,
+    _checkpoint: K,
     policies: PhantomData<(M, N)>,
 }
 
@@ -1493,7 +2183,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<D, P, C, F, I, M, N> OwnedDataLoader<D, P, C, F, I, WorkerExecution, M, N>
+impl<D, P, C, F, I, M, N> OwnedDataLoader<D, P, C, F, I, WorkerExecution, M, N, CheckpointDisabled>
 where
     D: Dataset + Send + Sync + 'static,
     D::Sample: Send + 'static,
@@ -1511,7 +2201,7 @@ where
 {
     /// Starts a fresh generation on a bounded worker pool, or the explicit
     /// zero-worker path.
-    pub fn iter(&mut self) -> WorkerLoaderIter<'_, D, P, C, F, I, M, N> {
+    pub fn iter(&mut self) -> WorkerLoaderIter<'_, D, P, C, F, I, M, N, CheckpointDisabled> {
         let (epoch, epoch_panicked) = if self.workers == 0 {
             (self.plan.epoch(), false)
         } else {
@@ -1552,6 +2242,7 @@ where
             submission_closed: false,
             exhausted: false,
             pin_memory_status: self.pin_memory_status,
+            _checkpoint: CheckpointDisabled,
             policies: PhantomData,
         };
 
@@ -1665,7 +2356,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<D, P, C, F, I, M, N> WorkerLoaderIter<'_, D, P, C, F, I, M, N>
+impl<D, P, C, F, I, M, N> WorkerLoaderIter<'_, D, P, C, F, I, M, N, CheckpointDisabled>
 where
     D: Dataset + Send + Sync + 'static,
     D::Sample: Send + 'static,
@@ -1998,7 +2689,7 @@ where
     }
 }
 
-impl<D, P, C, F, I, M, N> Iterator for WorkerLoaderIter<'_, D, P, C, F, I, M, N>
+impl<D, P, C, F, I, M, N> Iterator for WorkerLoaderIter<'_, D, P, C, F, I, M, N, CheckpointDisabled>
 where
     D: Dataset + Send + Sync + 'static,
     D::Sample: Send + 'static,
@@ -2138,7 +2829,7 @@ where
 }
 
 fn validate_configuration(
-    configuration: &LoaderConfiguration,
+    configuration: &BuilderConfiguration,
     explicit: ExplicitArguments,
 ) -> Result<()> {
     if configuration.batch_size == 0 {
@@ -2213,6 +2904,195 @@ fn validate_configuration(
     Ok(())
 }
 
+fn validate_exact_builder(
+    configuration: &BuilderConfiguration,
+    explicit: ExplicitArguments,
+    identity: &str,
+) -> Result<()> {
+    validate_configuration(configuration, explicit)?;
+    if identity.is_empty() {
+        return Err(invalid_configuration(
+            "dataset_identity",
+            "must not be empty",
+        ));
+    }
+    if configuration.workers != 0 {
+        return Err(invalid_configuration(
+            "workers",
+            "Task 11 exact checkpoints require serial execution",
+        ));
+    }
+    if !configuration.ordered {
+        return Err(invalid_configuration(
+            "in_order",
+            "exact checkpoints require ordered delivery",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_distributed_rank(identity: &PlanCheckpointIdentity, rank: usize) -> Result<()> {
+    if let Some(distributed) = identity.distributed
+        && distributed.rank != rank
+    {
+        return Err(invalid_configuration(
+            "rank",
+            "loader task rank must equal the distributed sampler rank",
+        ));
+    }
+    Ok(())
+}
+
+fn checkpoint_configuration(
+    identity: &PlanCheckpointIdentity,
+    builder: &BuilderConfiguration,
+    pin_status: PinMemoryStatus,
+) -> Result<crate::LoaderConfiguration> {
+    let (replicas, distributed_shuffle, distributed_seed, distributed_drop_last) =
+        match identity.distributed {
+            Some(distributed) => (
+                distributed.replicas,
+                Some(distributed.shuffle),
+                Some(distributed.seed),
+                Some(distributed.drop_last),
+            ),
+            None => (1, None, None, None),
+        };
+    let pin_request = match builder.pin_memory {
+        PinRequest::Disabled => CheckpointPinRequest::Disabled,
+        PinRequest::Auto => CheckpointPinRequest::Auto,
+        PinRequest::Explicit(Device::Cuda(index)) => CheckpointPinRequest::ExplicitCuda { index },
+        PinRequest::Explicit(device) => {
+            return Err(invalid_configuration(
+                "pin_memory",
+                format!("unsupported checkpoint pin device {device:?}"),
+            ));
+        }
+    };
+    let pin_status = match pin_status {
+        PinMemoryStatus::Disabled => CheckpointPinStatus::Disabled,
+        PinMemoryStatus::DisabledNoAccelerator => CheckpointPinStatus::DisabledNoAccelerator,
+        PinMemoryStatus::Enabled(Device::Cuda(index)) => CheckpointPinStatus::Cuda { index },
+        PinMemoryStatus::Enabled(device) => {
+            return Err(invalid_configuration(
+                "pin_memory",
+                format!("unsupported effective checkpoint pin device {device:?}"),
+            ));
+        }
+    };
+    Ok(crate::LoaderConfiguration {
+        batch_size: identity.batch_size,
+        drop_last: identity.drop_last,
+        workers: 0,
+        prefetch_factor: None,
+        in_order: true,
+        loader_seed: builder.loader_seed,
+        rank: builder.rank,
+        replicas,
+        distributed_shuffle,
+        distributed_seed,
+        distributed_drop_last,
+        sampler_kind: identity.sampler_kind.clone(),
+        pin_request,
+        pin_status,
+    })
+}
+
+fn validate_loader_state_envelope<D, S, T, C>(
+    state: &LoaderState<D, S, T, C>,
+    identity: &str,
+    expected: &crate::LoaderConfiguration,
+) -> Result<()> {
+    require_checkpoint_equal(
+        "schema_version",
+        state.schema_version,
+        LOADER_STATE_SCHEMA_VERSION,
+    )?;
+    require_checkpoint_equal(
+        "dataset_identity",
+        state.dataset_identity.as_str(),
+        identity,
+    )?;
+    require_checkpoint_equal("iterator_generation", state.iterator_generation, 0)?;
+    require_checkpoint_equal(
+        "rng_derivation_version",
+        state.rng_derivation_version,
+        TASK_RNG_DERIVATION_VERSION,
+    )?;
+    require_checkpoint_equal(
+        "worker_seed_derivation_version",
+        state.worker_seed_derivation_version,
+        WORKER_SEED_DERIVATION_VERSION,
+    )?;
+    require_checkpoint_equal(
+        "batch_size",
+        state.configuration.batch_size,
+        expected.batch_size,
+    )?;
+    require_checkpoint_equal(
+        "drop_last",
+        state.configuration.drop_last,
+        expected.drop_last,
+    )?;
+    require_checkpoint_equal("workers", state.configuration.workers, expected.workers)?;
+    require_checkpoint_equal(
+        "prefetch_factor",
+        state.configuration.prefetch_factor,
+        expected.prefetch_factor,
+    )?;
+    require_checkpoint_equal("in_order", state.configuration.in_order, expected.in_order)?;
+    require_checkpoint_equal(
+        "loader_seed",
+        state.configuration.loader_seed,
+        expected.loader_seed,
+    )?;
+    require_checkpoint_equal("rank", state.configuration.rank, expected.rank)?;
+    require_checkpoint_equal("replicas", state.configuration.replicas, expected.replicas)?;
+    require_checkpoint_equal(
+        "distributed_shuffle",
+        state.configuration.distributed_shuffle,
+        expected.distributed_shuffle,
+    )?;
+    require_checkpoint_equal(
+        "distributed_seed",
+        state.configuration.distributed_seed,
+        expected.distributed_seed,
+    )?;
+    require_checkpoint_equal(
+        "distributed_drop_last",
+        state.configuration.distributed_drop_last,
+        expected.distributed_drop_last,
+    )?;
+    require_checkpoint_equal(
+        "sampler_kind",
+        state.configuration.sampler_kind.as_str(),
+        expected.sampler_kind.as_str(),
+    )?;
+    require_checkpoint_equal(
+        "pin_request",
+        &state.configuration.pin_request,
+        &expected.pin_request,
+    )?;
+    require_checkpoint_equal(
+        "pin_status",
+        &state.configuration.pin_status,
+        &expected.pin_status,
+    )
+}
+
+fn require_checkpoint_equal<T>(field: &'static str, actual: T, expected: T) -> Result<()>
+where
+    T: PartialEq,
+{
+    if actual != expected {
+        return Err(invalid_configuration(
+            field,
+            "checkpoint value does not match the loader",
+        ));
+    }
+    Ok(())
+}
+
 fn resolve_pin_request(request: PinRequest) -> Result<PinMemoryStatus> {
     match request {
         PinRequest::Disabled => Ok(PinMemoryStatus::Disabled),
@@ -2243,6 +3123,59 @@ fn resolve_pin_request(request: PinRequest) -> Result<PinMemoryStatus> {
             format!("only an available CUDA device can back pinned host memory, got {device:?}"),
         )),
     }
+}
+
+fn validate_auto_batch_boundary(
+    exact_len: Option<usize>,
+    batch_size: NonZeroUsize,
+    drop_last: bool,
+    next_batch: u64,
+    next_logical_sample: u64,
+) -> Result<()> {
+    let batch_size = u64::try_from(batch_size.get()).map_err(|_| {
+        invalid_configuration(
+            "checkpoint",
+            "batch size does not fit the checkpoint schema",
+        )
+    })?;
+    let complete = next_logical_sample / batch_size;
+    let aligned = next_logical_sample.is_multiple_of(batch_size);
+    let final_short = match exact_len {
+        Some(length) => {
+            let length = u64::try_from(length).map_err(|_| {
+                invalid_configuration(
+                    "checkpoint",
+                    "sampler length does not fit the checkpoint schema",
+                )
+            })?;
+            !drop_last
+                && next_logical_sample == length
+                && !aligned
+                && next_batch == complete.saturating_add(1)
+        }
+        None => false,
+    };
+    if (!aligned || next_batch != complete) && !final_short {
+        return Err(invalid_configuration(
+            "checkpoint",
+            "batch and logical sample cursors are not on a visible batch boundary",
+        ));
+    }
+    if let Some(length) = exact_len {
+        let length = u64::try_from(length).map_err(|_| {
+            invalid_configuration(
+                "checkpoint",
+                "sampler length does not fit the checkpoint schema",
+            )
+        })?;
+        if next_logical_sample > length {
+            return Err(invalid_configuration(
+                "checkpoint",
+                "logical sample cursor exceeds the sampler length",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn batch_count(length: usize, batch_size: NonZeroUsize, drop_last: bool) -> usize {

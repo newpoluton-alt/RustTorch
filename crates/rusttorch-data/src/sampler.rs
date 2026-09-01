@@ -7,6 +7,156 @@ use rand::{
 };
 use rand_chacha::ChaCha12Rng;
 use rusttorch_core::{Result, RustTorchError};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+
+/// Serialized cursor for [`SequentialSampler`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SequentialSamplerState {
+    /// Configured index count.
+    pub length: u64,
+    /// Active epoch.
+    pub epoch: u64,
+    /// Next index position.
+    pub position: u64,
+}
+
+/// Replacement mode stored by [`RandomSamplerState`].
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum RandomReplacement {
+    /// Draw each generated index independently.
+    With,
+    /// Generate successive shuffled permutations.
+    Without,
+}
+
+/// Serialized configuration and cursor for [`RandomSampler`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RandomSamplerState {
+    /// Configured index range length.
+    pub length: u64,
+    /// Number of generated occurrences.
+    pub num_samples: u64,
+    /// Replacement policy.
+    pub replacement: RandomReplacement,
+    /// Base seed.
+    pub seed: u64,
+    /// Active epoch.
+    pub epoch: u64,
+    /// Next occurrence position.
+    pub position: u64,
+}
+
+/// Serialized configuration and cursor for [`SubsetRandomSampler`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SubsetRandomSamplerState {
+    /// Exact caller-supplied subset indices.
+    pub indices: Vec<u64>,
+    /// Base seed.
+    pub seed: u64,
+    /// Active epoch.
+    pub epoch: u64,
+    /// Next occurrence position.
+    pub position: u64,
+}
+
+/// Serialized configuration and cursor for [`WeightedRandomSampler`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WeightedRandomSamplerState {
+    /// Exact IEEE-754 bit patterns of the configured weights.
+    pub weight_bits: Vec<u64>,
+    /// Number of generated occurrences.
+    pub num_samples: u64,
+    /// Replacement policy.
+    pub replacement: bool,
+    /// Base seed.
+    pub seed: u64,
+    /// Active epoch.
+    pub epoch: u64,
+    /// Next occurrence position.
+    pub position: u64,
+}
+
+/// Serialized configuration and cursor for [`DistributedSampler`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DistributedSamplerState {
+    /// Global dataset length.
+    pub length: u64,
+    /// Replica count.
+    pub replicas: u64,
+    /// This sampler's rank.
+    pub rank: u64,
+    /// Whether the global indices are shuffled.
+    pub shuffle: bool,
+    /// Base seed.
+    pub seed: u64,
+    /// Whether the global tail is truncated.
+    pub drop_last: bool,
+    /// Active epoch.
+    pub epoch: u64,
+    /// Next rank-local occurrence position.
+    pub position: u64,
+}
+
+/// Serialized cursor for a compositional [`BatchSampler`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BatchSamplerState<S> {
+    /// Inner sampler configuration and cursor.
+    pub sampler: S,
+    /// Configured batch size.
+    pub batch_size: u64,
+    /// Whether an incomplete final batch is omitted.
+    pub drop_last: bool,
+    /// Next visible batch number.
+    pub next_batch: u64,
+    /// Next logical sample occurrence.
+    pub next_logical_sample: u64,
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DistributedConfiguration {
+    pub(crate) replicas: usize,
+    pub(crate) rank: usize,
+    pub(crate) shuffle: bool,
+    pub(crate) seed: u64,
+    pub(crate) drop_last: bool,
+}
+
+#[doc(hidden)]
+pub trait SamplerCheckpoint: Sampler {
+    type State: Clone + Serialize + DeserializeOwned;
+
+    fn kind(&self) -> &'static str;
+    fn checkpoint_state(&self, position: u64) -> Result<Self::State>;
+    fn validate_checkpoint_state(
+        &self,
+        state: &Self::State,
+        epoch: u64,
+        position: u64,
+    ) -> Result<()>;
+    fn restore_checkpoint_iter_validated(&mut self, state: &Self::State) -> Self::Iter;
+
+    fn distributed_configuration(&self) -> Option<DistributedConfiguration> {
+        None
+    }
+}
+
+#[doc(hidden)]
+pub trait BatchSourceCheckpoint: BatchSource {
+    type State: Clone + Serialize + DeserializeOwned;
+
+    fn kind(&self) -> String;
+    fn checkpoint_state(&self, next_batch: u64, next_logical_sample: u64) -> Result<Self::State>;
+    fn validate_checkpoint_state(
+        &self,
+        state: &Self::State,
+        epoch: u64,
+        next_batch: u64,
+        next_logical_sample: u64,
+    ) -> Result<()>;
+    fn restore_checkpoint_iter_validated(&mut self, state: &Self::State) -> Self::Iter;
+    fn distributed_configuration(&self) -> Option<DistributedConfiguration>;
+}
 
 /// A reusable, epoch-aware source of finite sample indices.
 ///
@@ -708,6 +858,440 @@ impl Iterator for DistributedSampler {
 }
 
 impl ExactSizeIterator for DistributedSampler {}
+
+impl SamplerCheckpoint for SequentialSampler {
+    type State = SequentialSamplerState;
+
+    fn kind(&self) -> &'static str {
+        "sequential"
+    }
+
+    fn checkpoint_state(&self, position: u64) -> Result<Self::State> {
+        let length = usize_to_u64(self.length, "sampler")?;
+        validate_position(position, length)?;
+        Ok(SequentialSamplerState {
+            length,
+            epoch: self.epoch,
+            position,
+        })
+    }
+
+    fn validate_checkpoint_state(
+        &self,
+        state: &Self::State,
+        epoch: u64,
+        position: u64,
+    ) -> Result<()> {
+        require_equal(
+            "sampler",
+            state.length,
+            usize_to_u64(self.length, "sampler")?,
+        )?;
+        validate_epoch_position(state.epoch, state.position, epoch, position)?;
+        validate_position(state.position, state.length)
+    }
+
+    fn restore_checkpoint_iter_validated(&mut self, state: &Self::State) -> Self::Iter {
+        self.set_epoch(state.epoch);
+        let position = usize::try_from(state.position)
+            .expect("validated sequential sampler position fits usize");
+        position..self.length
+    }
+}
+
+impl SamplerCheckpoint for RandomSampler {
+    type State = RandomSamplerState;
+
+    fn kind(&self) -> &'static str {
+        match self.replacement {
+            Replacement::With => "random_replacement",
+            Replacement::Without => "random",
+        }
+    }
+
+    fn checkpoint_state(&self, position: u64) -> Result<Self::State> {
+        let num_samples = usize_to_u64(self.num_samples, "sampler")?;
+        validate_position(position, num_samples)?;
+        Ok(RandomSamplerState {
+            length: usize_to_u64(self.length, "sampler")?,
+            num_samples,
+            replacement: match self.replacement {
+                Replacement::With => RandomReplacement::With,
+                Replacement::Without => RandomReplacement::Without,
+            },
+            seed: self.seed,
+            epoch: self.epoch,
+            position,
+        })
+    }
+
+    fn validate_checkpoint_state(
+        &self,
+        state: &Self::State,
+        epoch: u64,
+        position: u64,
+    ) -> Result<()> {
+        require_equal(
+            "sampler",
+            state.length,
+            usize_to_u64(self.length, "sampler")?,
+        )?;
+        require_equal(
+            "sampler",
+            state.num_samples,
+            usize_to_u64(self.num_samples, "sampler")?,
+        )?;
+        let replacement = match self.replacement {
+            Replacement::With => RandomReplacement::With,
+            Replacement::Without => RandomReplacement::Without,
+        };
+        require_equal("sampler", state.replacement, replacement)?;
+        require_equal("sampler", state.seed, self.seed)?;
+        validate_epoch_position(state.epoch, state.position, epoch, position)?;
+        validate_position(state.position, state.num_samples)
+    }
+
+    fn restore_checkpoint_iter_validated(&mut self, state: &Self::State) -> Self::Iter {
+        self.set_epoch(state.epoch);
+        let mut iterator = self.iter();
+        advance(&mut iterator, state.position)
+            .expect("validated random sampler cursor is regenerable");
+        iterator
+    }
+}
+
+impl SamplerCheckpoint for SubsetRandomSampler {
+    type State = SubsetRandomSamplerState;
+
+    fn kind(&self) -> &'static str {
+        "subset_random"
+    }
+
+    fn checkpoint_state(&self, position: u64) -> Result<Self::State> {
+        let length = usize_to_u64(self.source.len(), "sampler")?;
+        validate_position(position, length)?;
+        Ok(SubsetRandomSamplerState {
+            indices: self
+                .source
+                .iter()
+                .copied()
+                .map(|index| usize_to_u64(index, "sampler"))
+                .collect::<Result<Vec<_>>>()?,
+            seed: self.seed,
+            epoch: self.epoch,
+            position,
+        })
+    }
+
+    fn validate_checkpoint_state(
+        &self,
+        state: &Self::State,
+        epoch: u64,
+        position: u64,
+    ) -> Result<()> {
+        let expected = self
+            .source
+            .iter()
+            .copied()
+            .map(|index| usize_to_u64(index, "sampler"))
+            .collect::<Result<Vec<_>>>()?;
+        require_equal("sampler", &state.indices, &expected)?;
+        require_equal("sampler", state.seed, self.seed)?;
+        validate_epoch_position(state.epoch, state.position, epoch, position)?;
+        validate_position(
+            state.position,
+            usize_to_u64(state.indices.len(), "sampler")?,
+        )
+    }
+
+    fn restore_checkpoint_iter_validated(&mut self, state: &Self::State) -> Self::Iter {
+        self.set_epoch(state.epoch);
+        let mut iterator = self.iter();
+        advance(&mut iterator, state.position)
+            .expect("validated subset sampler cursor is regenerable");
+        iterator
+    }
+}
+
+impl SamplerCheckpoint for WeightedRandomSampler {
+    type State = WeightedRandomSamplerState;
+
+    fn kind(&self) -> &'static str {
+        if self.replacement {
+            "weighted_random_replacement"
+        } else {
+            "weighted_random"
+        }
+    }
+
+    fn checkpoint_state(&self, position: u64) -> Result<Self::State> {
+        let num_samples = usize_to_u64(self.num_samples, "sampler")?;
+        validate_position(position, num_samples)?;
+        Ok(WeightedRandomSamplerState {
+            weight_bits: self.weights.iter().map(|weight| weight.to_bits()).collect(),
+            num_samples,
+            replacement: self.replacement,
+            seed: self.seed,
+            epoch: self.epoch,
+            position,
+        })
+    }
+
+    fn validate_checkpoint_state(
+        &self,
+        state: &Self::State,
+        epoch: u64,
+        position: u64,
+    ) -> Result<()> {
+        let expected = self
+            .weights
+            .iter()
+            .map(|weight| weight.to_bits())
+            .collect::<Vec<_>>();
+        require_equal("sampler", &state.weight_bits, &expected)?;
+        require_equal(
+            "sampler",
+            state.num_samples,
+            usize_to_u64(self.num_samples, "sampler")?,
+        )?;
+        require_equal("sampler", state.replacement, self.replacement)?;
+        require_equal("sampler", state.seed, self.seed)?;
+        validate_epoch_position(state.epoch, state.position, epoch, position)?;
+        validate_position(state.position, state.num_samples)
+    }
+
+    fn restore_checkpoint_iter_validated(&mut self, state: &Self::State) -> Self::Iter {
+        self.set_epoch(state.epoch);
+        let mut iterator = self.iter();
+        advance(&mut iterator, state.position)
+            .expect("validated weighted sampler cursor is regenerable");
+        iterator
+    }
+}
+
+impl SamplerCheckpoint for DistributedSampler {
+    type State = DistributedSamplerState;
+
+    fn kind(&self) -> &'static str {
+        "distributed"
+    }
+
+    fn checkpoint_state(&self, position: u64) -> Result<Self::State> {
+        let num_samples = usize_to_u64(self.num_samples, "sampler")?;
+        validate_position(position, num_samples)?;
+        Ok(DistributedSamplerState {
+            length: usize_to_u64(self.length, "sampler")?,
+            replicas: usize_to_u64(self.replicas, "sampler")?,
+            rank: usize_to_u64(self.rank, "sampler")?,
+            shuffle: self.shuffle,
+            seed: self.seed,
+            drop_last: self.drop_last,
+            epoch: self.epoch,
+            position,
+        })
+    }
+
+    fn validate_checkpoint_state(
+        &self,
+        state: &Self::State,
+        epoch: u64,
+        position: u64,
+    ) -> Result<()> {
+        require_equal(
+            "sampler",
+            state.length,
+            usize_to_u64(self.length, "sampler")?,
+        )?;
+        require_equal(
+            "sampler",
+            state.replicas,
+            usize_to_u64(self.replicas, "sampler")?,
+        )?;
+        require_equal("sampler", state.rank, usize_to_u64(self.rank, "sampler")?)?;
+        require_equal("sampler", state.shuffle, self.shuffle)?;
+        require_equal("sampler", state.seed, self.seed)?;
+        require_equal("sampler", state.drop_last, self.drop_last)?;
+        validate_epoch_position(state.epoch, state.position, epoch, position)?;
+        validate_position(state.position, usize_to_u64(self.num_samples, "sampler")?)
+    }
+
+    fn restore_checkpoint_iter_validated(&mut self, state: &Self::State) -> Self::Iter {
+        self.set_epoch(state.epoch);
+        let mut iterator = self.iter();
+        advance(&mut iterator, state.position)
+            .expect("validated distributed sampler cursor is regenerable");
+        iterator
+    }
+
+    fn distributed_configuration(&self) -> Option<DistributedConfiguration> {
+        Some(DistributedConfiguration {
+            replicas: self.replicas,
+            rank: self.rank,
+            shuffle: self.shuffle,
+            seed: self.seed,
+            drop_last: self.drop_last,
+        })
+    }
+}
+
+impl<S> BatchSourceCheckpoint for BatchSampler<S>
+where
+    S: SamplerCheckpoint,
+{
+    type State = BatchSamplerState<S::State>;
+
+    fn kind(&self) -> String {
+        format!("batch_sampler/{}", self.sampler.kind())
+    }
+
+    fn checkpoint_state(&self, next_batch: u64, next_logical_sample: u64) -> Result<Self::State> {
+        validate_batch_boundary(
+            self.sampler.exact_len(),
+            self.batch_size,
+            self.drop_last,
+            next_batch,
+            next_logical_sample,
+        )?;
+        Ok(BatchSamplerState {
+            sampler: self.sampler.checkpoint_state(next_logical_sample)?,
+            batch_size: usize_to_u64(self.batch_size, "batch_sampler")?,
+            drop_last: self.drop_last,
+            next_batch,
+            next_logical_sample,
+        })
+    }
+
+    fn validate_checkpoint_state(
+        &self,
+        state: &Self::State,
+        epoch: u64,
+        next_batch: u64,
+        next_logical_sample: u64,
+    ) -> Result<()> {
+        require_equal(
+            "batch_sampler",
+            state.batch_size,
+            usize_to_u64(self.batch_size, "batch_sampler")?,
+        )?;
+        require_equal("batch_sampler", state.drop_last, self.drop_last)?;
+        require_equal("checkpoint", state.next_batch, next_batch)?;
+        require_equal("checkpoint", state.next_logical_sample, next_logical_sample)?;
+        validate_batch_boundary(
+            self.sampler.exact_len(),
+            self.batch_size,
+            self.drop_last,
+            state.next_batch,
+            state.next_logical_sample,
+        )?;
+        self.sampler
+            .validate_checkpoint_state(&state.sampler, epoch, state.next_logical_sample)
+    }
+
+    fn restore_checkpoint_iter_validated(&mut self, state: &Self::State) -> Self::Iter {
+        let iterator = self
+            .sampler
+            .restore_checkpoint_iter_validated(&state.sampler);
+        BatchSampler::from_validated(
+            iterator,
+            NonZeroUsize::new(self.batch_size)
+                .expect("batch sampler construction validated a nonzero size"),
+            self.drop_last,
+        )
+    }
+
+    fn distributed_configuration(&self) -> Option<DistributedConfiguration> {
+        self.sampler.distributed_configuration()
+    }
+}
+
+fn validate_epoch_position(
+    state_epoch: u64,
+    state_position: u64,
+    epoch: u64,
+    position: u64,
+) -> Result<()> {
+    require_equal("checkpoint", state_epoch, epoch)?;
+    require_equal("checkpoint", state_position, position)
+}
+
+fn validate_position(position: u64, length: u64) -> Result<()> {
+    if position > length {
+        return Err(invalid_configuration(
+            "checkpoint",
+            format!("sampler position {position} exceeds length {length}"),
+        ));
+    }
+    let _ = u64_to_usize(position, "checkpoint")?;
+    Ok(())
+}
+
+fn validate_batch_boundary(
+    exact_len: Option<usize>,
+    batch_size: usize,
+    drop_last: bool,
+    next_batch: u64,
+    next_logical_sample: u64,
+) -> Result<()> {
+    let batch_size = usize_to_u64(batch_size, "batch_sampler")?;
+    let complete_boundary = next_logical_sample
+        .checked_div(batch_size)
+        .ok_or_else(|| invalid_configuration("batch_sampler", "batch size is zero"))?;
+    let is_aligned = next_logical_sample.is_multiple_of(batch_size);
+    let final_short = exact_len
+        .map(|length| usize_to_u64(length, "batch_sampler"))
+        .transpose()?
+        .is_some_and(|length| {
+            !drop_last
+                && next_logical_sample == length
+                && next_batch == complete_boundary + u64::from(!is_aligned)
+        });
+    if (!is_aligned || next_batch != complete_boundary) && !final_short {
+        return Err(invalid_configuration(
+            "checkpoint",
+            "batch and logical sample cursors are not on a visible batch boundary",
+        ));
+    }
+    Ok(())
+}
+
+fn advance<I>(iterator: &mut I, position: u64) -> Result<()>
+where
+    I: Iterator,
+{
+    let position = u64_to_usize(position, "checkpoint")?;
+    for _ in 0..position {
+        if iterator.next().is_none() {
+            return Err(invalid_configuration(
+                "checkpoint",
+                "sampler cursor exceeds the regenerated sequence",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn usize_to_u64(value: usize, field: &'static str) -> Result<u64> {
+    u64::try_from(value)
+        .map_err(|_| invalid_configuration(field, "value does not fit the checkpoint schema"))
+}
+
+fn u64_to_usize(value: u64, field: &'static str) -> Result<usize> {
+    usize::try_from(value)
+        .map_err(|_| invalid_configuration(field, "checkpoint value does not fit this platform"))
+}
+
+fn require_equal<T>(field: &'static str, actual: T, expected: T) -> Result<()>
+where
+    T: PartialEq,
+{
+    if actual != expected {
+        return Err(invalid_configuration(
+            field,
+            "checkpoint configuration does not match the loader",
+        ));
+    }
+    Ok(())
+}
 
 fn validate_positive(value: usize, field: &'static str) -> Result<()> {
     if value == 0 {

@@ -82,6 +82,66 @@ fn facade_exposes_the_owned_loader_builder() {
     assert_eq!(batches, [vec![2, 3], vec![5]]);
 }
 
+#[derive(Clone)]
+struct FacadeReplayRows(Vec<i64>);
+
+impl Dataset for FacadeReplayRows {
+    type Sample = i64;
+    type Error = Infallible;
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn get(&self, index: usize) -> Result<Self::Sample, Self::Error> {
+        Ok(self.0[index])
+    }
+}
+
+impl rusttorch::data::ReplaySafeDataset for FacadeReplayRows {}
+
+#[test]
+fn facade_reexports_exact_serial_checkpoint_contracts() {
+    use rusttorch::data::{CheckpointBuildError, LoaderState, ReplaySafeMap, VecCollate};
+
+    let rows = || ReplaySafeMap::new(FacadeReplayRows(vec![2, 3, 5]));
+    let mut loader = DataLoader::builder(rows())
+        .batch_size(2)
+        .collate(VecCollate)
+        .dataset_identity("facade-rows-v1".to_owned())
+        .build()
+        .expect("fresh exact loader configuration is valid");
+    let mut iteration = loader.iter();
+    assert_eq!(iteration.next().unwrap().unwrap(), [2, 3]);
+    let state = iteration
+        .checkpoint()
+        .expect("visible boundary checkpoints");
+    let json = serde_json::to_string(&state).expect("facade state serializes");
+    let decoded: LoaderState<_, _, _, _> =
+        serde_json::from_str(&json).expect("facade state deserializes");
+
+    let mut resumed = match DataLoader::builder(rows())
+        .batch_size(2)
+        .collate(VecCollate)
+        .dataset_identity("facade-rows-v1".to_owned())
+        .resume_from(decoded)
+        .build()
+    {
+        Ok(loader) => loader,
+        Err(CheckpointBuildError::Configuration(error)) => {
+            panic!("valid facade checkpoint rejected: {error}")
+        }
+        Err(CheckpointBuildError::TransformFactory(error)) => match error {},
+    };
+    assert_eq!(
+        resumed
+            .iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("resumed facade loader is infallible"),
+        [vec![5]]
+    );
+}
+
 #[test]
 fn facade_exposes_explicit_stream_worker_contracts() {
     use rusttorch::data::{

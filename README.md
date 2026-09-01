@@ -104,6 +104,18 @@ fn main() {
 Use the separate `rusttorch-data` package when an application wants the data
 layer without the facade; it provides the same loader surface directly.
 
+Owned, ordered, zero-worker map loaders also support versioned exact resume at
+consumer-visible batch boundaries. Opt in with an explicit replay-safe or
+transactional dataset wrapper and `.dataset_identity(...)`, persist the typed
+serde `LoaderState` in the format your application chooses, then pass it to
+`.resume_from(...)`. Built-in samplers (including distributed and weighted
+sampling), automatic or explicit batching, no-batch conversion, component
+state, deterministic seed metadata, and effective pinning status are validated
+before any restored state is applied. Positive-worker, prefetched, and stream
+resume are not yet supported; see the
+[`rusttorch-data` guide](crates/rusttorch-data/README.md#exact-serial-checkpoint-and-resume)
+for the complete contract and example.
+
 Owned map and explicitly sharded stream loaders support strict
 post-transform queue budgets through `.prefetch_bytes(...)` and recursive
 post-collation batch pinning through `.pin_memory()` or
@@ -215,9 +227,10 @@ worker threads, cooperative per-batch timeouts and cancellation, loader-owned
 persistent worker pools, and ordered or completion-order delivery. Stream
 records merge globally before batching, so `drop_last` removes at most one
 global tail. Rust cannot force-cancel a blocking foreign or native call, so
-drop waits for non-cooperative work to return. Loader checkpoint/resume remains
-planned; distributed sampling is available without
-distributed training orchestration.
+drop waits for non-cooperative work to return. Exact loader checkpoint/resume
+is limited to owned, ordered, zero-worker map loaders without prefetch;
+positive-worker barriers and stream resume remain planned. Distributed
+sampling is available without distributed training orchestration.
 
 ## Contributing
 
