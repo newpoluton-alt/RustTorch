@@ -491,6 +491,22 @@ class CompatibilityScriptTests(unittest.TestCase):
         }
         self.assertEqual(expected - symbols, set())
 
+    def test_pinned_data_helper_sources_are_attributed_to_defining_modules(self) -> None:
+        ledger = CHECKER.load_ledger(ROOT / "compat" / "pytorch_api.toml")
+        sources = {
+            symbol: row["source"]
+            for row in ledger["api"]
+            for symbol in row["python_symbols"]
+        }
+        self.assertEqual(
+            sources["torch.utils.data.argument_validation"],
+            "torch/utils/data/datapipes/_decorator.py",
+        )
+        self.assertEqual(
+            sources["torch.utils.data._DatasetKind"],
+            "torch/utils/data/dataloader.py",
+        )
+
     def cli_root(self) -> Path:
         (self.root / "scripts").mkdir()
         (self.root / "compat").mkdir()

@@ -804,7 +804,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `data.dataset.datapipes.decorators`
 
-- **PyTorch:** `torch.utils.data.functional_datapipe`, `torch.utils.data.guaranteed_datapipes_determinism`, `torch.utils.data.non_deterministic`, `torch.utils.data.runtime_validation`, `torch.utils.data.runtime_validation_disabled`
+- **PyTorch:** `torch.utils.data.argument_validation`, `torch.utils.data.functional_datapipe`, `torch.utils.data.guaranteed_datapipes_determinism`, `torch.utils.data.non_deterministic`, `torch.utils.data.runtime_validation`, `torch.utils.data.runtime_validation_disabled`
 - **RustTorch:** —
 - **Implementation:** Not implemented
 - **Scope:** Python decorators dynamically register DataPipe functions, label determinism, and toggle runtime validation or construction-time determinism contexts.
@@ -814,13 +814,13 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `data.internal.exports`
 
-- **PyTorch:** `torch.utils.data._DatasetKind`, `torch.utils.data.argument_validation`
+- **PyTorch:** `torch.utils.data._DatasetKind`
 - **RustTorch:** —
 - **Implementation:** Not implemented
-- **Scope:** Private loader-kind dispatch and Python argument-validation helpers exported by the pinned module remain Python implementation details.
+- **Scope:** The private loader-kind dispatch enum exported by the pinned module remains a Python implementation detail.
 - **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
 - **Evidence:** —
-- **Notes:** RustTorch uses type-state builders and typed configuration errors instead of exposing Python's internal enum or decorator helper.
+- **Notes:** RustTorch uses type-state builders instead of exposing Python's internal enum. argument\_validation is separately attributed to the pinned DataPipe decorator module.
 
 ## Not supported
 

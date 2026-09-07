@@ -216,7 +216,7 @@ notes = "RustTorch does not reproduce functional-name registration, reset/single
 
 [[api]]
 id = "data.dataset.datapipes.decorators"
-python_symbols = ["torch.utils.data.functional_datapipe", "torch.utils.data.guaranteed_datapipes_determinism", "torch.utils.data.non_deterministic", "torch.utils.data.runtime_validation", "torch.utils.data.runtime_validation_disabled"]
+python_symbols = ["torch.utils.data.argument_validation", "torch.utils.data.functional_datapipe", "torch.utils.data.guaranteed_datapipes_determinism", "torch.utils.data.non_deterministic", "torch.utils.data.runtime_validation", "torch.utils.data.runtime_validation_disabled"]
 rust_symbols = []
 status = "python_only"
 implementation = "none"
@@ -227,14 +227,14 @@ notes = "Rust traits and the type system provide compile-time composition and va
 
 [[api]]
 id = "data.internal.exports"
-python_symbols = ["torch.utils.data._DatasetKind", "torch.utils.data.argument_validation"]
+python_symbols = ["torch.utils.data._DatasetKind"]
 rust_symbols = []
 status = "python_only"
 implementation = "none"
-scope = "Private loader-kind dispatch and Python argument-validation helpers exported by the pinned module remain Python implementation details."
+scope = "The private loader-kind dispatch enum exported by the pinned module remains a Python implementation detail."
 source = "torch/utils/data/dataloader.py"
 evidence = []
-notes = "RustTorch uses type-state builders and typed configuration errors instead of exposing Python's internal enum or decorator helper."
+notes = "RustTorch uses type-state builders instead of exposing Python's internal enum. argument_validation is separately attributed to the pinned DataPipe decorator module."
 
 [[api]]
 id = "data.loader"
