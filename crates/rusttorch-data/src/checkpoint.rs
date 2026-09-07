@@ -5,6 +5,194 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{TaskContext, Transform, TransformFactory, WorkerContext};
 
+/// Replay-safe source with self-contained state captured before each read.
+///
+/// Validation is read-only; applying accepted state must not fail or panic.
+/// Records must have strictly increasing per-shard global sequence IDs.
+pub trait CheckpointableSource:
+    Iterator<Item = std::result::Result<crate::WorkerRecord<Self::Sample>, Self::Error>>
+{
+    /// Owned decoded sample.
+    type Sample;
+    /// Owned state, independent of future decoder progress.
+    type State: Clone + Serialize + DeserializeOwned;
+    /// Preserved source error.
+    type Error;
+    /// Captures the boundary before the next read attempt.
+    fn snapshot(&self) -> Self::State;
+    /// Validates without changing the source.
+    fn validate_snapshot(&self, state: &Self::State) -> std::result::Result<(), Self::Error>;
+    /// Applies state previously accepted by validation.
+    fn restore_validated(&mut self, state: &Self::State);
+    /// Replaces the run cancellation/deadline context before resumed reads.
+    ///
+    /// Sources retaining a context must override this method and replace it.
+    /// Logical worker generation and seed remain unchanged. This must not fail.
+    fn set_run_context(&mut self, _context: WorkerContext) {}
+}
+
+/// Stable factory identity for explicitly checkpointable stream sources.
+///
+/// An ordinary factory cannot acquire exact replay just by setting an identity:
+///
+/// ```compile_fail
+/// use rusttorch_data::*;
+/// use std::convert::Infallible;
+/// struct Factory;
+/// impl WorkerSourceFactory for Factory {
+///     type Sample = usize;
+///     type Error = Infallible;
+///     type Source = std::iter::Empty<Result<WorkerRecord<usize>, Infallible>>;
+///     fn create(&self, _: WorkerContext) -> Result<Self::Source, Infallible> { Ok(std::iter::empty()) }
+/// }
+/// StreamDataLoaderBuilder::new(Factory).collate(VecCollate)
+///     .checkpointable("ordinary").build().unwrap();
+/// ```
+///
+/// Opaque transforms also need an explicit `WorkerCheckpoint` implementation or
+/// an explicit `StatelessWorker`/`TransactionalWorker` adapter:
+///
+/// ```compile_fail
+/// use rusttorch_data::*;
+/// use std::convert::Infallible;
+/// struct Source;
+/// impl Iterator for Source {
+///     type Item = Result<WorkerRecord<usize>, Infallible>;
+///     fn next(&mut self) -> Option<Self::Item> { None }
+/// }
+/// impl CheckpointableSource for Source {
+///     type Sample = usize;
+///     type Error = Infallible;
+///     type State = ();
+///     fn snapshot(&self) {}
+///     fn validate_snapshot(&self, _: &()) -> Result<(), Infallible> { Ok(()) }
+///     fn restore_validated(&mut self, _: &()) {}
+/// }
+/// struct Factory;
+/// impl WorkerSourceFactory for Factory {
+///     type Sample = usize;
+///     type Error = Infallible;
+///     type Source = Source;
+///     fn create(&self, _: WorkerContext) -> Result<Source, Infallible> { Ok(Source) }
+/// }
+/// impl CheckpointSourceFactory for Factory { const CHECKPOINT_KIND: &'static str = "empty.v1"; }
+/// let transform = FnTransform::new(|sample: usize, _: &TaskContext| Ok::<_, Infallible>(sample));
+/// StreamDataLoaderBuilder::new(Factory).transform(transform).collate(VecCollate)
+///     .checkpointable("opaque").build().unwrap();
+/// ```
+pub trait CheckpointSourceFactory: crate::WorkerSourceFactory {
+    /// Stable source kind and state-format version, for example `records.v1`.
+    const CHECKPOINT_KIND: &'static str;
+}
+
+/// Exact streaming configuration, with no sampler state.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StreamCheckpointConfiguration {
+    /// Positive shard count.
+    pub workers: usize,
+    /// Maximum unpublished records per shard.
+    pub prefetch_factor: usize,
+    /// Coordinator batch size.
+    pub batch_size: usize,
+    /// Global short-tail policy.
+    pub drop_last: bool,
+    /// Task randomness seed.
+    pub loader_seed: u64,
+    /// Distributed task rank.
+    pub rank: usize,
+    /// Requested pinning behavior.
+    pub pin_request: CheckpointPinRequest,
+    /// Effective pinning behavior.
+    pub pin_status: CheckpointPinStatus,
+}
+
+/// Paired source and transform boundary for one worker shard.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StreamLaneState<S, T> {
+    /// Unique worker index in canonical order.
+    pub id: usize,
+    /// Source state preceding its first unconsumed attempt.
+    pub source: S,
+    /// Transform state preceding the same attempt.
+    pub transform: T,
+}
+
+/// Versioned exact stream state at the next consumer-visible batch.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StreamLoaderState<S, T = (), C = ()> {
+    /// Stream schema version; currently one.
+    pub schema_version: u32,
+    /// Caller identity for exact source contents.
+    pub source_identity: String,
+    /// Stable factory kind/version.
+    pub factory_kind: String,
+    /// Task epoch.
+    pub epoch: u64,
+    /// Logical source and transform initialization generation.
+    pub source_generation: u64,
+    /// Transport generation, advanced by each checkpoint barrier.
+    pub transport_generation: u64,
+    /// Next visible batch index.
+    pub next_batch: u64,
+    /// Next expected global sequence ID.
+    pub next_sequence: u64,
+    /// Whether the last visible batch was the final incomplete global tail.
+    pub short_tail: bool,
+    /// Exact global source length when supplied by the factory.
+    pub source_length: Option<usize>,
+    /// Task RNG derivation version.
+    pub rng_derivation_version: u32,
+    /// Worker seed derivation version.
+    pub worker_seed_derivation_version: u32,
+    /// Exact runtime settings.
+    pub configuration: StreamCheckpointConfiguration,
+    /// Canonically ordered worker states; never contains decoded samples.
+    pub lanes: Vec<StreamLaneState<S, T>>,
+    /// Coordinator collation state.
+    pub coordinator: C,
+}
+
+/// Typed stream construction or transactional resume failure.
+#[derive(Debug, thiserror::Error)]
+pub enum StreamCheckpointBuildError<S, F> {
+    /// Static configuration rejection.
+    #[error(transparent)]
+    Configuration(#[from] RustTorchError),
+    /// Source creation or read-only state validation failed.
+    #[error("stream source on worker {worker} failed: {source}")]
+    Source {
+        /// Worker lane.
+        worker: usize,
+        /// Original source error.
+        #[source]
+        source: S,
+    },
+    /// Transform creation failed.
+    #[error("stream transform initialization on worker {worker} failed: {source}")]
+    TransformFactory {
+        /// Worker lane.
+        worker: usize,
+        /// Original factory error.
+        #[source]
+        source: F,
+    },
+    /// Transform state validation failed.
+    #[error("stream transform validation on worker {worker} failed: {source}")]
+    TransformState {
+        /// Worker lane.
+        worker: usize,
+        /// Original validation error.
+        #[source]
+        source: RustTorchError,
+    },
+    /// Initialization or checkpoint callback panicked.
+    #[error("stream checkpoint worker {worker} panicked")]
+    WorkerPanic {
+        /// Worker lane.
+        worker: usize,
+    },
+}
+
 /// Schema version emitted by serial map-loader checkpoints.
 pub const LOADER_STATE_SCHEMA_VERSION: u32 = 1;
 

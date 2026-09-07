@@ -89,12 +89,15 @@ use rusttorch_core::{Device, Result, RustTorchError, available_devices};
 
 use crate::memory::{BudgetError, ByteBudget, MemoryDisabled, MemoryEnabled, MemoryPolicy};
 use crate::worker::WorkerRunContext;
+#[path = "stream_checkpoint.rs"]
+mod exact;
 use crate::{
     Auto, CancellationToken, CloneTransformFactory, Collate, Deadline, DefaultCollator, Explicit,
     IdentityTransformFactory, LoaderError, MemoryFootprint, NoWorkerInit, PinDisabled, PinEnabled,
     PinMemory, PinMemoryStatus, PipelineError, TaskContext, Transform, TransformFactory,
     WorkerContext, WorkerInfo, WorkerInit, with_worker_info,
 };
+pub use exact::{ExactStreamDataLoader, ExactStreamLoaderIter};
 
 /// A record's position in one ordered global stream generation.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -473,6 +476,30 @@ where
     I: WorkerInit,
     M: StreamMemoryPolicy,
 {
+    validate_stream_capacity_extra::<S, F, I, M>(
+        workers,
+        prefetch_factor,
+        outstanding,
+        batch_size,
+        reassembly_slots,
+        0,
+    )
+}
+
+fn validate_stream_capacity_extra<S, F, I, M>(
+    workers: usize,
+    prefetch_factor: usize,
+    outstanding: usize,
+    batch_size: usize,
+    reassembly_slots: usize,
+    extra: usize,
+) -> Result<()>
+where
+    S: WorkerSourceFactory,
+    F: TransformFactory<S::Sample>,
+    I: WorkerInit,
+    M: StreamMemoryPolicy,
+{
     let expected = workers
         .checked_mul(prefetch_factor)
         .ok_or_else(|| capacity_error("workers multiplied by prefetch_factor exceeds usize"))?;
@@ -536,6 +563,7 @@ where
         .and_then(|bytes| bytes.checked_add(reassembly_bytes))
         .and_then(|bytes| bytes.checked_add(bookkeeping))
         .and_then(|bytes| bytes.checked_add(channel_bytes))
+        .and_then(|bytes| bytes.checked_add(extra))
         .ok_or_else(|| capacity_error("aggregate stream queue storage exceeds usize"))?;
     if aggregate > MAX_STREAM_QUEUE_ALLOCATION_BYTES {
         return Err(capacity_error(format!(
@@ -1511,12 +1539,14 @@ pub struct StreamDataLoaderBuilder<
     I = NoWorkerInit,
     M = MemoryDisabled,
     N = PinDisabled,
+    K = crate::CheckpointDisabled,
 > {
     factory: S,
     collator: C,
     transform_factory: F,
     worker_init: I,
     configuration: StreamConfiguration,
+    checkpoint: K,
     states: PhantomData<(M, N)>,
 }
 
@@ -1533,12 +1563,13 @@ where
             transform_factory: IdentityTransformFactory,
             worker_init: NoWorkerInit,
             configuration: StreamConfiguration::default(),
+            checkpoint: crate::CheckpointDisabled,
             states: PhantomData,
         }
     }
 }
 
-impl<S, C, F, I, M, N> StreamDataLoaderBuilder<S, C, F, I, M, N> {
+impl<S, C, F, I, M, N, K> StreamDataLoaderBuilder<S, C, F, I, M, N, K> {
     /// Sets the positive stream worker count.
     pub fn workers(mut self, workers: usize) -> Self {
         self.configuration.workers = workers;
@@ -1574,7 +1605,7 @@ impl<S, C, F, I, M, N> StreamDataLoaderBuilder<S, C, F, I, M, N> {
     pub fn prefetch_bytes(
         mut self,
         limit: NonZeroUsize,
-    ) -> StreamDataLoaderBuilder<S, C, F, I, MemoryEnabled, N> {
+    ) -> StreamDataLoaderBuilder<S, C, F, I, MemoryEnabled, N, K> {
         self.configuration.prefetch_bytes = Some(limit);
         StreamDataLoaderBuilder {
             factory: self.factory,
@@ -1582,12 +1613,13 @@ impl<S, C, F, I, M, N> StreamDataLoaderBuilder<S, C, F, I, M, N> {
             transform_factory: self.transform_factory,
             worker_init: self.worker_init,
             configuration: self.configuration,
+            checkpoint: self.checkpoint,
             states: PhantomData,
         }
     }
 
     /// Enables automatic recursive pinning for CUDA device zero when available.
-    pub fn pin_memory(mut self) -> StreamDataLoaderBuilder<S, C, F, I, M, PinEnabled<Auto>> {
+    pub fn pin_memory(mut self) -> StreamDataLoaderBuilder<S, C, F, I, M, PinEnabled<Auto>, K> {
         self.configuration.pin_memory = StreamPinRequest::Auto;
         StreamDataLoaderBuilder {
             factory: self.factory,
@@ -1595,6 +1627,7 @@ impl<S, C, F, I, M, N> StreamDataLoaderBuilder<S, C, F, I, M, N> {
             transform_factory: self.transform_factory,
             worker_init: self.worker_init,
             configuration: self.configuration,
+            checkpoint: self.checkpoint,
             states: PhantomData,
         }
     }
@@ -1603,7 +1636,7 @@ impl<S, C, F, I, M, N> StreamDataLoaderBuilder<S, C, F, I, M, N> {
     pub fn pin_memory_for(
         mut self,
         device: Device,
-    ) -> StreamDataLoaderBuilder<S, C, F, I, M, PinEnabled<Explicit>> {
+    ) -> StreamDataLoaderBuilder<S, C, F, I, M, PinEnabled<Explicit>, K> {
         self.configuration.pin_memory = StreamPinRequest::Explicit(device);
         StreamDataLoaderBuilder {
             factory: self.factory,
@@ -1611,6 +1644,7 @@ impl<S, C, F, I, M, N> StreamDataLoaderBuilder<S, C, F, I, M, N> {
             transform_factory: self.transform_factory,
             worker_init: self.worker_init,
             configuration: self.configuration,
+            checkpoint: self.checkpoint,
             states: PhantomData,
         }
     }
@@ -1657,13 +1691,14 @@ impl<S, C, F, I, M, N> StreamDataLoaderBuilder<S, C, F, I, M, N> {
     }
 
     /// Replaces coordinator collation.
-    pub fn collate<C2>(self, collator: C2) -> StreamDataLoaderBuilder<S, C2, F, I, M, N> {
+    pub fn collate<C2>(self, collator: C2) -> StreamDataLoaderBuilder<S, C2, F, I, M, N, K> {
         StreamDataLoaderBuilder {
             factory: self.factory,
             collator,
             transform_factory: self.transform_factory,
             worker_init: self.worker_init,
             configuration: self.configuration,
+            checkpoint: self.checkpoint,
             states: PhantomData,
         }
     }
@@ -1672,37 +1707,43 @@ impl<S, C, F, I, M, N> StreamDataLoaderBuilder<S, C, F, I, M, N> {
     pub fn transform<T>(
         self,
         transform: T,
-    ) -> StreamDataLoaderBuilder<S, C, CloneTransformFactory<T>, I, M, N> {
+    ) -> StreamDataLoaderBuilder<S, C, CloneTransformFactory<T>, I, M, N, K> {
         StreamDataLoaderBuilder {
             factory: self.factory,
             collator: self.collator,
             transform_factory: CloneTransformFactory::new(transform),
             worker_init: self.worker_init,
             configuration: self.configuration,
+            checkpoint: self.checkpoint,
             states: PhantomData,
         }
     }
 
     /// Replaces worker transform construction.
-    pub fn transform_factory<F2>(self, factory: F2) -> StreamDataLoaderBuilder<S, C, F2, I, M, N> {
+    pub fn transform_factory<F2>(
+        self,
+        factory: F2,
+    ) -> StreamDataLoaderBuilder<S, C, F2, I, M, N, K> {
         StreamDataLoaderBuilder {
             factory: self.factory,
             collator: self.collator,
             transform_factory: factory,
             worker_init: self.worker_init,
             configuration: self.configuration,
+            checkpoint: self.checkpoint,
             states: PhantomData,
         }
     }
 
     /// Replaces worker initialization.
-    pub fn worker_init<I2>(self, worker_init: I2) -> StreamDataLoaderBuilder<S, C, F, I2, M, N> {
+    pub fn worker_init<I2>(self, worker_init: I2) -> StreamDataLoaderBuilder<S, C, F, I2, M, N, K> {
         StreamDataLoaderBuilder {
             factory: self.factory,
             collator: self.collator,
             transform_factory: self.transform_factory,
             worker_init,
             configuration: self.configuration,
+            checkpoint: self.checkpoint,
             states: PhantomData,
         }
     }

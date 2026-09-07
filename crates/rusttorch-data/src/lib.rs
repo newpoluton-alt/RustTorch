@@ -24,11 +24,12 @@ mod worker_context;
 pub use checkpoint::{
     CheckpointActive, CheckpointBuildError, CheckpointDisabled, CheckpointFresh,
     CheckpointIteration, CheckpointPinRequest, CheckpointPinStatus, CheckpointResume,
-    Checkpointable, DatasetCheckpoint, LOADER_STATE_SCHEMA_VERSION, LoaderConfiguration,
-    LoaderState, ReplaySafeDataset, Stateless, StatelessTransformFactory, StatelessWorker,
-    TransactionalCheckpoint, TransactionalTransformFactory, TransactionalWorker, WorkerCheckpoint,
-    WorkerCheckpointActive, WorkerCheckpointIteration, WorkerLaneState, WorkerTransformLanes,
-    WorkerTransformState,
+    CheckpointSourceFactory, Checkpointable, CheckpointableSource, DatasetCheckpoint,
+    LOADER_STATE_SCHEMA_VERSION, LoaderConfiguration, LoaderState, ReplaySafeDataset, Stateless,
+    StatelessTransformFactory, StatelessWorker, StreamCheckpointBuildError,
+    StreamCheckpointConfiguration, StreamLaneState, StreamLoaderState, TransactionalCheckpoint,
+    TransactionalTransformFactory, TransactionalWorker, WorkerCheckpoint, WorkerCheckpointActive,
+    WorkerCheckpointIteration, WorkerLaneState, WorkerTransformLanes, WorkerTransformState,
 };
 pub use collate::{
     Bytes, Collate, CollateError, DefaultCollate, DefaultCollator, DefaultConvert,
@@ -54,8 +55,8 @@ pub use sampler::{
     WeightedRandomSamplerState,
 };
 pub use stream::{
-    LogicalSampleId, SequenceId, StreamDataLoader, StreamDataLoaderBuilder, StreamLoaderIter,
-    WorkerRecord, WorkerSourceFactory,
+    ExactStreamDataLoader, ExactStreamLoaderIter, LogicalSampleId, SequenceId, StreamDataLoader,
+    StreamDataLoaderBuilder, StreamLoaderIter, WorkerRecord, WorkerSourceFactory,
 };
 pub use transform::{
     CloneTransformFactory, FnTransform, FnTransformFactory, IdentityTransform,

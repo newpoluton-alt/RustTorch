@@ -190,11 +190,49 @@ opt in with `.checkpoint_transactional()`; explicitly stateless transforms use
 `.checkpoint_stateless()`. Stateful collators/converters implement
 `Checkpointable`.
 
-This exact contract currently applies only to the serial type state with zero
-workers, no prefetch, ordered output, and no byte-budget type state. Do not call
-`.workers(0)`: selecting that setter intentionally chooses the worker execution
-type whose checkpoint barrier is not implemented yet. Positive-worker,
-prefetched, and stream checkpoint/resume remain unsupported. The checkpoint
-storage format, atomic file replacement, retention, and encryption policy are
+Ordered prefetched map workers also support exact replay for `ReplaySafeMap`
+datasets and explicit checkpointable worker transforms. Exact workers require
+`MemoryDisabled`, `NoWorkerInit`, nonpersistent execution, and no timeout.
+The checkpoint storage format, atomic file replacement, retention, and encryption policy are
 owned by the application; malformed storage errors are never treated as a
 request to start fresh.
+
+## Exact sharded stream checkpoint and resume
+
+`StreamDataLoaderBuilder::checkpointable("source-contents-v1")` enables exact
+stream replay. The factory implements `CheckpointSourceFactory` with a stable
+`CHECKPOINT_KIND` including its format version. Each source implements
+`CheckpointableSource`: owned serde state, `snapshot`, read-only
+`validate_snapshot`, and infallible `restore_validated`. Transforms implement
+`WorkerCheckpoint` (or use the explicit `StatelessWorker` or
+`TransactionalWorker` adapters), and the coordinator implements `Checkpointable`.
+The identity transform and built-in collators already supply these contracts.
+
+Build the loader, call `let mut iteration = loader.iter()`, and capture
+`let state = iteration.checkpoint()?` at a visible batch boundary. A new matching
+builder uses `.resume("source-contents-v1", state).build()?`. The dedicated
+`StreamLoaderState` records every shard's paired source/transform state, the
+coordinator state, next batch/sequence, source length, settings, and versioned
+source/transport identities. No decoded samples are serialized. Storage uses
+the application's chosen serde format.
+
+Exact streams require ordered, strictly increasing per-shard global sequence
+IDs, no byte budget, no custom worker initializer, no persistent workers, and
+no timeout. Ordinary iterator batching and opaque factories cannot checkpoint.
+Pinning still runs after coordinator collation. Unequal and empty shards merge
+before the one global tail policy is applied.
+
+A checkpoint cancels current reads, restores paired snapshots preceding each
+shard's first unconsumed attempt, drains unpublished records, and advances the
+transport generation. The original iterator can continue and checkpoint again.
+Source/transform errors replay from the previous successful visible boundary;
+coordinator/protocol failures reject checkpointing. Pre-End snapshots are
+retained even for non-fused sources. Sources that retain `WorkerContext` must
+override `set_run_context` to replace cancellation/deadline context before
+resumed reads; logical worker seed identity remains stable.
+
+Each shard's journal holds at most `prefetch_factor + batch_size + 1` paired
+states, including the assembling batch. Typed journal/channel storage participates
+in the existing 64 MiB aggregate preflight. Arbitrary heap allocations within
+user states are bounded by entry count, not by total resident bytes. Cancellation
+and drop still wait for non-cooperative native callbacks to return.

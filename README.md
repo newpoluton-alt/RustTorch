@@ -228,8 +228,10 @@ persistent worker pools, and ordered or completion-order delivery. Stream
 records merge globally before batching, so `drop_last` removes at most one
 global tail. Rust cannot force-cancel a blocking foreign or native call, so
 drop waits for non-cooperative work to return. Exact loader checkpoint/resume
-is limited to owned, ordered, zero-worker map loaders without prefetch;
-positive-worker barriers and stream resume remain planned. Distributed
+supports owned ordered map loaders and explicitly checkpointable sharded
+streams. Exact worker replay requires nonpersistent workers, no custom worker
+initializer, no timeout, and no byte budget. Streams retain paired source and
+transform states and validate all shards before applying a resume. Distributed
 sampling is available without distributed training orchestration.
 
 ## Contributing
