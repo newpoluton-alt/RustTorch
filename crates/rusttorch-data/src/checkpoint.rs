@@ -18,6 +18,11 @@ pub trait CheckpointableSource:
     type State: Clone + Serialize + DeserializeOwned;
     /// Preserved source error.
     type Error;
+    /// Returns the failed read's stable global position without changing state.
+    ///
+    /// Called after `next()` returns an error. This position must obey the
+    /// shard's strictly increasing sequence contract and repeat after rollback.
+    fn error_sequence(&self, error: &Self::Error) -> crate::SequenceId;
     /// Captures the boundary before the next read attempt.
     fn snapshot(&self) -> Self::State;
     /// Validates without changing the source.
@@ -64,6 +69,7 @@ pub trait CheckpointableSource:
 ///     type Sample = usize;
 ///     type Error = Infallible;
 ///     type State = ();
+///     fn error_sequence(&self, error: &Infallible) -> SequenceId { match *error {} }
 ///     fn snapshot(&self) {}
 ///     fn validate_snapshot(&self, _: &()) -> Result<(), Infallible> { Ok(()) }
 ///     fn restore_validated(&mut self, _: &()) {}

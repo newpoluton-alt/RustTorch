@@ -118,7 +118,10 @@ enum Command {
 enum Event<T, SE, TE> {
     Record(WorkerRecord<T>),
     End,
-    Source(SE),
+    Source {
+        sequence: u64,
+        error: SE,
+    },
     Transform {
         sequence: u64,
         logical_id: u64,
@@ -130,6 +133,21 @@ enum Event<T, SE, TE> {
     },
     Panic,
 }
+
+impl<T, SE, TE> Event<T, SE, TE> {
+    fn sequence(&self) -> Option<u64> {
+        match self {
+            Self::Record(record) => record.sequence.map(SequenceId::get),
+            Self::Source { sequence, .. } | Self::Transform { sequence, .. } => Some(*sequence),
+            _ => None,
+        }
+    }
+}
+
+type Buffered<S, F> = (
+    usize,
+    Event<TransformOutput<S, F>, <S as WorkerSourceFactory>::Error, TransformFailure<S, F>>,
+);
 
 enum AttemptOutcome {
     InFlight,
@@ -246,6 +264,7 @@ where
         .and_then(|n| {
             n.checked_add(outstanding.checked_mul(size_of::<CapacitySlot<CompletionFor<S, F>>>())?)
         })
+        .and_then(|n| n.checked_add(outstanding.checked_mul(size_of::<Buffered<S, F>>())?))
         .ok_or_else(|| invalid("snapshot storage overflow"))?;
     validate_stream_capacity_extra::<S, F, NoWorkerInit, MemoryDisabled>(
         config.workers,
@@ -377,7 +396,12 @@ where
                                     journal.push_back((Attempt { sequence: None, _logical_id: None, _outcome: AttemptOutcome::InFlight }, StreamLaneState { id, source: source.snapshot(), transform: transform.snapshot() }));
                                     let event = match source.next() {
                                         None => Event::End,
-                                        Some(Err(error)) => Event::Source(error),
+                                        Some(Err(error)) => {
+                                            let sequence = source.error_sequence(&error).get();
+                                            if sequence < boundary || previous.is_some_and(|previous| sequence <= previous) {
+                                                Event::Protocol { sequence: Some(sequence), reason: "exact stream source error has a past or non-increasing sequence".to_owned() }
+                                            } else { Event::Source { sequence, error } }
+                                        },
                                         Some(Ok(record)) => {
                                             let sequence = record.sequence.map(SequenceId::get);
                                             match sequence {
@@ -398,7 +422,7 @@ where
                                     let (sequence, logical_id, outcome) = match &event {
                                         Event::Record(record) => (record.sequence.map(SequenceId::get), Some(record.logical_id.get()), AttemptOutcome::Record),
                                         Event::End => (None, None, AttemptOutcome::End),
-                                        Event::Source(_) => (None, None, AttemptOutcome::SourceError),
+                                        Event::Source { sequence, .. } => (Some(*sequence), None, AttemptOutcome::SourceError),
                                         Event::Transform { sequence, logical_id, .. } => (Some(*sequence), Some(*logical_id), AttemptOutcome::TransformError),
                                         Event::Protocol { sequence, .. } => (*sequence, None, AttemptOutcome::Protocol),
                                         Event::Panic => unreachable!("panic is handled outside production"),
@@ -752,7 +776,7 @@ where
 {
     loader: &'a mut ExactStreamDataLoader<S, C, F, N>,
     pool: Option<Pool<S, F>>,
-    completed: Vec<(usize, WorkerRecord<TransformOutput<S, F>>)>,
+    completed: Vec<Buffered<S, F>>,
     ended: Vec<bool>,
     next_sequence: u64,
     visible_sequence: u64,
@@ -1008,10 +1032,44 @@ where
         }
         let mut samples = Vec::with_capacity(self.loader.configuration.batch_size);
         loop {
-            if let Some(index) = self.completed.iter().position(|(_, record)| {
-                record.sequence.map(SequenceId::get) == Some(self.next_sequence)
-            }) {
-                let (worker, record) = self.completed.swap_remove(index);
+            if let Some(index) = self
+                .completed
+                .iter()
+                .position(|(_, event)| event.sequence() == Some(self.next_sequence))
+            {
+                let (worker, event) = self.completed.swap_remove(index);
+                let record = match event {
+                    Event::Record(record) => record,
+                    Event::Source { sequence, error } => {
+                        return self.fail(
+                            LoaderError::StreamPipeline {
+                                batch: Some(self.next_batch),
+                                worker,
+                                sequence: Some(sequence),
+                                logical_id: None,
+                                source: PipelineError::Source(error),
+                            },
+                            true,
+                        );
+                    }
+                    Event::Transform {
+                        sequence,
+                        logical_id,
+                        error,
+                    } => {
+                        return self.fail(
+                            LoaderError::StreamPipeline {
+                                batch: Some(self.next_batch),
+                                worker,
+                                sequence: Some(sequence),
+                                logical_id: Some(logical_id),
+                                source: PipelineError::Transform(error),
+                            },
+                            true,
+                        );
+                    }
+                    _ => unreachable!("only sequenced outcomes enter reassembly"),
+                };
                 let Some(next) = self.next_sequence.checked_add(1) else {
                     return self.fail(
                         LoaderError::StreamProtocol {
@@ -1103,13 +1161,13 @@ where
             }
             let worker = completion.worker;
             match completion.event {
-                Event::Record(record) => {
-                    let sequence = record.sequence.map(SequenceId::get);
+                event @ (Event::Record(_) | Event::Source { .. } | Event::Transform { .. }) => {
+                    let sequence = event.sequence();
                     if sequence.is_none_or(|sequence| sequence < self.next_sequence)
                         || self
                             .completed
                             .iter()
-                            .any(|(_, previous)| previous.sequence == record.sequence)
+                            .any(|(_, previous)| previous.sequence() == sequence)
                     {
                         return self.fail(
                             LoaderError::StreamProtocol {
@@ -1119,38 +1177,13 @@ where
                             false,
                         );
                     }
-                    self.completed.push((worker, record));
+                    if !matches!(event, Event::Record(_)) {
+                        self.ended[worker] = true;
+                    }
+                    self.completed.push((worker, event));
                 }
                 Event::End => {
                     self.ended[worker] = true;
-                }
-                Event::Source(source) => {
-                    return self.fail(
-                        LoaderError::StreamPipeline {
-                            batch: Some(self.next_batch),
-                            worker,
-                            sequence: None,
-                            logical_id: None,
-                            source: PipelineError::Source(source),
-                        },
-                        true,
-                    );
-                }
-                Event::Transform {
-                    sequence,
-                    logical_id,
-                    error,
-                } => {
-                    return self.fail(
-                        LoaderError::StreamPipeline {
-                            batch: Some(self.next_batch),
-                            worker,
-                            sequence: Some(sequence),
-                            logical_id: Some(logical_id),
-                            source: PipelineError::Transform(error),
-                        },
-                        true,
-                    );
                 }
                 Event::Protocol { sequence, reason } => {
                     return self.fail(LoaderError::StreamProtocol { sequence, reason }, false);

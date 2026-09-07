@@ -203,7 +203,11 @@ request to start fresh.
 stream replay. The factory implements `CheckpointSourceFactory` with a stable
 `CHECKPOINT_KIND` including its format version. Each source implements
 `CheckpointableSource`: owned serde state, `snapshot`, read-only
-`validate_snapshot`, and infallible `restore_validated`. Transforms implement
+`validate_snapshot`, and infallible `restore_validated`. Its required read-only
+`error_sequence(&error)` identifies each failed read's stable global position
+after the failed attempt; that position must repeat after rollback and obey
+the shard's increasing sequence contract. Infallible sources implement this
+method by matching the uninhabited error. Transforms implement
 `WorkerCheckpoint` (or use the explicit `StatelessWorker` or
 `TransactionalWorker` adapters), and the coordinator implements `Checkpointable`.
 The identity transform and built-in collators already supply these contracts.
@@ -225,7 +229,9 @@ before the one global tail policy is applied.
 A checkpoint cancels current reads, restores paired snapshots preceding each
 shard's first unconsumed attempt, drains unpublished records, and advances the
 transport generation. The original iterator can continue and checkpoint again.
-Source/transform errors replay from the previous successful visible boundary;
+Source/transform errors share bounded ordered reassembly with records, so a
+faster later failure cannot suppress earlier valid batches. They replay at the
+same global position from the previous successful visible boundary;
 coordinator/protocol failures reject checkpointing. Pre-End snapshots are
 retained even for non-fused sources. Sources that retain `WorkerContext` must
 override `set_run_context` to replace cancellation/deadline context before

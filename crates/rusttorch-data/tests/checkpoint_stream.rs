@@ -42,6 +42,9 @@ impl Iterator for Source {
     }
 }
 impl CheckpointableSource for Source {
+    fn error_sequence(&self, error: &Infallible) -> SequenceId {
+        match *error {}
+    }
     type Sample = (usize, usize);
     type State = Cursor;
     type Error = Infallible;
@@ -229,6 +232,15 @@ impl Iterator for Probe {
     }
 }
 impl CheckpointableSource for Probe {
+    fn error_sequence(&self, _: &std::io::Error) -> SequenceId {
+        SequenceId::new(
+            self.sequence
+                .get(self.cursor - 1)
+                .copied()
+                .flatten()
+                .unwrap_or((self.cursor - 1) as u64),
+        )
+    }
     type Sample = usize;
     type State = usize;
     type Error = std::io::Error;
@@ -766,6 +778,9 @@ impl Iterator for LargeSource {
     }
 }
 impl CheckpointableSource for LargeSource {
+    fn error_sequence(&self, error: &Infallible) -> SequenceId {
+        match *error {}
+    }
     type Sample = usize;
     type Error = Infallible;
     type State = [[[[u8; 32]; 32]; 32]; 32];
@@ -808,6 +823,178 @@ fn inline_snapshot_shapes_participate_in_aggregate_retention_limit() {
 }
 
 struct PinBatch(Vec<usize>, Arc<AtomicUsize>);
+
+struct OrderedFailureFactory {
+    source_error: bool,
+    events: mpsc::Sender<usize>,
+    release: Arc<std::sync::Mutex<mpsc::Receiver<()>>>,
+}
+struct OrderedFailureSource {
+    source_error: bool,
+    lane: usize,
+    cursor: usize,
+    events: mpsc::Sender<usize>,
+    release: Arc<std::sync::Mutex<mpsc::Receiver<()>>>,
+}
+impl Iterator for OrderedFailureSource {
+    type Item = Result<WorkerRecord<usize>, std::io::Error>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.cursor += 1;
+        if self.cursor > 1 {
+            return None;
+        }
+        if self.lane == 0 {
+            self.events.send(0).unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+        }
+        if self.lane == 1 && self.source_error {
+            self.events.send(1).unwrap();
+            return Some(Err(std::io::Error::other("ordered source error")));
+        }
+        Some(Ok(WorkerRecord {
+            sequence: Some(SequenceId::new(self.lane as u64)),
+            logical_id: LogicalSampleId::new(10 + self.lane as u64),
+            sample: self.lane,
+        }))
+    }
+}
+impl CheckpointableSource for OrderedFailureSource {
+    fn error_sequence(&self, _: &std::io::Error) -> SequenceId {
+        SequenceId::new(self.lane as u64)
+    }
+    type Sample = usize;
+    type Error = std::io::Error;
+    type State = usize;
+    fn snapshot(&self) -> usize {
+        self.cursor
+    }
+    fn validate_snapshot(&self, _: &usize) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    fn restore_validated(&mut self, state: &usize) {
+        self.cursor = *state;
+    }
+}
+impl WorkerSourceFactory for OrderedFailureFactory {
+    type Sample = usize;
+    type Error = std::io::Error;
+    type Source = OrderedFailureSource;
+    fn create(&self, worker: WorkerContext) -> Result<Self::Source, Self::Error> {
+        Ok(OrderedFailureSource {
+            source_error: self.source_error,
+            lane: worker.info.id,
+            cursor: 0,
+            events: self.events.clone(),
+            release: Arc::clone(&self.release),
+        })
+    }
+}
+impl CheckpointSourceFactory for OrderedFailureFactory {
+    const CHECKPOINT_KIND: &'static str = "ordered-errors.v1";
+}
+#[derive(Clone)]
+struct OrderedFailureTransform {
+    source_error: bool,
+    events: mpsc::Sender<usize>,
+}
+impl Transform<usize> for OrderedFailureTransform {
+    type Output = usize;
+    type Error = std::io::Error;
+    fn transform(&mut self, input: usize, _: &TaskContext) -> Result<usize, Self::Error> {
+        if input == 1 && !self.source_error {
+            self.events.send(1).unwrap();
+            Err(std::io::Error::other("ordered transform error"))
+        } else {
+            Ok(input)
+        }
+    }
+}
+impl WorkerCheckpoint for OrderedFailureTransform {
+    type State = ();
+    fn snapshot(&self) {}
+    fn validate_snapshot(&self, _: &()) -> rusttorch_core::Result<()> {
+        Ok(())
+    }
+    fn restore_validated(&mut self, _: &()) {}
+}
+
+#[test]
+fn faster_later_failures_wait_for_lower_records_and_replay_in_order() {
+    use std::error::Error;
+    for source_error in [false, true] {
+        for prefetch in [1, 3] {
+            let (events, received) = mpsc::channel();
+            let (release, released) = mpsc::channel();
+            let released = Arc::new(std::sync::Mutex::new(released));
+            let build = || {
+                StreamDataLoaderBuilder::new(OrderedFailureFactory {
+                    source_error,
+                    events: events.clone(),
+                    release: Arc::clone(&released),
+                })
+                .workers(2)
+                .prefetch_factor(prefetch)
+                .batch_size(1)
+                .transform(OrderedFailureTransform {
+                    source_error,
+                    events: events.clone(),
+                })
+                .collate(VecCollate)
+            };
+            let mut loader = build().checkpointable("ordered-error").build().unwrap();
+            let mut iter = loader.iter();
+            let mut entered = [received.recv().unwrap(), received.recv().unwrap()];
+            entered.sort();
+            assert_eq!(entered, [0, 1]);
+            release.send(()).unwrap();
+            assert_eq!(iter.next().unwrap().unwrap(), vec![0]);
+            let state = iter.checkpoint().unwrap();
+            assert_eq!(state.next_sequence, 1);
+            assert_eq!(state.lanes[1].source, 0);
+            let state = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+            let mut resumed = build().resume("ordered-error", state).build().unwrap();
+            for error in [
+                iter.next().unwrap().unwrap_err(),
+                resumed.iter().next().unwrap().unwrap_err(),
+            ] {
+                assert!(
+                    matches!(&error, LoaderError::StreamPipeline { batch: Some(1), worker: 1, sequence: Some(1), logical_id, .. } if *logical_id == if source_error { None } else { Some(11) })
+                );
+                assert_eq!(
+                    error.source().unwrap().source().unwrap().to_string(),
+                    if source_error {
+                        "ordered source error"
+                    } else {
+                        "ordered transform error"
+                    }
+                );
+            }
+            assert!(iter.next().is_none());
+        }
+    }
+}
+
+#[test]
+fn source_failure_positions_obey_monotonic_and_bounded_gap_checks() {
+    for sequence in [[Some(0), Some(0)], [Some(0), Some(2)]] {
+        let counts = Arc::new(Counts::default());
+        let mut factory = probe(&counts, &sequence);
+        factory.fail_at = Some(1);
+        let mut loader = StreamDataLoaderBuilder::new(factory)
+            .prefetch_factor(1)
+            .collate(VecCollate)
+            .checkpointable("error-protocol")
+            .build()
+            .unwrap();
+        let mut iter = loader.iter();
+        assert_eq!(iter.next().unwrap().unwrap(), vec![0]);
+        assert!(matches!(
+            iter.next().unwrap(),
+            Err(LoaderError::StreamProtocol { .. })
+        ));
+        assert!(iter.next().is_none());
+    }
+}
 impl rusttorch_data::PinMemory for PinBatch {
     fn pin_memory(self, _: rusttorch_core::Device) -> rusttorch_core::Result<Self> {
         self.1.fetch_add(1, Ordering::SeqCst);
