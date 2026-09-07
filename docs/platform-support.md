@@ -68,6 +68,18 @@ building. Cargo `--offline` works once the dependency and compatible LibTorch
 installation are local. The platform dynamic loader must still find the
 selected installation's shared libraries when the application runs.
 
+On Windows with MSVC and the pinned torch 2.13 / torch-sys 0.26 combination,
+append `/std:c++20` to `CXXFLAGS` before building: the PyTorch headers use
+C++20 constructs, while torch-sys defaults to C++17. In PowerShell:
+
+```powershell
+$env:CXXFLAGS = "$env:CXXFLAGS /std:c++20"
+```
+
+CI applies this setting for Windows runtime tests. When using the Python
+backend, activate `.venv` so Cargo's subprocesses use its Python executable,
+and add the installed `torch/lib` directory to `PATH` for DLL loading.
+
 ## Contributor environment entry points
 
 From the repository root, source one script:
