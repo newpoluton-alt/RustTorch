@@ -10,7 +10,14 @@ use std::{
 
 use rusttorch_core::{Device, Result, RustTorchError, available_devices};
 
+#[path = "loader_checkpoint.rs"]
+mod checkpoint_workers;
+
 use crate::checkpoint::{StatelessTransformFactory, TransactionalTransformFactory};
+use crate::checkpoint::{
+    WorkerCheckpointActive, WorkerCheckpointIteration, WorkerLaneState, WorkerTransformLanes,
+    WorkerTransformState,
+};
 use crate::memory::{ByteBudget, MemoryDisabled, MemoryEnabled, MemoryPolicy};
 use crate::sampler::{
     BatchSourceCheckpoint, DistributedConfiguration, SamplerCheckpoint, validate_batch_size,
@@ -47,6 +54,46 @@ pub struct WorkerExecution;
 trait SerialBoundaryPolicy {
     fn begin_next(&mut self);
     fn commit_visible(&mut self);
+}
+
+trait WorkerBoundaryPolicy<E> {
+    fn begin_next(&mut self) {}
+    fn submitted(&mut self, _sequence: u64, _logical_end: u64) {}
+    fn committed(&mut self, _sequence: u64, _serial_logical_end: u64) {}
+    fn defer_error(&mut self, _sequence: u64, error: E) -> Option<E> {
+        Some(error)
+    }
+    fn take_error(&mut self, _sequence: u64) -> Option<E> {
+        None
+    }
+}
+impl<E> WorkerBoundaryPolicy<E> for CheckpointDisabled {}
+impl<S, E> WorkerBoundaryPolicy<E> for WorkerCheckpointIteration<S, E> {
+    fn begin_next(&mut self) {
+        self.boundary_valid = false;
+    }
+    fn submitted(&mut self, sequence: u64, logical_end: u64) {
+        self.logical_ends.insert(sequence, logical_end);
+    }
+    fn committed(&mut self, sequence: u64, serial_logical_end: u64) {
+        self.next_logical_sample = self
+            .logical_ends
+            .remove(&sequence)
+            .unwrap_or(serial_logical_end);
+        self.boundary_valid = true;
+        if let Some(barrier) = &self.barrier {
+            barrier
+                .committed
+                .store(sequence + 1, std::sync::atomic::Ordering::Release);
+        }
+    }
+    fn defer_error(&mut self, sequence: u64, error: E) -> Option<E> {
+        self.errors.insert(sequence, error);
+        None
+    }
+    fn take_error(&mut self, sequence: u64) -> Option<E> {
+        self.errors.remove(&sequence)
+    }
 }
 
 impl SerialBoundaryPolicy for CheckpointDisabled {
@@ -1421,6 +1468,7 @@ where
             &self.configuration,
             pin_memory_status,
             <P as CheckpointPlan<TransformOutput<D, F>, C>>::AUTOMATIC_BATCHING,
+            0,
         )?;
 
         let plan_identity =
@@ -2451,7 +2499,7 @@ where
 }
 
 #[allow(private_bounds)]
-impl<D, P, C, F, I, M, N> WorkerLoaderIter<'_, D, P, C, F, I, M, N, CheckpointDisabled>
+impl<D, P, C, F, I, M, N, K> WorkerLoaderIter<'_, D, P, C, F, I, M, N, K>
 where
     D: Dataset + Send + Sync + 'static,
     D::Sample: Send + 'static,
@@ -2466,6 +2514,7 @@ where
     I::Error: Send + 'static,
     M: MemoryPolicy + Send + 'static,
     N: MapPinPolicy<D, P, C, F>,
+    K: WorkerBoundaryPolicy<IterError<D, P, C, F, I>>,
 {
     fn fill_available(&mut self) {
         while self.outstanding < self.capacity && !self.source_exhausted && !self.submission_closed
@@ -2545,6 +2594,7 @@ where
             .submit(worker, task)
         {
             WorkerSubmit::Submitted => {
+                self._checkpoint.submitted(next_submission - 1, logical_end);
                 self.next_submission = next_submission;
                 self.next_logical_sample = logical_end;
                 self.outstanding += 1;
@@ -2681,6 +2731,8 @@ where
         if result.is_err() {
             self.exhausted = true;
         } else {
+            self._checkpoint
+                .committed(self.next_visible, self.next_logical_sample);
             self.next_visible += 1;
         }
         Some(result)
@@ -2696,7 +2748,6 @@ where
     ) -> IterResult<D, P, C, F, I> {
         debug_assert_eq!(batch.generation, self.generation);
         self.outstanding -= 1;
-        self.next_visible = self.next_visible.saturating_add(1);
         let sequence = batch.batch_sequence;
         let WorkerBatch {
             batch_sequence,
@@ -2728,6 +2779,9 @@ where
             PinMemoryStatus::Disabled | PinMemoryStatus::DisabledNoAccelerator => Ok(value),
         });
         if result.is_ok() {
+            self._checkpoint
+                .committed(sequence, self.next_logical_sample);
+            self.next_visible = self.next_visible.saturating_add(1);
             self.fill_available();
         } else {
             self.stop();
@@ -2784,7 +2838,7 @@ where
     }
 }
 
-impl<D, P, C, F, I, M, N> Iterator for WorkerLoaderIter<'_, D, P, C, F, I, M, N, CheckpointDisabled>
+impl<D, P, C, F, I, M, N, K> Iterator for WorkerLoaderIter<'_, D, P, C, F, I, M, N, K>
 where
     D: Dataset + Send + Sync + 'static,
     D::Sample: Send + 'static,
@@ -2799,6 +2853,7 @@ where
     I::Error: Send + 'static,
     M: MemoryPolicy + Send + 'static,
     N: MapPinPolicy<D, P, C, F>,
+    K: WorkerBoundaryPolicy<IterError<D, P, C, F, I>>,
 {
     type Item = std::result::Result<
         P::Batch,
@@ -2814,6 +2869,7 @@ where
     >;
 
     fn next(&mut self) -> Option<Self::Item> {
+        self._checkpoint.begin_next();
         if self.exhausted {
             return None;
         }
@@ -2826,6 +2882,10 @@ where
         }
         let mut deadline_armed = false;
         loop {
+            if let Some(error) = self._checkpoint.take_error(self.next_visible) {
+                self.stop();
+                return Some(Err(error));
+            }
             if self.ordered
                 && let Some((worker, batch)) = self.completed.remove(&self.next_visible)
             {
@@ -2899,6 +2959,16 @@ where
                     );
                     let error =
                         self.map_failure(completion.worker, completion.batch_sequence, failure);
+                    if !poisons_pool && let Some(sequence) = completion.batch_sequence {
+                        match self._checkpoint.defer_error(sequence, error) {
+                            None => continue,
+                            Some(error) => {
+                                run_context.deadline.disarm();
+                                self.stop();
+                                return Some(Err(error));
+                            }
+                        }
+                    }
                     run_context.deadline.disarm();
                     if poisons_pool {
                         self.stop_poisoned();
@@ -3058,8 +3128,8 @@ fn checkpoint_configuration(
     Ok(crate::LoaderConfiguration {
         batch_size: identity.batch_size,
         drop_last: identity.drop_last,
-        workers: 0,
-        prefetch_factor: None,
+        workers: builder.workers,
+        prefetch_factor: builder.prefetch_factor,
         in_order: true,
         loader_seed: builder.loader_seed,
         rank: builder.rank,
@@ -3107,6 +3177,7 @@ fn validate_static_loader_state_envelope<D, S, T, C>(
     builder: &BuilderConfiguration,
     pin_status: PinMemoryStatus,
     automatic_batching: bool,
+    expected_generation: u64,
 ) -> Result<()> {
     let expected_batch_size = automatic_batching.then_some(builder.batch_size);
     let expected_drop_last = automatic_batching && builder.drop_last;
@@ -3123,7 +3194,11 @@ fn validate_static_loader_state_envelope<D, S, T, C>(
         state.dataset_identity.as_str(),
         identity,
     )?;
-    require_checkpoint_equal("iterator_generation", state.iterator_generation, 0)?;
+    require_checkpoint_equal(
+        "iterator_generation",
+        state.iterator_generation,
+        expected_generation,
+    )?;
     require_checkpoint_equal(
         "rng_derivation_version",
         state.rng_derivation_version,

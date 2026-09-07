@@ -18,6 +18,7 @@ mod sampler;
 mod stream;
 mod transform;
 mod worker;
+mod worker_checkpoint;
 mod worker_context;
 
 pub use checkpoint::{
@@ -26,6 +27,8 @@ pub use checkpoint::{
     Checkpointable, DatasetCheckpoint, LOADER_STATE_SCHEMA_VERSION, LoaderConfiguration,
     LoaderState, ReplaySafeDataset, Stateless, StatelessTransformFactory, StatelessWorker,
     TransactionalCheckpoint, TransactionalTransformFactory, TransactionalWorker, WorkerCheckpoint,
+    WorkerCheckpointActive, WorkerCheckpointIteration, WorkerLaneState, WorkerTransformLanes,
+    WorkerTransformState,
 };
 pub use collate::{
     Bytes, Collate, CollateError, DefaultCollate, DefaultCollator, DefaultConvert,

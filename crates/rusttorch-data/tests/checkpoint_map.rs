@@ -42,6 +42,656 @@ fn replay_rows(values: &[i64]) -> ReplaySafeMap<Rows> {
 }
 
 #[test]
+fn prefetched_every_boundary_continues_and_resumes() -> Result<()> {
+    for workers in [1, 2, 4] {
+        for prefetch in [1, 3] {
+            for consumed in 0..=3 {
+                let builder = || {
+                    DataLoader::builder(replay_rows(&[0, 1, 2, 3, 4]))
+                        .batch_size(2)
+                        .collate(VecCollate)
+                        .workers(workers)
+                        .prefetch_factor(prefetch)
+                        .dataset_identity("prefetched".to_owned())
+                };
+                let mut loader = builder().build()?;
+                let mut iter = loader.iter();
+                for _ in 0..consumed {
+                    iter.next().unwrap().unwrap();
+                }
+                let state = iter.checkpoint().unwrap();
+                let again = iter.checkpoint().unwrap();
+                assert_eq!(state.next_batch, again.next_batch);
+                let continued = iter.collect::<std::result::Result<Vec<_>, _>>().unwrap();
+                let decoded =
+                    serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+                let mut resumed = builder().resume_from(decoded).build().unwrap();
+                let suffix = resumed
+                    .iter()
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .unwrap();
+                assert_eq!(continued, [vec![0, 1], vec![2, 3], vec![4]][consumed..]);
+                assert_eq!(suffix, continued);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn prefetched_transactional_lanes_and_zero_workers_restore_every_boundary() -> Result<()> {
+    for workers in [0, 1, 2, 4] {
+        for prefetch in [1, 3] {
+            for drop_last in [false, true] {
+                let builder = || {
+                    let builder = DataLoader::builder(replay_rows(&(0..17).collect::<Vec<_>>()))
+                        .batch_size(2)
+                        .drop_last(drop_last)
+                        .collate(VecCollate)
+                        .transform(StatefulTransform { calls: 0 })
+                        .checkpoint_transactional()
+                        .workers(workers)
+                        .dataset_identity("stateful-lanes".to_owned());
+                    if workers == 0 {
+                        builder
+                    } else {
+                        builder.prefetch_factor(prefetch)
+                    }
+                };
+                let expected = builder()
+                    .build()?
+                    .iter()
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .unwrap();
+                for consumed in 0..=expected.len() {
+                    let mut loader = builder().build()?;
+                    let mut iter = loader.iter();
+                    assert_eq!(
+                        iter.by_ref()
+                            .take(consumed)
+                            .collect::<std::result::Result<Vec<_>, _>>()
+                            .unwrap(),
+                        expected[..consumed]
+                    );
+                    let state = iter.checkpoint().unwrap();
+                    iter.checkpoint().unwrap();
+                    assert_eq!(state.next_logical_sample, (consumed * 2).min(17) as u64);
+                    assert_eq!(
+                        iter.collect::<std::result::Result<Vec<_>, _>>().unwrap(),
+                        expected[consumed..]
+                    );
+                    let decoded =
+                        serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+                    let mut resumed = builder().resume_from(decoded).build().unwrap();
+                    assert_eq!(
+                        resumed
+                            .iter()
+                            .collect::<std::result::Result<Vec<_>, _>>()
+                            .unwrap(),
+                        expected[consumed..]
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn prefetched_hidden_transform_failure_replays_after_lower_batches() -> Result<()> {
+    for workers in [1, 2, 4] {
+        for prefetch in [1, 3] {
+            let builder = || {
+                DataLoader::builder(replay_rows(&[0, 1, 2, 3, 4]))
+                    .batch_size(2)
+                    .collate(VecCollate)
+                    .transform(DeterministicTransformFailure)
+                    .checkpoint_stateless()
+                    .workers(workers)
+                    .prefetch_factor(prefetch)
+                    .dataset_identity("failure-lanes".to_owned())
+            };
+            let mut loader = builder().build()?;
+            let mut iter = loader.iter();
+            assert_eq!(iter.next().unwrap().unwrap(), [0, 1]);
+            let state = iter.checkpoint().unwrap();
+            let original = iter.next().unwrap().unwrap_err();
+            assert!(matches!(
+                original,
+                LoaderError::Pipeline { batch: Some(1), .. }
+            ));
+            assert!(iter.checkpoint().is_err());
+            let mut resumed = builder().resume_from(state).build().unwrap();
+            assert!(matches!(
+                resumed.iter().next().unwrap(),
+                Err(LoaderError::Pipeline { batch: Some(1), .. })
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn prefetched_explicit_and_no_batch_plans_restore() -> Result<()> {
+    let explicit = || {
+        DataLoader::builder(replay_rows(&[0, 1, 2, 3, 4]))
+            .batch_sampler(BatchSampler::new(SequentialSampler::new(5), 2, false).unwrap())
+            .collate(VecCollate)
+            .workers(4)
+            .prefetch_factor(3)
+            .dataset_identity("explicit-worker".to_owned())
+    };
+    let mut loader = explicit().build()?;
+    let mut iter = loader.iter();
+    assert_eq!(iter.next().unwrap().unwrap(), [0, 1]);
+    let state = iter.checkpoint().unwrap();
+    let mut resumed = explicit().resume_from(state).build().unwrap();
+    assert_eq!(
+        resumed
+            .iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap(),
+        [vec![2, 3], vec![4]]
+    );
+
+    let singles = || {
+        DataLoader::builder(replay_rows(&[0, 1, 2]))
+            .without_batching()
+            .workers(4)
+            .dataset_identity("single-worker".to_owned())
+    };
+    let mut loader = singles().build()?;
+    let mut iter = loader.iter();
+    assert_eq!(iter.next().unwrap().unwrap(), 0);
+    let state = iter.checkpoint().unwrap();
+    let mut resumed = singles().resume_from(state).build().unwrap();
+    assert_eq!(
+        resumed
+            .iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap(),
+        [1, 2]
+    );
+    Ok(())
+}
+
+#[test]
+fn prefetched_sampler_and_stateless_task_rng_replay() -> Result<()> {
+    use rand::RngCore;
+    macro_rules! check {
+        ($sampler:expr, $rank:expr) => {{
+            let builder = || {
+                DataLoader::builder(replay_rows(&(0..8).collect::<Vec<_>>()))
+                    .sampler($sampler)
+                    .batch_size(2)
+                    .collate(VecCollate)
+                    .workers(2)
+                    .prefetch_factor(3)
+                    .rank($rank)
+                    .transform(FnTransform::new(|value: i64, context: &TaskContext| {
+                        Ok::<_, Infallible>(value ^ context.rng().next_u64() as i64)
+                    }))
+                    .checkpoint_stateless()
+                    .dataset_identity("rng-worker".to_owned())
+            };
+            let expected = builder()
+                .build()?
+                .iter()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap();
+            for consumed in 0..=expected.len() {
+                let mut loader = builder().build()?;
+                let mut iter = loader.iter();
+                for _ in 0..consumed {
+                    iter.next().unwrap().unwrap();
+                }
+                let state = iter.checkpoint().unwrap();
+                assert_eq!(
+                    iter.collect::<std::result::Result<Vec<_>, _>>().unwrap(),
+                    expected[consumed..]
+                );
+                let mut resumed = builder().resume_from(state).build().unwrap();
+                assert_eq!(
+                    resumed
+                        .iter()
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                        .unwrap(),
+                    expected[consumed..]
+                );
+            }
+        }};
+    }
+    check!(RandomSampler::with_replacement(8, 13, 11).unwrap(), 0);
+    check!(
+        WeightedRandomSampler::new(vec![1.0; 8], 13, true, 12).unwrap(),
+        0
+    );
+    check!(
+        DistributedSampler::new(8, 3, 1, true, 13, false).unwrap(),
+        1
+    );
+    Ok(())
+}
+
+#[derive(Default)]
+struct LaneObservations {
+    creates: std::sync::atomic::AtomicUsize,
+    validates: std::sync::atomic::AtomicUsize,
+    applies: std::sync::atomic::AtomicUsize,
+    calls: std::sync::atomic::AtomicUsize,
+    drops: std::sync::atomic::AtomicUsize,
+    infos: std::sync::Mutex<Vec<rusttorch_data::WorkerInfo>>,
+}
+
+struct ProbedLane {
+    observations: Arc<LaneObservations>,
+    calls: u64,
+    reject: bool,
+}
+impl Transform<i64> for ProbedLane {
+    type Output = i64;
+    type Error = Infallible;
+    fn transform(&mut self, value: i64, _: &TaskContext) -> std::result::Result<i64, Infallible> {
+        self.observations
+            .calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.calls += 1;
+        Ok(value + self.calls as i64)
+    }
+}
+impl TransactionalCheckpoint for ProbedLane {
+    type State = u64;
+    fn snapshot(&self) -> u64 {
+        self.calls
+    }
+    fn validate_snapshot(&self, _: &u64) -> Result<()> {
+        self.observations
+            .validates
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.reject {
+            Err(RustTorchError::InvalidConfiguration {
+                field: "lane",
+                reason: "test rejection".to_owned(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+    fn restore_validated(&mut self, state: &u64) {
+        self.observations
+            .applies
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.calls = *state;
+    }
+}
+impl Drop for ProbedLane {
+    fn drop(&mut self) {
+        self.observations
+            .drops
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn prefetched_validation_is_transactional_and_threads_join() -> Result<()> {
+    use std::sync::atomic::Ordering::SeqCst;
+    let observations = Arc::new(LaneObservations::default());
+    let sampler_applies = Rc::new(Cell::new(0));
+    let collator_applies = Rc::new(Cell::new(0));
+    let builder =
+        |reject_lane: bool, reject_coordinator: bool, observations: Arc<LaneObservations>| {
+            DataLoader::builder(replay_rows(&[1]))
+                .sampler(CountedSampler {
+                    epoch: 0,
+                    validates: Rc::new(Cell::new(0)),
+                    applies: Rc::clone(&sampler_applies),
+                })
+                .transform_factory(FnTransformFactory::new(
+                    move |context: Option<&rusttorch_data::WorkerContext>| {
+                        let info = context.unwrap().info;
+                        assert_eq!(rusttorch_data::get_worker_info(), Some(info));
+                        observations.creates.fetch_add(1, SeqCst);
+                        observations.infos.lock().unwrap().push(info);
+                        Ok::<_, Infallible>(ProbedLane {
+                            observations: Arc::clone(&observations),
+                            calls: 0,
+                            reject: reject_lane && info.id == 3,
+                        })
+                    },
+                ))
+                .checkpoint_transactional()
+                .collate(RejectingCollator {
+                    reject: reject_coordinator,
+                    validates: Rc::new(Cell::new(0)),
+                    applies: Rc::clone(&collator_applies),
+                })
+                .workers(4)
+                .dataset_identity("transaction-worker".to_owned())
+        };
+    let mut source = builder(false, false, Arc::clone(&observations)).build()?;
+    let state = source.iter().checkpoint().unwrap();
+    for (lane, coordinator) in [(true, false), (false, true)] {
+        let observations = Arc::new(LaneObservations::default());
+        sampler_applies.set(0);
+        collator_applies.set(0);
+        assert!(
+            builder(lane, coordinator, Arc::clone(&observations))
+                .resume_from(state.clone())
+                .build()
+                .is_err()
+        );
+        assert_eq!(observations.creates.load(SeqCst), 4);
+        assert_eq!(observations.validates.load(SeqCst), 4);
+        assert_eq!(observations.applies.load(SeqCst), 0);
+        assert_eq!(observations.calls.load(SeqCst), 0);
+        assert_eq!(observations.drops.load(SeqCst), 4);
+        assert_eq!(sampler_applies.get(), 0);
+        assert_eq!(collator_applies.get(), 0);
+    }
+    for corruption in 0..10 {
+        let observations = Arc::new(LaneObservations::default());
+        let mut state = state.clone();
+        match corruption {
+            0 => state.schema_version += 1,
+            1 => state.transform.schema_version += 1,
+            2 => state.configuration.workers += 1,
+            3 => state.transform.workers += 1,
+            4 => state.transform.prefetch_factor = Some(3),
+            5 => state.iterator_generation += 1,
+            6 => state.transform.factory_generation = u64::MAX,
+            7 => state.transform.run_generation = u64::MAX,
+            8 => {
+                if let rusttorch_data::WorkerTransformLanes::Workers(lanes) =
+                    &mut state.transform.lanes
+                {
+                    lanes[3].id = 0;
+                }
+            }
+            _ => {
+                if let rusttorch_data::WorkerTransformLanes::Workers(lanes) =
+                    &mut state.transform.lanes
+                {
+                    lanes.pop();
+                }
+            }
+        }
+        assert!(
+            builder(false, false, Arc::clone(&observations))
+                .resume_from(state)
+                .build()
+                .is_err()
+        );
+        assert_eq!(
+            observations.creates.load(SeqCst),
+            0,
+            "corruption {corruption} started workers"
+        );
+    }
+    let observations = Arc::new(LaneObservations::default());
+    let resumed = builder(false, false, Arc::clone(&observations))
+        .resume_from(state)
+        .build()
+        .unwrap();
+    assert_eq!(observations.creates.load(SeqCst), 4);
+    assert_eq!(observations.calls.load(SeqCst), 0);
+    drop(resumed);
+    assert_eq!(observations.drops.load(SeqCst), 4);
+    Ok(())
+}
+
+#[test]
+fn prefetched_capability_drift_and_factory_sources_are_explicit() -> Result<()> {
+    let builder = || {
+        DataLoader::builder(replay_rows(&[1]))
+            .workers(2)
+            .collate(VecCollate)
+            .dataset_identity("worker-settings".to_owned())
+    };
+    assert!(builder().persistent_workers(true).build().is_err());
+    assert!(
+        builder()
+            .timeout(std::time::Duration::from_secs(1))
+            .build()
+            .is_err()
+    );
+    assert!(builder().in_order(false).build().is_err());
+    let mut loader = builder().build()?;
+    let state = loader.iter().checkpoint().unwrap();
+    assert!(
+        builder()
+            .workers(1)
+            .resume_from(state.clone())
+            .build()
+            .is_err()
+    );
+    assert!(
+        builder()
+            .prefetch_factor(3)
+            .resume_from(state.clone())
+            .build()
+            .is_err()
+    );
+    let result = builder()
+        .transform_factory(FnTransformFactory::new(
+            |_: Option<&rusttorch_data::WorkerContext>| Err::<IdentityTransform, _>(FactoryFailure),
+        ))
+        .resume_from(state)
+        .build();
+    let error = match result {
+        Ok(_) => panic!("factory should fail"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        CheckpointBuildError::TransformFactory(FactoryFailure)
+    ));
+    assert_eq!(error.source().unwrap().to_string(), "factory failure");
+    Ok(())
+}
+
+struct DelayedRows {
+    ready: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    release_at: usize,
+    length: usize,
+}
+impl Dataset for DelayedRows {
+    type Sample = i64;
+    type Error = Infallible;
+    fn len(&self) -> usize {
+        self.length
+    }
+    fn get(&self, index: usize) -> std::result::Result<i64, Infallible> {
+        let (ready, changed) = &*self.ready;
+        if index == self.release_at {
+            *ready.lock().unwrap() = true;
+            changed.notify_all();
+        }
+        if index == 0 {
+            drop(
+                changed
+                    .wait_while(ready.lock().unwrap(), |ready| !*ready)
+                    .unwrap(),
+            );
+        }
+        Ok(index as i64)
+    }
+}
+impl ReplaySafeDataset for DelayedRows {}
+
+#[test]
+fn prefetched_delayed_low_lane_keeps_earliest_unconsumed_snapshot() -> Result<()> {
+    for workers in [1, 2, 4] {
+        for prefetch in [1, 3] {
+            for consumed in 0..=workers * prefetch + 1 {
+                let ready = Arc::new((
+                    std::sync::Mutex::new(workers == 1),
+                    std::sync::Condvar::new(),
+                ));
+                let builder = |ready| {
+                    DataLoader::builder(ReplaySafeMap::new(DelayedRows {
+                        ready,
+                        release_at: (workers * prefetch - 1) * 2,
+                        length: workers * prefetch * 2 + 1,
+                    }))
+                    .batch_size(2)
+                    .collate(VecCollate)
+                    .workers(workers)
+                    .prefetch_factor(prefetch)
+                    .transform(StatefulTransform { calls: 0 })
+                    .checkpoint_transactional()
+                    .dataset_identity("delayed-worker".to_owned())
+                };
+                let mut loader = builder(Arc::clone(&ready)).build()?;
+                let mut iter = loader.iter();
+                // A high lane has reached its last initially prefetched task
+                // before any checkpoint can cancel the deliberately blocked low lane.
+                drop(
+                    ready
+                        .1
+                        .wait_while(ready.0.lock().unwrap(), |ready| !*ready)
+                        .unwrap(),
+                );
+                let prefix = iter
+                    .by_ref()
+                    .take(consumed)
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .unwrap();
+                let state = iter.checkpoint().unwrap();
+                let suffix = iter.collect::<std::result::Result<Vec<_>, _>>().unwrap();
+                let mut resumed = builder(Arc::clone(&ready))
+                    .resume_from(state)
+                    .build()
+                    .unwrap();
+                assert_eq!(
+                    resumed
+                        .iter()
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                        .unwrap(),
+                    suffix
+                );
+                let expected = builder(ready)
+                    .build()?
+                    .iter()
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .unwrap();
+                assert_eq!([prefix, suffix].concat(), expected);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct BrokenRows {
+    cardinality: bool,
+}
+impl Dataset for BrokenRows {
+    type Sample = i64;
+    type Error = &'static str;
+    fn len(&self) -> usize {
+        6
+    }
+    fn get(&self, index: usize) -> std::result::Result<i64, &'static str> {
+        if index == 3 {
+            Err("fetch failure inside batch")
+        } else {
+            Ok(index as i64)
+        }
+    }
+    fn get_batch(&self, indices: &[usize]) -> std::result::Result<Vec<i64>, &'static str> {
+        if self.cardinality && indices.contains(&3) {
+            Ok(vec![])
+        } else {
+            indices.iter().map(|&index| self.get(index)).collect()
+        }
+    }
+}
+impl ReplaySafeDataset for BrokenRows {}
+
+#[test]
+fn prefetched_fetch_and_cardinality_errors_recur_at_hidden_batch() -> Result<()> {
+    for cardinality in [false, true] {
+        for workers in [1, 2, 4] {
+            let builder = || {
+                DataLoader::builder(ReplaySafeMap::new(BrokenRows { cardinality }))
+                    .batch_size(2)
+                    .collate(VecCollate)
+                    .workers(workers)
+                    .prefetch_factor(3)
+                    .dataset_identity("broken-worker".to_owned())
+            };
+            let mut loader = builder().build()?;
+            let mut iter = loader.iter();
+            assert_eq!(iter.next().unwrap().unwrap(), [0, 1]);
+            let state = iter.checkpoint().unwrap();
+            let original = format!("{:?}", iter.next().unwrap().unwrap_err());
+            assert!(original.contains("batch: 1") || original.contains("batch: Some(1)"));
+            let mut resumed = builder().resume_from(state).build().unwrap();
+            assert_eq!(
+                format!("{:?}", resumed.iter().next().unwrap().unwrap_err()),
+                original
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn prefetched_factory_identity_survives_transport_generation_changes() -> Result<()> {
+    use std::sync::atomic::Ordering::SeqCst;
+    let observations = Arc::new(LaneObservations::default());
+    let builder = || {
+        let observations = Arc::clone(&observations);
+        DataLoader::builder(replay_rows(&[1, 2, 3]))
+            .transform_factory(FnTransformFactory::new(
+                move |context: Option<&rusttorch_data::WorkerContext>| {
+                    let info = context.unwrap().info;
+                    assert_eq!(rusttorch_data::get_worker_info(), Some(info));
+                    observations.creates.fetch_add(1, SeqCst);
+                    observations.infos.lock().unwrap().push(info);
+                    Ok::<_, Infallible>(ProbedLane {
+                        observations: Arc::clone(&observations),
+                        calls: 0,
+                        reject: false,
+                    })
+                },
+            ))
+            .checkpoint_transactional()
+            .collate(VecCollate)
+            .workers(2)
+            .seed(99)
+            .dataset_identity("generation-worker".to_owned())
+    };
+    let mut loader = builder().build()?;
+    drop(loader.iter());
+    let mut iter = loader.iter();
+    let first = iter.checkpoint().unwrap();
+    let state = iter.checkpoint().unwrap();
+    assert_eq!(state.transform.factory_generation, 1);
+    assert_eq!(
+        state.transform.run_generation,
+        first.transform.run_generation + 1
+    );
+    let suffix = iter.collect::<std::result::Result<Vec<_>, _>>().unwrap();
+    let mut resumed = builder().resume_from(state).build().unwrap();
+    assert_eq!(
+        resumed
+            .iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap(),
+        suffix
+    );
+    let infos = observations.infos.lock().unwrap();
+    assert_eq!(infos.len(), 6);
+    let mut original = infos[2..4].to_vec();
+    original.sort_by_key(|info| info.id);
+    let mut restored = infos[4..6].to_vec();
+    restored.sort_by_key(|info| info.id);
+    assert_eq!(original, restored);
+    Ok(())
+}
+
+#[test]
 fn immutable_dataset_adapters_propagate_replay_safety() {
     fn accepts_replay_safe<T: ReplaySafeDataset>() {}
     fn accepts_send_sync<T: Send + Sync>() {}

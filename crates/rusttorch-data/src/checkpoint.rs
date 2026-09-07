@@ -43,9 +43,9 @@ pub struct LoaderConfiguration {
     pub batch_size: Option<usize>,
     /// Whether an incomplete automatic batch is omitted.
     pub drop_last: bool,
-    /// Worker count. Task 11 exact checkpoints require zero.
+    /// Exact worker count; zero for serial execution.
     pub workers: usize,
-    /// Worker prefetch factor. Task 11 exact checkpoints require `None`.
+    /// Effective worker prefetch factor, or `None` for serial execution.
     pub prefetch_factor: Option<usize>,
     /// Whether results follow sampler order.
     pub in_order: bool,
@@ -69,7 +69,7 @@ pub struct LoaderConfiguration {
     pub pin_status: CheckpointPinStatus,
 }
 
-/// Versioned state for the next batch visible from a serial map loader.
+/// Versioned state for the next batch visible from a map loader.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct LoaderState<D, S, T = (), C = ()> {
     /// State schema version.
@@ -78,7 +78,7 @@ pub struct LoaderState<D, S, T = (), C = ()> {
     pub dataset_identity: String,
     /// Active sampler epoch.
     pub epoch: u64,
-    /// Iterator generation. Serial Task 11 state is always zero.
+    /// Transport generation. Serial state is always zero.
     pub iterator_generation: u64,
     /// Next consumer-visible batch number.
     pub next_batch: u64,
@@ -88,7 +88,7 @@ pub struct LoaderState<D, S, T = (), C = ()> {
     pub dataset: D,
     /// Active sampler or batch-source cursor state.
     pub sampler: S,
-    /// Serial transform state.
+    /// Serial transform state or a versioned worker transform envelope.
     pub transform: T,
     /// Effective coordinator collator/converter state.
     pub collate: C,
@@ -163,8 +163,8 @@ pub trait TransactionalCheckpoint {
 
 /// Checkpoint contract for one transform instance.
 ///
-/// Task 11 uses this contract only on the serial transform. Later worker
-/// checkpoint barriers can reuse the same explicit state boundary.
+/// Serial checkpoints capture one instance; worker barriers restore each
+/// deterministic lane to its first unconsumed task.
 pub trait WorkerCheckpoint {
     /// Owned serializable transform state.
     type State: Clone + Serialize + DeserializeOwned;
@@ -497,10 +497,10 @@ pub struct CheckpointDisabled;
 ///     .build();
 /// ```
 ///
-/// Selecting the worker execution type, even with zero workers, deliberately
-/// defers exact resume to the prefetched checkpoint barrier:
+/// Worker replay supports explicit immutable datasets and checkpointable
+/// transforms. Zero workers use the same tagged envelope:
 ///
-/// ```compile_fail
+/// ```
 /// use std::convert::Infallible;
 /// use rusttorch_data::{
 ///     DataLoader, Dataset, ReplaySafeDataset, ReplaySafeMap, VecCollate,
@@ -513,11 +513,16 @@ pub struct CheckpointDisabled;
 ///     fn get(&self, _: usize) -> Result<i64, Infallible> { Ok(1) }
 /// }
 /// impl ReplaySafeDataset for Rows {}
-/// let _ = DataLoader::builder(ReplaySafeMap::new(Rows))
+/// let mut loader = DataLoader::builder(ReplaySafeMap::new(Rows))
 ///     .workers(0)
 ///     .collate(VecCollate)
 ///     .dataset_identity("rows".to_owned())
-///     .build();
+///     .build().unwrap();
+/// let state = loader.iter().checkpoint().unwrap();
+/// let mut resumed = DataLoader::builder(ReplaySafeMap::new(Rows))
+///     .workers(0).collate(VecCollate).dataset_identity("rows".to_owned())
+///     .resume_from(state).build().unwrap();
+/// assert_eq!(resumed.iter().next().unwrap().unwrap(), vec![1]);
 /// ```
 #[derive(Clone, Debug)]
 pub struct CheckpointFresh {
@@ -553,6 +558,88 @@ pub struct CheckpointActive<I, T> {
 pub struct CheckpointIteration {
     pub(crate) identity: String,
     pub(crate) configuration: LoaderConfiguration,
+    pub(crate) boundary_valid: bool,
+}
+
+/// One deterministic worker lane's committed transform state.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WorkerLaneState<S> {
+    /// Zero-based lane identity.
+    pub id: usize,
+    /// Transform state before this lane's next unconsumed task.
+    pub state: S,
+}
+
+/// Explicit zero-worker or positive-worker transform state.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum WorkerTransformLanes<S> {
+    /// One transform running on the calling thread.
+    Serial(S),
+    /// Transform states in deterministic lane order.
+    Workers(Vec<WorkerLaneState<S>>),
+}
+
+/// Versioned worker replay envelope within schema-v1 loader state.
+///
+/// An opaque transform cannot enable worker checkpointing without an explicit
+/// adapter, even when its closure appears deterministic:
+///
+/// ```compile_fail
+/// use std::convert::Infallible;
+/// use rusttorch_data::{DataLoader, Dataset, FnTransform, ReplaySafeDataset, ReplaySafeMap, TaskContext, VecCollate};
+/// struct Rows;
+/// impl Dataset for Rows {
+///     type Sample = i64;
+///     type Error = Infallible;
+///     fn len(&self) -> usize { 1 }
+///     fn get(&self, _: usize) -> Result<i64, Infallible> { Ok(1) }
+/// }
+/// impl ReplaySafeDataset for Rows {}
+/// let _ = DataLoader::builder(ReplaySafeMap::new(Rows))
+///     .workers(2).collate(VecCollate)
+///     .transform(FnTransform::new(|x: i64, _: &TaskContext| Ok::<_, Infallible>(x)))
+///     .dataset_identity("rows".to_owned()).build();
+/// ```
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WorkerTransformState<S> {
+    /// Worker envelope version, currently one.
+    pub schema_version: u32,
+    /// Exact worker count.
+    pub workers: usize,
+    /// Effective prefetch factor; absent for zero workers.
+    pub prefetch_factor: Option<usize>,
+    /// Original transform factory initialization identity.
+    pub factory_generation: u64,
+    /// Current transport generation used to reject stale messages.
+    pub run_generation: u64,
+    /// Explicit lane identities and states.
+    pub lanes: WorkerTransformLanes<S>,
+}
+
+/// Retained worker checkpoint components for the next exact iteration.
+#[doc(hidden)]
+pub struct WorkerCheckpointActive<I, T, S> {
+    pub(crate) identity: String,
+    pub(crate) configuration: LoaderConfiguration,
+    pub(crate) batches: Option<I>,
+    pub(crate) serial: Option<T>,
+    pub(crate) barrier: Option<crate::worker_checkpoint::Barrier<S>>,
+    pub(crate) next_batch: u64,
+    pub(crate) next_logical_sample: u64,
+    pub(crate) factory_generation: u64,
+    pub(crate) run_generation: u64,
+}
+
+/// Committed coordinator and worker boundary for one exact iteration.
+#[doc(hidden)]
+pub struct WorkerCheckpointIteration<S, E> {
+    pub(crate) identity: String,
+    pub(crate) configuration: LoaderConfiguration,
+    pub(crate) barrier: Option<crate::worker_checkpoint::Barrier<S>>,
+    pub(crate) logical_ends: std::collections::BTreeMap<u64, u64>,
+    pub(crate) errors: std::collections::BTreeMap<u64, E>,
+    pub(crate) next_logical_sample: u64,
+    pub(crate) factory_generation: u64,
     pub(crate) boundary_valid: bool,
 }
 

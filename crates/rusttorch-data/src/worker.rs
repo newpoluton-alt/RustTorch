@@ -91,11 +91,32 @@ type WorkerFootprint<D, F> = fn(
 const MAX_WORKER_QUEUE_ALLOCATION_BYTES: usize = 64 * 1024 * 1024;
 const CROSSBEAM_CHANNEL_CONTROL_BLOCK_ALLOWANCE_BYTES: usize = 2 * 1024;
 
+pub(crate) trait WorkerHooks<T>: Send + 'static {
+    const CANCEL_ON_ERROR: bool = true;
+    fn initialized(&mut self, _transform: &mut T, _shutdown: &CancellationToken) -> bool {
+        true
+    }
+    fn before_task(&mut self, _transform: &T, _task: &WorkerTask) {}
+    fn quiesced(
+        &mut self,
+        _transform: &mut T,
+        _run: &WorkerRunContext,
+        _shutdown: &CancellationToken,
+    ) {
+    }
+}
+
+impl<T> WorkerHooks<T> for () {}
+
 #[allow(dead_code)]
 #[repr(C)]
 struct ChannelSlot<T> {
     stamp: AtomicUsize,
     message: UnsafeCell<MaybeUninit<T>>,
+}
+
+pub(crate) const fn channel_slot_size<T>() -> usize {
+    size_of::<ChannelSlot<T>>()
 }
 
 #[derive(Clone)]
@@ -213,6 +234,27 @@ where
         footprint: Option<WorkerFootprint<D, F>>,
         ordered: bool,
     ) -> Result<Self> {
+        Self::new_with_hooks(
+            dataset,
+            factory,
+            initializer,
+            configuration,
+            footprint,
+            ordered,
+            |_| (),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_hooks<H: WorkerHooks<F::Transform>>(
+        dataset: Arc<D>,
+        factory: Arc<F>,
+        initializer: Arc<I>,
+        configuration: WorkerPoolConfiguration,
+        footprint: Option<WorkerFootprint<D, F>>,
+        ordered: bool,
+        mut hooks: impl FnMut(usize) -> H,
+    ) -> Result<Self> {
         validate_worker_pool_capacity::<D, F, I, M>(
             configuration.workers,
             configuration.prefetch_factor,
@@ -281,10 +323,11 @@ where
             let results = result_sender.clone();
             let shutdown = shutdown.clone();
             let initialization_generation = configuration.seed_generation;
+            let hooks = hooks(info.id);
             let handle = thread::Builder::new()
                 .name(format!("rusttorch-data-worker-{}", info.id))
                 .spawn(move || {
-                    run_worker::<D, F, I, M>(
+                    run_worker::<D, F, I, M, H>(
                         info,
                         initialization_generation,
                         dataset,
@@ -296,6 +339,7 @@ where
                         shutdown,
                         footprint,
                         ordered,
+                        hooks,
                     );
                 })
                 .map_err(|error| RustTorchError::BackendUnavailable {
@@ -316,6 +360,33 @@ where
     I: WorkerInit,
     M: MemoryPolicy,
 {
+    pub(crate) fn validate_initializations(
+        &mut self,
+        initialized: &Receiver<(usize, Result<()>)>,
+    ) -> std::result::Result<(), crate::CheckpointBuildError<F::Error>> {
+        let mut seen = vec![false; self.workers()];
+        let mut first_error = None;
+        for _ in 0..self.workers() {
+            select! {
+                recv(initialized) -> result => {
+                    let (lane, result) = result.map_err(|_| capacity_error("checkpoint initialization channel closed"))?;
+                    if lane >= seen.len() || seen[lane] { return Err(capacity_error("invalid initialization acknowledgment").into()); }
+                    seen[lane] = true;
+                    if let Err(error) = result { first_error.get_or_insert(error); }
+                },
+                recv(self.results.as_ref().expect("live pool")) -> result => {
+                    return Err(match result {
+                        Ok(WorkerCompletion { result: Err(WorkerFailure::TransformInit(error)), .. }) => crate::CheckpointBuildError::TransformFactory(error),
+                        _ => capacity_error("worker failed before checkpoint initialization").into(),
+                    });
+                },
+            }
+        }
+        match first_error {
+            Some(error) => Err(error.into()),
+            None => Ok(()),
+        }
+    }
     pub(crate) fn workers(&self) -> usize {
         self.tasks.len()
     }
@@ -406,6 +477,14 @@ where
     }
 
     pub(crate) fn quiesce(&mut self, generation: u64) -> std::result::Result<(), ()> {
+        self.quiesce_inner(generation, false)
+    }
+
+    pub(crate) fn checkpoint_quiesce(&mut self, generation: u64) -> std::result::Result<(), ()> {
+        self.quiesce_inner(generation, true)
+    }
+
+    fn quiesce_inner(&mut self, generation: u64, strict: bool) -> std::result::Result<(), ()> {
         let Some(active) = self.active.take() else {
             return Ok(());
         };
@@ -420,8 +499,30 @@ where
         quiesced.resize(worker_count, false);
         let mut quiesced_count = 0;
         let mut fatal_exit = false;
+        let mut received_batches = strict.then(std::collections::BTreeSet::new);
         while quiesced_count < worker_count {
             let received = self.results.as_ref().ok_or(())?.recv();
+            if strict && let Ok(completion) = &received {
+                let wrong_lane = completion.worker >= worker_count
+                    || completion.batch_sequence.is_some_and(|sequence| {
+                        sequence as usize % worker_count != completion.worker
+                    });
+                let duplicate_batch = completion.batch_sequence.is_some_and(|sequence| {
+                    !received_batches
+                        .as_mut()
+                        .expect("strict barrier")
+                        .insert(sequence)
+                });
+                if completion.generation != generation
+                    || wrong_lane
+                    || duplicate_batch
+                    || quiesced[completion.worker]
+                {
+                    self.poisoned = true;
+                    self.shutdown();
+                    return Err(());
+                }
+            }
             match received {
                 Ok(completion) if completion.generation != generation => {}
                 Ok(WorkerCompletion {
@@ -526,6 +627,21 @@ where
     I: WorkerInit,
     M: MemoryPolicy,
 {
+    validate_worker_pool_capacity_extra::<D, F, I, M>(workers, prefetch_factor, outstanding, 0)
+}
+
+pub(crate) fn validate_worker_pool_capacity_extra<D, F, I, M>(
+    workers: usize,
+    prefetch_factor: usize,
+    outstanding: usize,
+    extra: usize,
+) -> Result<()>
+where
+    D: Dataset,
+    F: TransformFactory<D::Sample>,
+    I: WorkerInit,
+    M: MemoryPolicy,
+{
     let expected_outstanding = workers
         .checked_mul(prefetch_factor)
         .ok_or_else(|| capacity_error("workers multiplied by prefetch_factor exceeds usize"))?;
@@ -579,7 +695,8 @@ where
             capacity_error("channel control-block storage exceeds Rust allocation limits")
         })?;
     let aggregate_bytes = credit_bytes
-        .checked_add(control_bytes)
+        .checked_add(extra)
+        .and_then(|bytes| bytes.checked_add(control_bytes))
         .and_then(|bytes| bytes.checked_add(vector_bytes))
         .and_then(|bytes| bytes.checked_add(control_block_bytes))
         .ok_or_else(|| {
@@ -637,7 +754,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_worker<D, F, I, M>(
+fn run_worker<D, F, I, M, H>(
     info: WorkerInfo,
     initialization_generation: u64,
     dataset: Arc<D>,
@@ -649,6 +766,7 @@ fn run_worker<D, F, I, M>(
     shutdown: CancellationToken,
     footprint: Option<WorkerFootprint<D, F>>,
     ordered: bool,
+    mut hooks: H,
 ) where
     D: Dataset + Send + Sync + 'static,
     D::Sample: Send + 'static,
@@ -661,6 +779,7 @@ fn run_worker<D, F, I, M>(
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
     M: MemoryPolicy + Send + 'static,
+    H: WorkerHooks<F::Transform>,
 {
     let lifecycle = WorkerContext::new(info, shutdown.clone(), shutdown.paired_deadline());
     let mut active = None;
@@ -690,6 +809,10 @@ fn run_worker<D, F, I, M>(
                 }
             };
 
+            if !hooks.initialized(&mut transform, &shutdown) {
+                return false;
+            }
+
             loop {
                 let run = select! {
                     recv(controls) -> control => match control {
@@ -699,7 +822,7 @@ fn run_worker<D, F, I, M>(
                     recv(shutdown.signal()) -> _ => return false,
                 };
                 active = Some((run.clone(), None));
-                run_generation::<D, F, I, M>(
+                run_generation::<D, F, I, M, H>(
                     info,
                     &dataset,
                     &mut transform,
@@ -710,6 +833,7 @@ fn run_worker<D, F, I, M>(
                     &mut active,
                     footprint,
                     ordered,
+                    &mut hooks,
                 );
                 active = None;
                 if shutdown.is_cancelled() {
@@ -745,7 +869,7 @@ fn run_worker<D, F, I, M>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_generation<D, F, I, M>(
+fn run_generation<D, F, I, M, H>(
     info: WorkerInfo,
     dataset: &D,
     transform: &mut F::Transform,
@@ -756,6 +880,7 @@ fn run_generation<D, F, I, M>(
     active: &mut Option<(WorkerRunContext, Option<u64>)>,
     footprint: Option<WorkerFootprint<D, F>>,
     ordered: bool,
+    hooks: &mut H,
 ) where
     D: Dataset + Send + Sync + 'static,
     D::Sample: Send + 'static,
@@ -768,6 +893,7 @@ fn run_generation<D, F, I, M>(
     I: WorkerInit + Send + Sync + 'static,
     I::Error: Send + 'static,
     M: MemoryPolicy,
+    H: WorkerHooks<F::Transform>,
 {
     let context = run.worker_context(info);
     loop {
@@ -786,6 +912,7 @@ fn run_generation<D, F, I, M>(
             continue;
         }
         active.as_mut().expect("active generation").1 = Some(task.batch_sequence);
+        hooks.before_task(transform, &task);
         let expected = task.indices.len();
         let samples = match dataset.get_batch_with_context(&task.indices, &context) {
             Ok(samples) if context.check().is_ok() => samples,
@@ -798,7 +925,8 @@ fn run_generation<D, F, I, M>(
                     info.id,
                     Some(task.batch_sequence),
                     WorkerFailure::Dataset(error),
-                ) {
+                ) && H::CANCEL_ON_ERROR
+                {
                     run.cancel();
                 }
                 break;
@@ -815,7 +943,8 @@ fn run_generation<D, F, I, M>(
                     expected,
                     actual: samples.len(),
                 },
-            ) {
+            ) && H::CANCEL_ON_ERROR
+            {
                 run.cancel();
             }
             break;
@@ -845,7 +974,8 @@ fn run_generation<D, F, I, M>(
                         info.id,
                         Some(task.batch_sequence),
                         WorkerFailure::Transform(error),
-                    ) {
+                    ) && H::CANCEL_ON_ERROR
+                    {
                         run.cancel();
                     }
                     break;
@@ -876,7 +1006,8 @@ fn run_generation<D, F, I, M>(
                         info.id,
                         Some(task.batch_sequence),
                         WorkerFailure::MemoryLimit { limit, actual },
-                    ) {
+                    ) && H::CANCEL_ON_ERROR
+                    {
                         run.cancel();
                     }
                     break;
@@ -890,7 +1021,8 @@ fn run_generation<D, F, I, M>(
                         info.id,
                         Some(task.batch_sequence),
                         WorkerFailure::Panic,
-                    ) {
+                    ) && H::CANCEL_ON_ERROR
+                    {
                         run.cancel();
                     }
                     break;
@@ -921,6 +1053,7 @@ fn run_generation<D, F, I, M>(
         active.as_mut().expect("active generation").1 = None;
     }
 
+    hooks.quiesced(transform, run, shutdown);
     while let Ok(task) = tasks.try_recv() {
         if task.generation != run.generation {
             break;
