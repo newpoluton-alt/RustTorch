@@ -678,11 +678,10 @@ impl PlanObservations {
     }
 
     fn assert_untouched(&self, case: &str) {
-        assert_eq!(self.kind_calls.get(), 0, "{case}: sampler kind callback");
         assert_eq!(
-            self.distributed_calls.get(),
-            0,
-            "{case}: sampler distributed callback"
+            (self.kind_calls.get(), self.distributed_calls.get()),
+            (0, 0),
+            "{case}: sampler identity callbacks"
         );
         assert_eq!(self.epoch_applies.get(), 0, "{case}: sampler epoch apply");
         assert_eq!(self.cursor_applies.get(), 0, "{case}: sampler cursor apply");
@@ -734,6 +733,10 @@ impl SamplerCheckpoint for ObservableSampler {
         "test-observable"
     }
 
+    fn checkpoint_kind_from_state(_state: &Self::State) -> String {
+        "test-observable".to_owned()
+    }
+
     fn checkpoint_state(&self, position: u64) -> Result<Self::State> {
         Ok(ObservableSamplerState {
             epoch: self.epoch,
@@ -774,6 +777,12 @@ impl SamplerCheckpoint for ObservableSampler {
             .set(self.observations.distributed_calls.get() + 1);
         None
     }
+
+    fn checkpoint_distributed_configuration_from_state(
+        _state: &Self::State,
+    ) -> Result<Option<rusttorch_data::DistributedConfiguration>> {
+        Ok(None)
+    }
 }
 
 #[test]
@@ -795,7 +804,7 @@ fn static_envelope_rejects_before_public_plan_callbacks_or_mutation() -> Result<
         .build()?;
     let state = source.iter().checkpoint().unwrap();
 
-    let corruptions: [(&str, Corrupt); 14] = [
+    let corruptions: [(&str, Corrupt); 19] = [
         ("schema", |state| state.schema_version += 1),
         ("identity", |state| {
             state.dataset_identity.push_str("-wrong")
@@ -821,6 +830,19 @@ fn static_envelope_rejects_before_public_plan_callbacks_or_mutation() -> Result<
         }),
         ("pin status", |state| {
             state.configuration.pin_status = CheckpointPinStatus::DisabledNoAccelerator;
+        }),
+        ("sampler kind", |state| {
+            state.configuration.sampler_kind.push_str("-wrong");
+        }),
+        ("replicas", |state| state.configuration.replicas += 1),
+        ("distributed shuffle", |state| {
+            state.configuration.distributed_shuffle = Some(true);
+        }),
+        ("distributed seed", |state| {
+            state.configuration.distributed_seed = Some(23);
+        }),
+        ("distributed drop policy", |state| {
+            state.configuration.distributed_drop_last = Some(true);
         }),
     ];
 
@@ -911,6 +933,10 @@ impl SamplerCheckpoint for CountedSampler {
         "test-counted"
     }
 
+    fn checkpoint_kind_from_state(_state: &Self::State) -> String {
+        "test-counted".to_owned()
+    }
+
     fn checkpoint_state(&self, position: u64) -> Result<Self::State> {
         if position > 1 {
             return Err(RustTorchError::InvalidConfiguration {
@@ -944,6 +970,12 @@ impl SamplerCheckpoint for CountedSampler {
         } else {
             Vec::new().into_iter()
         }
+    }
+
+    fn checkpoint_distributed_configuration_from_state(
+        _state: &Self::State,
+    ) -> Result<Option<rusttorch_data::DistributedConfiguration>> {
+        Ok(None)
     }
 }
 

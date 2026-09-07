@@ -127,6 +127,8 @@ pub trait SamplerCheckpoint: Sampler {
     type State: Clone + Serialize + DeserializeOwned;
 
     fn kind(&self) -> &'static str;
+    /// Derives the stable sampler kind from owned checkpoint state only.
+    fn checkpoint_kind_from_state(state: &Self::State) -> String;
     fn checkpoint_state(&self, position: u64) -> Result<Self::State>;
     fn validate_checkpoint_state(
         &self,
@@ -139,6 +141,11 @@ pub trait SamplerCheckpoint: Sampler {
     fn distributed_configuration(&self) -> Option<DistributedConfiguration> {
         None
     }
+
+    /// Derives distributed identity from owned checkpoint state only.
+    fn checkpoint_distributed_configuration_from_state(
+        state: &Self::State,
+    ) -> Result<Option<DistributedConfiguration>>;
 }
 
 #[doc(hidden)]
@@ -146,6 +153,8 @@ pub trait BatchSourceCheckpoint: BatchSource {
     type State: Clone + Serialize + DeserializeOwned;
 
     fn kind(&self) -> String;
+    /// Derives the stable batch-source kind from owned checkpoint state only.
+    fn checkpoint_kind_from_state(state: &Self::State) -> String;
     fn checkpoint_state(&self, next_batch: u64, next_logical_sample: u64) -> Result<Self::State>;
     fn validate_checkpoint_state(
         &self,
@@ -156,6 +165,10 @@ pub trait BatchSourceCheckpoint: BatchSource {
     ) -> Result<()>;
     fn restore_checkpoint_iter_validated(&mut self, state: &Self::State) -> Self::Iter;
     fn distributed_configuration(&self) -> Option<DistributedConfiguration>;
+    /// Derives distributed identity from owned checkpoint state only.
+    fn checkpoint_distributed_configuration_from_state(
+        state: &Self::State,
+    ) -> Result<Option<DistributedConfiguration>>;
 }
 
 /// A reusable, epoch-aware source of finite sample indices.
@@ -866,6 +879,10 @@ impl SamplerCheckpoint for SequentialSampler {
         "sequential"
     }
 
+    fn checkpoint_kind_from_state(_state: &Self::State) -> String {
+        "sequential".to_owned()
+    }
+
     fn checkpoint_state(&self, position: u64) -> Result<Self::State> {
         let length = usize_to_u64(self.length, "sampler")?;
         validate_position(position, length)?;
@@ -897,6 +914,12 @@ impl SamplerCheckpoint for SequentialSampler {
             .expect("validated sequential sampler position fits usize");
         position..self.length
     }
+
+    fn checkpoint_distributed_configuration_from_state(
+        _state: &Self::State,
+    ) -> Result<Option<DistributedConfiguration>> {
+        Ok(None)
+    }
 }
 
 impl SamplerCheckpoint for RandomSampler {
@@ -907,6 +930,14 @@ impl SamplerCheckpoint for RandomSampler {
             Replacement::With => "random_replacement",
             Replacement::Without => "random",
         }
+    }
+
+    fn checkpoint_kind_from_state(state: &Self::State) -> String {
+        match state.replacement {
+            RandomReplacement::With => "random_replacement",
+            RandomReplacement::Without => "random",
+        }
+        .to_owned()
     }
 
     fn checkpoint_state(&self, position: u64) -> Result<Self::State> {
@@ -958,6 +989,12 @@ impl SamplerCheckpoint for RandomSampler {
             .expect("validated random sampler cursor is regenerable");
         iterator
     }
+
+    fn checkpoint_distributed_configuration_from_state(
+        _state: &Self::State,
+    ) -> Result<Option<DistributedConfiguration>> {
+        Ok(None)
+    }
 }
 
 impl SamplerCheckpoint for SubsetRandomSampler {
@@ -965,6 +1002,10 @@ impl SamplerCheckpoint for SubsetRandomSampler {
 
     fn kind(&self) -> &'static str {
         "subset_random"
+    }
+
+    fn checkpoint_kind_from_state(_state: &Self::State) -> String {
+        "subset_random".to_owned()
     }
 
     fn checkpoint_state(&self, position: u64) -> Result<Self::State> {
@@ -1011,6 +1052,12 @@ impl SamplerCheckpoint for SubsetRandomSampler {
             .expect("validated subset sampler cursor is regenerable");
         iterator
     }
+
+    fn checkpoint_distributed_configuration_from_state(
+        _state: &Self::State,
+    ) -> Result<Option<DistributedConfiguration>> {
+        Ok(None)
+    }
 }
 
 impl SamplerCheckpoint for WeightedRandomSampler {
@@ -1022,6 +1069,15 @@ impl SamplerCheckpoint for WeightedRandomSampler {
         } else {
             "weighted_random"
         }
+    }
+
+    fn checkpoint_kind_from_state(state: &Self::State) -> String {
+        if state.replacement {
+            "weighted_random_replacement"
+        } else {
+            "weighted_random"
+        }
+        .to_owned()
     }
 
     fn checkpoint_state(&self, position: u64) -> Result<Self::State> {
@@ -1067,6 +1123,12 @@ impl SamplerCheckpoint for WeightedRandomSampler {
             .expect("validated weighted sampler cursor is regenerable");
         iterator
     }
+
+    fn checkpoint_distributed_configuration_from_state(
+        _state: &Self::State,
+    ) -> Result<Option<DistributedConfiguration>> {
+        Ok(None)
+    }
 }
 
 impl SamplerCheckpoint for DistributedSampler {
@@ -1074,6 +1136,10 @@ impl SamplerCheckpoint for DistributedSampler {
 
     fn kind(&self) -> &'static str {
         "distributed"
+    }
+
+    fn checkpoint_kind_from_state(_state: &Self::State) -> String {
+        "distributed".to_owned()
     }
 
     fn checkpoint_state(&self, position: u64) -> Result<Self::State> {
@@ -1132,6 +1198,18 @@ impl SamplerCheckpoint for DistributedSampler {
             drop_last: self.drop_last,
         })
     }
+
+    fn checkpoint_distributed_configuration_from_state(
+        state: &Self::State,
+    ) -> Result<Option<DistributedConfiguration>> {
+        Ok(Some(DistributedConfiguration {
+            replicas: u64_to_usize(state.replicas, "sampler")?,
+            rank: u64_to_usize(state.rank, "sampler")?,
+            shuffle: state.shuffle,
+            seed: state.seed,
+            drop_last: state.drop_last,
+        }))
+    }
 }
 
 impl<S> BatchSourceCheckpoint for BatchSampler<S>
@@ -1142,6 +1220,13 @@ where
 
     fn kind(&self) -> String {
         format!("batch_sampler/{}", self.sampler.kind())
+    }
+
+    fn checkpoint_kind_from_state(state: &Self::State) -> String {
+        format!(
+            "batch_sampler/{}",
+            S::checkpoint_kind_from_state(&state.sampler)
+        )
     }
 
     fn checkpoint_state(&self, next_batch: u64, next_logical_sample: u64) -> Result<Self::State> {
@@ -1201,6 +1286,12 @@ where
 
     fn distributed_configuration(&self) -> Option<DistributedConfiguration> {
         self.sampler.distributed_configuration()
+    }
+
+    fn checkpoint_distributed_configuration_from_state(
+        state: &Self::State,
+    ) -> Result<Option<DistributedConfiguration>> {
+        S::checkpoint_distributed_configuration_from_state(&state.sampler)
     }
 }
 

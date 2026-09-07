@@ -229,13 +229,12 @@ pub trait CheckpointPlan<Sample, C>: LoaderPlan<Sample, C> {
     const AUTOMATIC_BATCHING: bool = false;
 
     fn checkpoint_identity(&self) -> PlanCheckpointIdentity;
-    fn checkpoint_identity_with_batch_options(
-        &self,
-        _batch_size: NonZeroUsize,
-        _drop_last: bool,
-    ) -> PlanCheckpointIdentity {
-        self.checkpoint_identity()
-    }
+    /// Derives resume identity without observing a live plan or component.
+    fn checkpoint_identity_from_state(
+        state: &Self::State,
+        batch_size: NonZeroUsize,
+        drop_last: bool,
+    ) -> Result<PlanCheckpointIdentity>;
     fn checkpoint_state(&self, next_batch: u64, next_logical_sample: u64) -> Result<Self::State>;
     fn validate_checkpoint_state(
         &self,
@@ -335,17 +334,17 @@ where
         }
     }
 
-    fn checkpoint_identity_with_batch_options(
-        &self,
+    fn checkpoint_identity_from_state(
+        state: &Self::State,
         batch_size: NonZeroUsize,
         drop_last: bool,
-    ) -> PlanCheckpointIdentity {
-        PlanCheckpointIdentity {
+    ) -> Result<PlanCheckpointIdentity> {
+        Ok(PlanCheckpointIdentity {
             batch_size: Some(batch_size.get()),
             drop_last,
-            sampler_kind: self.sampler.kind().to_owned(),
-            distributed: self.sampler.distributed_configuration(),
-        }
+            sampler_kind: S::checkpoint_kind_from_state(state),
+            distributed: S::checkpoint_distributed_configuration_from_state(state)?,
+        })
     }
 
     fn checkpoint_state(&self, next_batch: u64, next_logical_sample: u64) -> Result<Self::State> {
@@ -482,6 +481,19 @@ where
         }
     }
 
+    fn checkpoint_identity_from_state(
+        state: &Self::State,
+        _batch_size: NonZeroUsize,
+        _drop_last: bool,
+    ) -> Result<PlanCheckpointIdentity> {
+        Ok(PlanCheckpointIdentity {
+            batch_size: None,
+            drop_last: false,
+            sampler_kind: B::checkpoint_kind_from_state(state),
+            distributed: B::checkpoint_distributed_configuration_from_state(state)?,
+        })
+    }
+
     fn checkpoint_state(&self, next_batch: u64, next_logical_sample: u64) -> Result<Self::State> {
         self.batches
             .checkpoint_state(next_batch, next_logical_sample)
@@ -584,6 +596,19 @@ where
             sampler_kind: self.sampler.kind().to_owned(),
             distributed: self.sampler.distributed_configuration(),
         }
+    }
+
+    fn checkpoint_identity_from_state(
+        state: &Self::State,
+        _batch_size: NonZeroUsize,
+        _drop_last: bool,
+    ) -> Result<PlanCheckpointIdentity> {
+        Ok(PlanCheckpointIdentity {
+            batch_size: None,
+            drop_last: false,
+            sampler_kind: S::checkpoint_kind_from_state(state),
+            distributed: S::checkpoint_distributed_configuration_from_state(state)?,
+        })
     }
 
     fn checkpoint_state(&self, next_batch: u64, next_logical_sample: u64) -> Result<Self::State> {
@@ -1398,9 +1423,12 @@ where
             <P as CheckpointPlan<TransformOutput<D, F>, C>>::AUTOMATIC_BATCHING,
         )?;
 
-        let plan_identity = self
-            .plan
-            .checkpoint_identity_with_batch_options(batch_size, self.configuration.drop_last);
+        let plan_identity =
+            <P as CheckpointPlan<TransformOutput<D, F>, C>>::checkpoint_identity_from_state(
+                &state.sampler,
+                batch_size,
+                self.configuration.drop_last,
+            )?;
         validate_distributed_rank(&plan_identity, self.configuration.rank)?;
         let expected_configuration =
             checkpoint_configuration(&plan_identity, &self.configuration, pin_memory_status)?;
