@@ -323,15 +323,131 @@ fn active_cargo_config(root: &Path) -> PathBuf {
     }
 }
 
-fn configure_project(root: &Path, backend: ResolvedBackend) -> Result<PathBuf, CliError> {
-    ensure_project_root(root)?;
-    let config_directory = root.join(".cargo");
-    let config_path = active_cargo_config(root);
-    if backend == ResolvedBackend::Preconfigured {
-        return Ok(config_path);
+fn cargo_preconfigured(
+    root: &Path,
+    cargo_home: Option<&Path>,
+    mut process_value: impl FnMut(&str) -> Option<OsString>,
+) -> Result<bool, CliError> {
+    let mut paths: Vec<_> = root.ancestors().map(active_cargo_config).collect();
+    if let Some(home) = cargo_home {
+        let home = root.join(home);
+        let legacy = home.join("config");
+        let path = if legacy.exists() {
+            legacy
+        } else {
+            home.join("config.toml")
+        };
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
     }
+    let mut selectors = DocumentMut::new();
+    for path in paths.into_iter().rev() {
+        let document = read_cargo_config(&path)?;
+        if document.contains_key("include") {
+            return Err(CliError::new(format!(
+                "cannot resolve Cargo config includes in {}; use a configuration without includes before setup",
+                path.display()
+            )));
+        }
+        let owned_cuda = path == active_cargo_config(root) && configuration_ownership(&document).1;
+        if let Some(environment) = document.get("env") {
+            let environment = environment.as_table_like().ok_or_else(|| {
+                CliError::new(format!("env in {} is not a TOML table", path.display()))
+            })?;
+            for (name, entry) in environment.iter() {
+                if !is_libtorch_preconfigured(|candidate| candidate == name)
+                    || (name == "TORCH_CUDA_VERSION" && owned_cuda)
+                {
+                    continue;
+                }
+                let invalid = || {
+                    CliError::new(format!(
+                        "cannot resolve {name} in {}; expected a string or Cargo env table with value, force, and relative fields",
+                        path.display()
+                    ))
+                };
+                if let Some(table) = entry.as_table_like() {
+                    for (key, value) in table.iter() {
+                        if !match key {
+                            "value" => value.as_str().is_some(),
+                            "force" | "relative" => value.as_bool().is_some(),
+                            _ => false,
+                        } {
+                            return Err(invalid());
+                        }
+                    }
+                } else if entry.as_str().is_none() {
+                    return Err(invalid());
+                }
+                if let Some(previous) = selectors.get_mut(name) {
+                    match (previous.as_table_like_mut(), entry.as_table_like()) {
+                        (Some(previous), Some(entry)) => {
+                            for (key, value) in entry.iter() {
+                                previous.insert(key, value.clone());
+                            }
+                        }
+                        (None, None) => *previous = entry.clone(),
+                        _ => {
+                            return Err(CliError::new(format!(
+                                "conflicting string/table Cargo definitions for {name} in {}; make the definitions consistent before setup",
+                                path.display()
+                            )));
+                        }
+                    }
+                } else {
+                    selectors[name] = entry.clone();
+                }
+            }
+        }
+    }
+    let mut configured = false;
+    for name in [
+        "LIBTORCH_USE_PYTORCH",
+        "LIBTORCH",
+        "LIBTORCH_INCLUDE",
+        "LIBTORCH_LIB",
+        "TORCH_CUDA_VERSION",
+    ] {
+        let mut effective = process_value(name);
+        if let Some(entry) = selectors.get(name) {
+            let (value, force, relative) = if let Some(value) = entry.as_str() {
+                (value, false, false)
+            } else {
+                let table = entry.as_table_like().unwrap();
+                let value = table.get("value").and_then(Item::as_str).ok_or_else(|| {
+                    CliError::new(format!("Cargo env table for {name} has no value"))
+                })?;
+                (
+                    value,
+                    table.get("force").and_then(Item::as_bool).unwrap_or(false),
+                    table
+                        .get("relative")
+                        .and_then(Item::as_bool)
+                        .unwrap_or(false),
+                )
+            };
+            if force || effective.is_none() {
+                // Relative values resolve to an absolute, nonempty path even when value is empty.
+                effective = Some(OsString::from(if relative && value.is_empty() {
+                    "."
+                } else {
+                    value
+                }));
+            }
+        }
+        configured |= is_active_libtorch_variable(name, effective);
+    }
+    if !configured && selectors.contains_key("TORCH_CUDA_VERSION") {
+        return Err(CliError::new(
+            "Cargo config defines an inactive, user-owned TORCH_CUDA_VERSION; remove it before managed setup so it cannot override or conflict with the selected backend",
+        ));
+    }
+    Ok(configured)
+}
 
-    let original = match fs::read_to_string(&config_path) {
+fn read_cargo_config(config_path: &Path) -> Result<DocumentMut, CliError> {
+    let original = match fs::read_to_string(config_path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => {
@@ -341,17 +457,47 @@ fn configure_project(root: &Path, backend: ResolvedBackend) -> Result<PathBuf, C
             )));
         }
     };
-    let mut document = if original.is_empty() {
-        DocumentMut::new()
-    } else {
-        original.parse::<DocumentMut>().map_err(|error| {
-            CliError::new(format!(
-                "could not parse {}: {error}",
-                config_path.display()
-            ))
-        })?
-    };
+    original.parse::<DocumentMut>().map_err(|error| {
+        CliError::new(format!(
+            "could not parse {}: {error}",
+            config_path.display()
+        ))
+    })
+}
 
+fn configuration_ownership(document: &DocumentMut) -> (bool, bool) {
+    let marker = nested_item(document, "env", "RUSTTORCH_BACKEND")
+        .and_then(Item::as_str)
+        .and_then(|value| match value {
+            "cpu" => Some(ResolvedBackend::Cpu),
+            "cuda-12.6" => Some(ResolvedBackend::Cuda126),
+            _ => None,
+        });
+    let configured_target = nested_item(document, "build", "target-dir");
+    let owns_configuration = marker.is_some_and(|old_backend| {
+        configured_target.and_then(Item::as_str) == target_directory(old_backend)
+    });
+    let configured_cuda = nested_item(document, "env", "TORCH_CUDA_VERSION");
+    let owns_cuda_selector = owns_configuration
+        && marker == Some(ResolvedBackend::Cuda126)
+        && configured_cuda.is_some_and(|item| {
+            item.as_inline_table().is_some_and(|table| {
+                table.len() == 2
+                    && table.get("value").and_then(Value::as_str) == Some("cu126")
+                    && table.get("force").and_then(Value::as_bool) == Some(true)
+            })
+        });
+    (owns_configuration, owns_cuda_selector)
+}
+
+fn configure_project(root: &Path, backend: ResolvedBackend) -> Result<PathBuf, CliError> {
+    ensure_project_root(root)?;
+    let config_directory = root.join(".cargo");
+    let config_path = active_cargo_config(root);
+    if backend == ResolvedBackend::Preconfigured {
+        return Ok(config_path);
+    }
+    let mut document = read_cargo_config(&config_path)?;
     for table in ["build", "env"] {
         if document
             .get(table)
@@ -362,28 +508,9 @@ fn configure_project(root: &Path, backend: ResolvedBackend) -> Result<PathBuf, C
             )));
         }
     }
-
-    let marker = nested_item(&document, "env", "RUSTTORCH_BACKEND")
-        .and_then(Item::as_str)
-        .and_then(|value| match value {
-            "cpu" => Some(ResolvedBackend::Cpu),
-            "cuda-12.6" => Some(ResolvedBackend::Cuda126),
-            _ => None,
-        });
+    let (owns_configuration, owns_cuda_selector) = configuration_ownership(&document);
     let configured_target = nested_item(&document, "build", "target-dir");
-    let owns_configuration = marker.is_some_and(|old_backend| {
-        configured_target.and_then(Item::as_str) == target_directory(old_backend)
-    });
     let configured_cuda = nested_item(&document, "env", "TORCH_CUDA_VERSION");
-    let owns_cuda_selector = owns_configuration
-        && marker == Some(ResolvedBackend::Cuda126)
-        && configured_cuda.is_some_and(|item| {
-            item.as_inline_table().is_some_and(|table| {
-                table.len() == 2
-                    && table.get("value").and_then(Value::as_str) == Some("cu126")
-                    && table.get("force").and_then(Value::as_bool) == Some(true)
-            })
-        });
 
     if configured_target.is_some() && !owns_configuration {
         return Err(CliError::new(
@@ -556,18 +683,27 @@ fn run() -> Result<(), CliError> {
         CliAction::Version => println!("rusttorch {}", env!("CARGO_PKG_VERSION")),
         CliAction::Setup(request) => {
             let platform = Platform::current();
-            let configured = is_setup_preconfigured(
-                platform,
-                |name| is_active_libtorch_variable(name, env::var_os(name)),
-                Path::exists,
-            );
-            let backend = resolve_setup_backend(request, platform, configured, detect_driver)?;
-            validate_target_environment(backend, |name| env::var_os(name))?;
             let current_directory = env::current_dir().map_err(|error| {
                 CliError::new(format!("could not read current directory: {error}"))
             })?;
             let project_root = locate_workspace_root(&cargo_locate_spec(&current_directory))?;
             ensure_project_root(&project_root)?;
+            let cargo_home = env::var_os("CARGO_HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .or_else(|| {
+                    env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+                        .filter(|value| !value.is_empty())
+                        .map(|home| PathBuf::from(home).join(".cargo"))
+                })
+                .ok_or_else(|| {
+                    CliError::new("cannot determine Cargo home; set CARGO_HOME before setup")
+                })?;
+            let cargo_configured =
+                cargo_preconfigured(&project_root, Some(&cargo_home), |name| env::var_os(name))?;
+            let configured = is_setup_preconfigured(platform, |_| cargo_configured, Path::exists);
+            let backend = resolve_setup_backend(request, platform, configured, detect_driver)?;
+            validate_target_environment(backend, |name| env::var_os(name))?;
             println!("Resolved backend: {backend}");
             if backend == ResolvedBackend::Preconfigured {
                 println!("Using the existing LibTorch environment and Cargo configuration.");
@@ -613,6 +749,198 @@ mod tests {
     fn write_named_config(root: &std::path::Path, name: &str, contents: &str) {
         fs::create_dir_all(root.join(".cargo")).unwrap();
         fs::write(root.join(".cargo").join(name), contents).unwrap();
+    }
+
+    #[test]
+    fn cargo_selectors_preserve_auto_and_reject_explicit_before_probe_or_write() {
+        let project = cargo_project();
+        let original = "[env]\nLIBTORCH_USE_PYTORCH = { value = \"1\", force = true }\n";
+        write_config(project.path(), original);
+        let configured = cargo_preconfigured(project.path(), None, |_| None).unwrap();
+        assert_eq!(
+            resolve_setup_backend(
+                BackendRequest::Auto,
+                Platform::Linux,
+                configured,
+                || panic!("preconfigured runtime must not probe drivers")
+            )
+            .unwrap(),
+            ResolvedBackend::Preconfigured
+        );
+        assert!(
+            resolve_setup_backend(BackendRequest::Cpu, Platform::Linux, configured, || panic!(
+                "conflicting runtime must not probe drivers"
+            ))
+            .and_then(|backend| configure_project(project.path(), backend))
+            .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(active_cargo_config(project.path())).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn cargo_selectors_cover_ancestors_home_legacy_and_every_runtime_variable() {
+        for name in [
+            "LIBTORCH_USE_PYTORCH",
+            "LIBTORCH",
+            "LIBTORCH_INCLUDE",
+            "LIBTORCH_LIB",
+            "TORCH_CUDA_VERSION",
+        ] {
+            for location in ["project", "ancestor", "home"] {
+                let fixture = tempfile::tempdir().unwrap();
+                let project = fixture.path().join("project");
+                let home = fixture.path().join("home/.cargo");
+                fs::create_dir_all(&project).unwrap();
+                let config_root = match location {
+                    "project" => &project,
+                    "ancestor" => fixture.path(),
+                    _ => home.parent().unwrap(),
+                };
+                write_named_config(
+                    config_root,
+                    "config",
+                    &format!("[env]\n{name} = \"configured\"\n"),
+                );
+                write_config(config_root, "ignored invalid TOML");
+                assert!(
+                    cargo_preconfigured(&project, Some(&home), |_| None).unwrap(),
+                    "{location}: {name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cargo_selectors_merge_tables_and_obey_process_force_precedence() {
+        let fixture = tempfile::tempdir().unwrap();
+        let project = fixture.path().join("project");
+        fs::create_dir(&project).unwrap();
+        write_config(
+            fixture.path(),
+            "[env.TORCH_CUDA_VERSION]\nvalue = 'cu126'\nforce = true\n",
+        );
+        write_config(&project, "[env.TORCH_CUDA_VERSION]\nvalue = ''\n");
+        let process = |name: &str| (name == "TORCH_CUDA_VERSION").then(|| OsString::from("cu128"));
+        assert!(
+            cargo_preconfigured(&project, None, process)
+                .unwrap_err()
+                .to_string()
+                .contains("inactive, user-owned")
+        );
+        write_config(
+            &project,
+            "[env.TORCH_CUDA_VERSION]\nvalue = ''\nforce = false\n",
+        );
+        assert!(cargo_preconfigured(&project, None, process).unwrap());
+        assert!(cargo_preconfigured(&project, None, |_| None).is_err());
+        write_config(
+            &project,
+            "[env.TORCH_CUDA_VERSION]\nvalue = ''\nrelative = true\n",
+        );
+        assert!(cargo_preconfigured(&project, None, |_| None).unwrap());
+        write_config(&project, "[env]\nTORCH_CUDA_VERSION = ''\n");
+        assert!(
+            cargo_preconfigured(&project, None, |_| None)
+                .unwrap_err()
+                .to_string()
+                .contains("string/table")
+        );
+    }
+
+    #[test]
+    fn cargo_owned_cuda_can_switch_but_cannot_hide_ancestor_runtime() {
+        let project = cargo_project();
+        configure_project(project.path(), ResolvedBackend::Cuda126).unwrap();
+        assert!(!cargo_preconfigured(project.path(), None, |_| None).unwrap());
+        configure_project(project.path(), ResolvedBackend::Cpu).unwrap();
+        assert!(!cargo_preconfigured(project.path(), None, |_| None).unwrap());
+        configure_project(project.path(), ResolvedBackend::Cuda126).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        fs::write(
+            home.path().join("config.toml"),
+            "[env]\nTORCH_CUDA_VERSION = 'cu128'\n",
+        )
+        .unwrap();
+        assert!(cargo_preconfigured(project.path(), Some(home.path()), |_| None).unwrap());
+    }
+
+    #[test]
+    fn cargo_unresolved_config_fails_closed_without_writes() {
+        let project = cargo_project();
+        for original in [
+            "include = ['other.toml']\n",
+            "[env]\nLIBTORCH = 1\n",
+            "[env.LIBTORCH]\nforce = true\n",
+        ] {
+            write_config(project.path(), original);
+            assert!(cargo_preconfigured(project.path(), None, |_| None).is_err());
+            assert_eq!(
+                fs::read_to_string(active_cargo_config(project.path())).unwrap(),
+                original
+            );
+        }
+    }
+
+    #[test]
+    fn cargo_build_script_confirms_effective_selector_resolution() {
+        let project = cargo_project();
+        let home = tempfile::tempdir().unwrap();
+        fs::write(
+            home.path().join("config"),
+            "[env.TORCH_CUDA_VERSION]\nvalue = 'cu126'\nforce = true\n",
+        )
+        .unwrap();
+        fs::write(home.path().join("config.toml"), "ignored invalid TOML").unwrap();
+        write_config(project.path(), "[env.TORCH_CUDA_VERSION]\nvalue = ''\n");
+        fs::write(project.path().join("build.rs"), "fn main() { assert_eq!(std::env::var(\"TORCH_CUDA_VERSION\").unwrap(), \"\"); println!(\"cargo:rerun-if-env-changed=TORCH_CUDA_VERSION\"); }\n").unwrap();
+        assert!(
+            cargo_preconfigured(project.path(), Some(home.path()), |name| (name
+                == "TORCH_CUDA_VERSION")
+                .then(|| OsString::from("cu128")))
+            .unwrap_err()
+            .to_string()
+            .contains("inactive, user-owned")
+        );
+        let output = Command::new("cargo")
+            .args(["check", "--offline"])
+            .current_dir(project.path())
+            .env("CARGO_HOME", home.path())
+            .env("CARGO_TARGET_DIR", project.path().join("target"))
+            .env_remove("LIBTORCH_USE_PYTORCH")
+            .env_remove("LIBTORCH")
+            .env_remove("LIBTORCH_INCLUDE")
+            .env_remove("LIBTORCH_LIB")
+            .env("TORCH_CUDA_VERSION", "cu128")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        write_config(project.path(), "[env]\nLIBTORCH_USE_PYTORCH = '1'\n");
+        fs::write(
+            project.path().join("build.rs"),
+            "fn main() { assert_eq!(std::env::var(\"LIBTORCH_USE_PYTORCH\").unwrap(), \"1\"); }\n",
+        )
+        .unwrap();
+        assert!(cargo_preconfigured(project.path(), Some(home.path()), |_| None).unwrap());
+        let output = Command::new("cargo")
+            .args(["check", "--offline"])
+            .current_dir(project.path())
+            .env("CARGO_HOME", home.path())
+            .env("CARGO_TARGET_DIR", project.path().join("target"))
+            .env_remove("LIBTORCH_USE_PYTORCH")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
