@@ -77,10 +77,16 @@ C++ build tools installed, set these in PowerShell:
 ```powershell
 $env:CXX = "clang-cl"
 $env:CXXFLAGS = "$env:CXXFLAGS /std:c++20 /EHsc"
+$env:CCC_OVERRIDE_OPTIONS = "x/p:DefineConstants=GLOG_USE_GLOG_EXPORT"
 ```
 
 CI applies these settings for Windows runtime tests. LLVM documents the
 [MSVC-compatible Clang driver](https://clang.llvm.org/docs/UsersManual.html#clang-cl).
+The exact argument removal uses Clang's
+[argument override](https://clang.llvm.org/docs/UsersManual.html#ccc-override-options)
+to discard the MSBuild-only option emitted by torch-sys 0.26 (MSVC ignores it;
+Clang otherwise interprets it as a filename). Remove this version-specific
+workaround when the upstream build script is corrected.
 When using the Python
 backend, activate `.venv` so Cargo's subprocesses use its Python executable,
 and add the installed `torch/lib` directory to `PATH` for DLL loading.
