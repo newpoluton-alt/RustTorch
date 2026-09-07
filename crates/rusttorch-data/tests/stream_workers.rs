@@ -1318,6 +1318,7 @@ fn per_worker_credits_bound_fast_shards_without_blocking_their_progress()
 struct PersistentProbeFactory {
     creates: Arc<Vec<AtomicUsize>>,
     previous_tokens: Arc<Mutex<Vec<Option<CancellationToken>>>>,
+    delay_first_generation_until_cancelled: bool,
 }
 
 impl WorkerSourceFactory for PersistentProbeFactory {
@@ -1326,7 +1327,14 @@ impl WorkerSourceFactory for PersistentProbeFactory {
     type Source = std::vec::IntoIter<Result<WorkerRecord<Self::Sample>, Self::Error>>;
 
     fn create(&self, worker: WorkerContext) -> Result<Self::Source, Self::Error> {
-        assert!(!worker.cancellation.is_cancelled());
+        if self.delay_first_generation_until_cancelled
+            && worker.info.id == 1
+            && self.creates[1].load(Ordering::SeqCst) == 0
+        {
+            worker.cancellation.wait_cancelled();
+        }
+        // Early iterator drop can cancel a generation while its factory is
+        // starting. The complete second generation below proves token renewal.
         let generation = self.creates[worker.info.id].fetch_add(1, Ordering::SeqCst);
         let mut tokens = self.previous_tokens.lock().unwrap();
         if let Some(previous) = tokens[worker.info.id].replace(worker.cancellation.clone()) {
@@ -1393,6 +1401,7 @@ fn persistent_probe(ordered: bool, early_drop: bool) -> Result<(), RustTorchErro
     let mut loader = StreamDataLoaderBuilder::new(PersistentProbeFactory {
         creates: Arc::clone(&creates),
         previous_tokens: Arc::clone(&previous_tokens),
+        delay_first_generation_until_cancelled: early_drop,
     })
     .workers(2)
     .prefetch_factor(2)

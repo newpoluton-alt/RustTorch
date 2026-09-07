@@ -288,6 +288,8 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
           torch_lib="$(.venv/bin/python -c 'from pathlib import Path; import torch; print(Path(torch.__file__).resolve().parent / "lib")')"
           echo "LIBTORCH_USE_PYTORCH=1" >> "$GITHUB_ENV"
           if [ "$RUNNER_OS" = "macOS" ]; then
@@ -300,6 +302,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          "VIRTUAL_ENV=$PWD/.venv" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$PWD/.venv/Scripts" | Out-File -FilePath $env:GITHUB_PATH -Append
           $torchLib = .venv/Scripts/python.exe -c "from pathlib import Path; import torch; print(Path(torch.__file__).resolve().parent / 'lib')"
           "LIBTORCH_USE_PYTORCH=1" | Out-File -FilePath $env:GITHUB_ENV -Append
           $torchLib | Out-File -FilePath $env:GITHUB_PATH -Append
@@ -343,6 +347,8 @@ jobs:
 
       - name: Export LibTorch library path
         run: |
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
           torch_lib="$(.venv/bin/python -c 'from pathlib import Path; import torch; print(Path(torch.__file__).resolve().parent / "lib")')"
           echo "LD_LIBRARY_PATH=${torch_lib}" >> "$GITHUB_ENV"
 
