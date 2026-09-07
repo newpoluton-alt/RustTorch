@@ -12,6 +12,7 @@ publish = ["crates-io"]
 [[bin]]
 name = "rusttorch"
 path = "src/main.rs"
+doc = false
 
 [dependencies]
 toml_edit = "0.22"

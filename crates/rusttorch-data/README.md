@@ -25,7 +25,10 @@ the selected runtime's shared libraries when the executable runs.
 
 ## Example
 
-Use this package directly when an application wants the data layer separately:
+Use this package directly when an application wants the data layer separately.
+The complete compiling map and sharded-stream example is
+[`examples/loader.rs`](examples/loader.rs); the borrowed path below is the
+smallest debugging baseline:
 
 ```rust
 use std::convert::Infallible;
@@ -65,7 +68,7 @@ Owned map loaders can select bounded Rust workers with `.workers(count)` and
 `.prefetch_factor(batches_per_worker)`. Map datasets are shared through
 `Arc`; workers fetch and transform in deterministic lanes, while collation
 runs on the coordinator. Results preserve sampler order unless
-`.in_order(false)` is selected. Build rejects a conservative aggregate of
+`.ordered(false)` is selected. Build rejects a conservative aggregate of
 concrete task/control/completion slot buffers, worker/vector bookkeeping, and
 bounded channel control-block allowances above 64 MiB before sampler or
 batch-source callbacks.
@@ -242,3 +245,22 @@ states, including the assembling batch. Typed journal/channel storage participat
 in the existing 64 MiB aggregate preflight. Arbitrary heap allocations within
 user states are bounded by entry count, not by total resident bytes. Cancellation
 and drop still wait for non-cooperative native callbacks to return.
+
+## Capability matrix
+
+| Mode | Workers | Ordering | Exact checkpoint |
+|---|---:|---|---|
+| Borrowed `DataLoader::new` / `batches` | 0 | source order | no |
+| Owned map loader | 0 | sampler order | replay-safe or transactional datasets |
+| Owned map loader | positive | ordered or completion | ordered replay-safe maps only |
+| Ordinary stream iterator | 0 | source order | no |
+| `WorkerSourceFactory` stream | positive | ordered or completion | ordered `CheckpointSourceFactory` only |
+
+Call `set_epoch(epoch)` before each distributed epoch so shuffling changes
+deterministically on every rank. Item queues are bounded by
+`workers * prefetch_factor`; optional byte bounds cover logical transformed
+payloads, not allocator metadata or total process memory. Exact worker modes
+also retain the checkpoint journals described above and enforce a checked
+64 MiB aggregate allocation preflight. Cancellation is cooperative: dropping
+an iterator always joins its workers and can therefore wait for a blocking
+foreign call that ignores its `WorkerContext`.

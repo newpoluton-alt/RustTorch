@@ -102,11 +102,14 @@ Relevant behavioral source areas include `torch/nn/modules`,
 foundation adapts selected map/iterable dataset, sampling, batching,
 drop-last, and collation behavior from
 `torch/utils/data/dataset.py`, `torch/utils/data/sampler.py`,
-`torch/utils/data/dataloader.py`, and `torch/utils/data/_utils/fetch.py` at the
-version and commit above. RustTorch's fallible iterators and sampler-local
-ChaCha12 RNG are Rust-specific designs; they do not claim PyTorch RNG ordering
-or worker semantics. Files that substantially translate logic should carry a
-concise source-path attribution.
+`torch/utils/data/distributed.py`, `torch/utils/data/dataloader.py`,
+`torch/utils/data/_utils/collate.py`, `torch/utils/data/_utils/fetch.py`,
+`torch/utils/data/_utils/worker.py`,
+`torch/utils/data/datapipes/datapipe.py`, and
+`torch/utils/data/datapipes/_decorator.py` at the version and commit above.
+RustTorch's fallible iterators, threads, checkpoint protocols, and
+sampler-local ChaCha12 RNG are Rust-specific designs; they do not claim Python
+pickling, DataPipe runtime decoration, or PyTorch RNG ordering.
 
 ## Runtime acquisition and external components
 

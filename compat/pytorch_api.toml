@@ -204,6 +204,39 @@ evidence = ["tests/data.rs::dataset_default_is_empty_follows_len", "tests/data.r
 notes = "rusttorch-data owns the direct surface and rusttorch::data preserves it. DatasetSamples performs no dataset clone or precollection; format-specific decoding belongs in optional packages."
 
 [[api]]
+id = "data.dataset.datapipes"
+python_symbols = ["torch.utils.data.DataChunk", "torch.utils.data.DFIterDataPipe", "torch.utils.data.IterDataPipe", "torch.utils.data.MapDataPipe"]
+rust_symbols = ["std::iter::Iterator", "rusttorch_data::Dataset", "rusttorch_data::WorkerSourceFactory", "rusttorch_data::Transform", "rusttorch::data::Dataset", "rusttorch::data::WorkerSourceFactory", "rusttorch::data::Transform"]
+status = "partial"
+implementation = "rusttorch"
+scope = "Ordinary typed Rust iterators replace basic iterable DataPipe traversal, Dataset replaces indexed MapDataPipe access, WorkerSourceFactory creates independent sharded iterators, and Transform composes typed sample operations."
+source = "torch/utils/data/datapipes/datapipe.py"
+evidence = ["crates/rusttorch-data/tests/stream_workers.rs::four_explicit_modulo_shards_produce_each_logical_record_once", "tests/data.rs::dataset_samples_borrow_and_fetch_lazily_in_order"]
+notes = "RustTorch does not reproduce functional-name registration, reset/single-iterator hooks, Python serialization hooks, dataframe tracing, or DFIterDataPipe. Vec is the closest DataChunk container but does not retain a separate original-items raw iterator, so DataChunk is not claimed as supported."
+
+[[api]]
+id = "data.dataset.datapipes.decorators"
+python_symbols = ["torch.utils.data.functional_datapipe", "torch.utils.data.guaranteed_datapipes_determinism", "torch.utils.data.non_deterministic", "torch.utils.data.runtime_validation", "torch.utils.data.runtime_validation_disabled"]
+rust_symbols = []
+status = "python_only"
+implementation = "none"
+scope = "Python decorators dynamically register DataPipe functions, label determinism, and toggle runtime validation or construction-time determinism contexts."
+source = "torch/utils/data/datapipes/_decorator.py"
+evidence = []
+notes = "Rust traits and the type system provide compile-time composition and validation but are not semantic implementations of these mutable Python registries and context managers."
+
+[[api]]
+id = "data.internal.exports"
+python_symbols = ["torch.utils.data._DatasetKind", "torch.utils.data.argument_validation"]
+rust_symbols = []
+status = "python_only"
+implementation = "none"
+scope = "Private loader-kind dispatch and Python argument-validation helpers exported by the pinned module remain Python implementation details."
+source = "torch/utils/data/dataloader.py"
+evidence = []
+notes = "RustTorch uses type-state builders and typed configuration errors instead of exposing Python's internal enum or decorator helper."
+
+[[api]]
 id = "data.loader"
 python_symbols = ["torch.utils.data.DataLoader"]
 rust_symbols = ["rusttorch_data::DataLoader", "rusttorch_data::DataLoaderBuilder", "rusttorch_data::OwnedDataLoader", "rusttorch_data::LoaderIter", "rusttorch_data::WorkerLoaderIter", "rusttorch_data::SerialExecution", "rusttorch_data::WorkerExecution", "rusttorch_data::AutoBatch", "rusttorch_data::ExplicitBatches", "rusttorch_data::NoBatch", "rusttorch_data::LoaderError", "rusttorch_data::PipelineError", "rusttorch::data::DataLoader", "rusttorch::data::DataLoaderBuilder", "rusttorch::data::OwnedDataLoader", "rusttorch::data::LoaderIter", "rusttorch::data::WorkerLoaderIter", "rusttorch::data::SerialExecution", "rusttorch::data::WorkerExecution", "rusttorch::data::AutoBatch", "rusttorch::data::ExplicitBatches", "rusttorch::data::NoBatch", "rusttorch::data::LoaderError", "rusttorch::data::PipelineError"]
@@ -212,11 +245,11 @@ implementation = "rusttorch"
 scope = "Preserved borrowed single-pass loading plus owned, fresh epoch-aware serial or bounded map-worker iteration with default or explicit typed collation, optional no-batch conversion, sampler or batch-source plans, optional exact length, checked batch cardinality, typed five-stage one-error-then-exhaust failures, deterministic transforms, ordered or completion-order delivery, cooperative per-next timeout, optional loader-owned persistent worker pools, and order-independent PyTorch argument exclusions."
 source = "torch/utils/data/dataloader.py"
 evidence = ["tests/data.rs::loader_keeps_a_short_tail", "tests/data.rs::loader_drops_a_short_tail", "tests/data.rs::loader_rejects_zero_batch_size_with_a_structured_error", "tests/data.rs::loader_applies_fallible_collation", "tests/data.rs::loader_moves_non_clone_samples_into_batches", "tests/data.rs::loader_discards_a_partial_batch_on_dataset_failure_then_exhausts", "tests/data.rs::loader_yields_a_collation_failure_once_then_exhausts", "tests/data.rs::facade_exposes_the_owned_loader_builder", "tests/data.rs::facade_reexports_task_transform_and_worker_context_contracts", "crates/rusttorch-data/tests/current_api.rs::owned_loader_generic_defaults_remain_source_compatible", "crates/rusttorch-data/tests/loader_builder.rs::defaults_batch_scalars_and_fresh_iterations_restart", "crates/rusttorch-data/tests/loader_builder.rs::batching_controls_custom_sources_and_collators", "crates/rusttorch-data/tests/loader_builder.rs::no_batching_uses_default_and_custom_conversion", "crates/rusttorch-data/tests/loader_builder.rs::optional_lengths_never_gate_iteration", "crates/rusttorch-data/tests/loader_builder.rs::set_epoch_forwards_through_every_plan", "crates/rusttorch-data/tests/loader_builder.rs::pipeline_failures_remain_typed_and_terminate_iteration", "crates/rusttorch-data/tests/loader_builder.rs::conflicts_are_order_independent", "crates/rusttorch-data/tests/loader_builder.rs::batch_sampler_conflicts_do_not_require_discarded_operational_bounds", "crates/rusttorch-data/tests/loader_builder.rs::unallocatable_batch_size_is_a_typed_build_error_without_panicking", "crates/rusttorch-data/tests/transform.rs::every_serial_stage_keeps_its_concrete_error_and_metadata", "crates/rusttorch-data/tests/transform.rs::every_pipeline_variant_preserves_the_standard_error_source_chain"]
-notes = "rusttorch-data owns the direct loader and rusttorch::data preserves it. Owned loading defaults to batch size one, sequential sampling, zero workers, ordered output, no pinning, no timeout, and no persistence. Positive map workers share an Arc dataset, fetch and transform on bounded deterministic Rust-thread lanes, and collate only on the coordinator. Rust cannot force-cancel non-cooperative dataset or native calls, so iterator and owner drop wait for those calls before joining. Explicit stream workers are tracked separately in data.stream_workers; byte-budget, pinning, and exact serial checkpoint details are tracked in data.loader.prefetch, data.loader.pinning, and data.loader.checkpoint."
+notes = "rusttorch-data owns the direct loader and rusttorch::data preserves it. Owned loading defaults to batch size one, sequential sampling, zero workers, ordered output, no pinning, no timeout, and no persistence. Positive map workers share an Arc dataset, fetch and transform on bounded deterministic Rust-thread lanes, and collate only on the coordinator. Rust threads replace Python multiprocessing_context, subprocesses, and pickling. Rust cannot force-cancel non-cooperative dataset or native calls, so iterator and owner drop wait for those calls before joining. Explicit stream workers are tracked separately in data.stream_workers; byte-budget, pinning, and exact serial checkpoint details are tracked in data.loader.prefetch, data.loader.pinning, and data.loader.checkpoint."
 
 [[api]]
 id = "data.loader.checkpoint"
-python_symbols = ["torch.utils.data.DataLoader"]
+python_symbols = ["No PyTorch symbol (RustTorch checkpoint extension)"]
 rust_symbols = ["rusttorch_data::LOADER_STATE_SCHEMA_VERSION", "rusttorch_data::LoaderState", "rusttorch_data::LoaderConfiguration", "rusttorch_data::CheckpointPinRequest", "rusttorch_data::CheckpointPinStatus", "rusttorch_data::CheckpointBuildError", "rusttorch_data::Checkpointable", "rusttorch_data::ReplaySafeDataset", "rusttorch_data::DatasetCheckpoint", "rusttorch_data::Stateless", "rusttorch_data::TransactionalCheckpoint", "rusttorch_data::WorkerCheckpoint", "rusttorch_data::ReplaySafeMap", "rusttorch_data::TransactionalMap", "rusttorch_data::ReplaySafeTensorDataset", "rusttorch_data::StatelessWorker", "rusttorch_data::TransactionalWorker", "rusttorch_data::DataLoaderBuilder::dataset_identity", "rusttorch_data::DataLoaderBuilder::resume_from", "rusttorch_data::DataLoaderBuilder::checkpoint_stateless", "rusttorch_data::DataLoaderBuilder::checkpoint_transactional", "rusttorch_data::LoaderIter::checkpoint", "rusttorch_data::WorkerLoaderIter::checkpoint", "rusttorch_data::WorkerTransformState", "rusttorch_data::WorkerTransformLanes", "rusttorch_data::WorkerLaneState", "rusttorch_data::SequentialSamplerState", "rusttorch_data::RandomSamplerState", "rusttorch_data::SubsetRandomSamplerState", "rusttorch_data::WeightedRandomSamplerState", "rusttorch_data::DistributedSamplerState", "rusttorch_data::BatchSamplerState", "rusttorch::data::LoaderState", "rusttorch::data::CheckpointBuildError", "rusttorch::data::ReplaySafeMap", "rusttorch::data::TransactionalMap", "rusttorch::data::ReplaySafeTensorDataset"]
 status = "partial"
 implementation = "rusttorch"
@@ -227,7 +260,7 @@ notes = "This is a RustTorch-native replay capability, not Python iterator-check
 
 [[api]]
 id = "data.loader.checkpoint_stream"
-python_symbols = ["torch.utils.data.IterableDataset", "torch.utils.data.DataLoader"]
+python_symbols = ["No PyTorch symbol (RustTorch stream checkpoint extension)"]
 rust_symbols = ["rusttorch_data::CheckpointableSource", "rusttorch_data::CheckpointSourceFactory", "rusttorch_data::StreamLoaderState", "rusttorch_data::StreamLaneState", "rusttorch_data::StreamCheckpointConfiguration", "rusttorch_data::StreamCheckpointBuildError", "rusttorch_data::StreamDataLoaderBuilder::checkpointable", "rusttorch_data::StreamDataLoaderBuilder::resume", "rusttorch_data::ExactStreamDataLoader", "rusttorch_data::ExactStreamLoaderIter::checkpoint", "rusttorch::data::StreamLoaderState"]
 status = "supported"
 implementation = "rusttorch"
@@ -245,7 +278,7 @@ implementation = "rusttorch"
 scope = "Type-state-enabled recursive post-collation pinning for map and explicitly sharded stream loaders across Tensor, Vec, Option, tuples of arity two through eight, and BTreeMap values, with identity scalar/string/Bytes leaves, exact batch types, typed source-preserving failures, automatic CUDA-device-zero selection, and explicit available-CUDA validation before callbacks."
 source = "torch/utils/data/dataloader.py"
 evidence = ["crates/rusttorch-data/tests/pin_memory.rs::recursive_pin_memory_preserves_identity_leaves_keys_and_shape_without_clone", "crates/rusttorch-data/tests/pin_memory.rs::tensor_and_nested_cuda_pinning_is_checked_when_cuda_exists", "crates/rusttorch-data/tests/pin_memory.rs::automatic_pin_status_is_effective_and_preserves_the_exact_batch_type", "crates/rusttorch-data/tests/pin_memory.rs::disabled_custom_batch_has_no_pin_memory_bound", "crates/rusttorch-data/tests/pin_memory.rs::explicit_unsupported_devices_reject_before_factory_callbacks", "crates/rusttorch-data/tests/pin_memory.rs::pinning_runs_after_collation_in_both_setter_orders_when_cuda_exists", "crates/rusttorch-data/tests/pin_memory.rs::pin_failure_is_typed_once_when_cuda_exists", "crates/rusttorch-data/tests/pin_memory.rs::stream_auto_pin_status_and_batch_type_are_preserved", "tests/data.rs::facade_reexports_memory_and_pinning_contracts"]
-notes = "Automatic pinning uses CUDA device zero because RustTorch has no current-CUDA-index API. CPU-only and MPS-only runtimes report DisabledNoAccelerator and perform a no-op; explicit CPU, MPS, Vulkan, other devices, and unavailable CUDA indices are rejected. CUDA storage assertions and forced pin-failure evidence are conditional on the linked runtime exposing CUDA. This does not claim PyTorch custom pin_memory duck typing, accelerator selection beyond CUDA, or asynchronous transfer benchmarks."
+notes = "Automatic pinning uses CUDA device zero because RustTorch has no current-CUDA-index API. CPU-only and MPS-only runtimes report DisabledNoAccelerator and perform a no-op; explicit CPU, MPS, Vulkan, other devices, and unavailable CUDA indices are rejected. CUDA storage assertions and forced pin-failure evidence are conditional on the linked runtime exposing CUDA. Deprecated Python pin_memory_device is not reproduced; pin_memory_for(Device) is the typed replacement. This does not claim PyTorch custom pin_memory duck typing, accelerator selection beyond CUDA, or asynchronous transfer benchmarks."
 
 [[api]]
 id = "data.loader.prefetch"

@@ -24,23 +24,30 @@ Graph IR -> EagerExecutor ───┘                    └──────>
 
 ## Data path
 
-Map-style data flows from a borrowed `Dataset` through a caller-selected
-sampler and `DataLoader`. Streaming data stays an ordinary fallible Rust
-iterator and enters through `batches`. Both routes share the same
-single-threaded batching core:
+Map-style data flows from a `Dataset` through a sampler and either the borrowed
+debugging loader or the owned loader. Streaming data uses an ordinary fallible
+iterator at zero workers and an explicit `WorkerSourceFactory` for sharded
+positive-worker loading:
 
 ```text
-Dataset + sampler -> DataLoader ─┐
-fallible iterator -> batches ────┴─> Vec<Sample> -> optional collation -> model
+borrowed Dataset + sampler -> DataLoader ──────────────┐
+owned Dataset + sampler -> bounded worker lanes ───────┤
+fallible iterator -> batches ──────────────────────────┼─> coordinator collation -> pinning -> model
+WorkerSourceFactory -> bounded sharded worker lanes ───┘
 ```
 
-Samples are moved into one pre-sized vector per batch. Custom collation owns
-that vector and can stack tensors, pad sequences, or build structured batches
-without an implicit tensor copy in the loader. A sampler-local RNG makes
-seeded shuffling reproducible without consuming LibTorch's global random
-state. Workers, prefetch, pinned memory, distributed sharding, and loader
-checkpoint/resume remain planned in the
-[complete-loader plan](superpowers/plans/2026-08-31-complete-data-loader.md).
+Workers are bounded Rust threads rather than Python subprocesses. Map workers
+share the dataset; stream workers own factory-created shards. Fetch and
+deterministic transforms run in worker lanes, while collation runs once on the
+coordinator and optional pinning runs immediately before yield. Sampler-local
+and task-local RNGs avoid LibTorch's global random state. Item prefetch is
+always bounded and an optional logical-payload byte budget adds backpressure.
+
+Exact next-visible-batch checkpoints are a RustTorch extension. They cover
+ordered replay-safe or transactional map configurations and explicitly
+checkpointable ordered sharded streams; unsupported settings fail at build or
+checkpoint time. Iterator drop cooperatively cancels and joins all workers, so
+a native callback that ignores cancellation can delay teardown.
 
 ## Eager path
 
@@ -68,7 +75,8 @@ LibTorch autograd.
 - `nn`: eager modules, composition, initialization, and functional operations.
 - `optim`: ergonomic configuration over backend optimizers.
 - `graph`: IR, validation, passes, inspection, and eager execution.
-- `data`: fallible map and stream batching plus deterministic local sampling.
+- `data`: fallible map and sharded-stream loading, bounded workers, collation,
+  pinning, distributed sampling, and typed checkpoint state.
 - `interop`: state naming, explicit mappings, SafeTensors, and format policy.
 - `error`: structured failures at recoverable boundaries.
 

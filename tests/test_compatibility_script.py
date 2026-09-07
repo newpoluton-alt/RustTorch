@@ -470,6 +470,27 @@ class CompatibilityScriptTests(unittest.TestCase):
         ledger = CHECKER.load_ledger(ROOT / "compat" / "pytorch_api.toml")
         self.assertEqual(CHECKER.validate_ledger(ROOT, ledger), [])
 
+    def test_pinned_torch_utils_data_exports_are_explicitly_inventoried(self) -> None:
+        expected = {
+            "BatchSampler", "ChainDataset", "ConcatDataset", "DFIterDataPipe",
+            "DataChunk", "DataLoader", "Dataset", "DistributedSampler",
+            "IterDataPipe", "IterableDataset", "MapDataPipe", "RandomSampler",
+            "Sampler", "SequentialSampler", "StackDataset", "Subset",
+            "SubsetRandomSampler", "TensorDataset", "WeightedRandomSampler",
+            "_DatasetKind", "argument_validation", "default_collate",
+            "default_convert", "functional_datapipe", "get_worker_info",
+            "guaranteed_datapipes_determinism", "non_deterministic",
+            "random_split", "runtime_validation", "runtime_validation_disabled",
+        }
+        ledger = CHECKER.load_ledger(ROOT / "compat" / "pytorch_api.toml")
+        symbols = {
+            symbol.removeprefix("torch.utils.data.").split("(", 1)[0]
+            for row in ledger["api"]
+            for symbol in row["python_symbols"]
+            if symbol.startswith("torch.utils.data.")
+        }
+        self.assertEqual(expected - symbols, set())
+
     def cli_root(self) -> Path:
         (self.root / "scripts").mkdir()
         (self.root / "compat").mkdir()

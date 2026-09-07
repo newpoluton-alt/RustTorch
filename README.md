@@ -205,6 +205,7 @@ isolation, retry behavior, and dynamic-loader requirements.
 | [`rusttorch-core` compatibility](crates/rusttorch-core/COMPATIBILITY.md) | Generated core-package compatibility scope |
 | [`rusttorch-data` compatibility](crates/rusttorch-data/COMPATIBILITY.md) | Generated data-package compatibility scope |
 | [Architecture](docs/architecture.md) | Eager frontend and LibTorch boundary |
+| [`rusttorch-data` loader guide](crates/rusttorch-data/README.md) | Borrowed, threaded, sharded-stream, resource, and checkpoint modes |
 | [Platform support](docs/platform-support.md) | Runtime, devices, and system/Python setup |
 | [Backend evidence](docs/backend-parity.md) | Hardware-specific validation and parity scope |
 | [Graph system](docs/graph-system.md) | Optional graph construction, validation, and execution |

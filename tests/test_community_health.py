@@ -120,7 +120,16 @@ class CommunityHealthTests(unittest.TestCase):
         }
         self.assertEqual(
             set(jobs),
-            {"dco", "dependency-review", "quality", "msrv", "cli", "required"},
+            {
+                "dco",
+                "dependency-review",
+                "quality",
+                "msrv",
+                "cli",
+                "loader-platform",
+                "loader-stress",
+                "required",
+            },
         )
         self.assertRegex(jobs["required"], r"(?m)^    name: required$")
 
@@ -134,13 +143,13 @@ class CommunityHealthTests(unittest.TestCase):
         self.assertNotRegex(text, r"(?i)\bsecrets\b")
         cache_key_pattern = r"(?i)(?<![a-z0-9_-])cache(?:-[a-z0-9_-]+)?\s*:"
         setup_rust_sections = text.split(f"uses: {SETUP_RUST}")
-        self.assertEqual(len(setup_rust_sections) - 1, 3)
+        self.assertEqual(len(setup_rust_sections) - 1, 5)
         for section in setup_rust_sections[1:]:
             step = section.split("\n      - name:", 1)[0]
             self.assertEqual(len(re.findall(cache_key_pattern, step)), 1)
             self.assertRegex(step, r"(?m)^          cache: false$")
-        self.assertEqual(len(re.findall(cache_key_pattern, text)), 3)
-        self.assertEqual(text.count("          cache: false"), 3)
+        self.assertEqual(len(re.findall(cache_key_pattern, text)), 5)
+        self.assertEqual(text.count("          cache: false"), 5)
         self.assertNotRegex(text, r"(?i)(?:^|/)cache@")
         self.assertNotRegex(text, r"(?m)^\s*[^#\n]*:\s*write(?:-all)?\s*$")
         self.assertNotRegex(text, r"(?m)^\s*permissions:.*\bwrite\b")
@@ -171,7 +180,7 @@ class CommunityHealthTests(unittest.TestCase):
         normalized_quality = normalized_text.split("  quality:\n", 1)[1].split(
             "\n  msrv:", 1
         )[0]
-        self.assertEqual(text.count(f"uses: {SETUP_UV}"), 1)
+        self.assertEqual(text.count(f"uses: {SETUP_UV}"), 3)
         setup_uv = quality.split(f"uses: {SETUP_UV}", 1)[1].split(
             "\n      - name:", 1
         )[0]
@@ -179,8 +188,8 @@ class CommunityHealthTests(unittest.TestCase):
             '\n        with:\n          version: "0.12.3"\n          enable-cache: false\n',
             setup_uv,
         )
-        self.assertEqual(len(re.findall(r"(?i)\benable-cache\s*:", text)), 1)
-        self.assertEqual(text.count("          enable-cache: false"), 1)
+        self.assertEqual(len(re.findall(r"(?i)\benable-cache\s*:", text)), 3)
+        self.assertEqual(text.count("          enable-cache: false"), 3)
         self.assertEqual(
             len(re.findall(r"(?i)\buv\s+lock\b", normalized_quality)), 1
         )
@@ -727,7 +736,16 @@ class CommunityHealthTests(unittest.TestCase):
 
     def test_ci_checks_dco_dependency_changes_msrv_and_cli_platforms(self) -> None:
         text = self.read(".github/workflows/ci.yml")
-        for job in ("dco", "dependency-review", "quality", "msrv", "cli", "required"):
+        for job in (
+            "dco",
+            "dependency-review",
+            "quality",
+            "msrv",
+            "cli",
+            "loader-platform",
+            "loader-stress",
+            "required",
+        ):
             self.assertRegex(text, rf"(?m)^  {re.escape(job)}:$")
         dco_job = text.split("  dco:\n", 1)[1].split("\n  dependency-review:", 1)[0]
         self.assertIn("if: github.event_name == 'pull_request'", dco_job)
@@ -762,6 +780,19 @@ class CommunityHealthTests(unittest.TestCase):
         for operating_system in ("ubuntu-latest", "macos-latest", "windows-latest"):
             self.assertIn(operating_system, cli_job)
         self.assertIn("cargo test -p rusttorch-cli --all-targets --locked", cli_job)
+        platform_job = text.split("  loader-platform:\n", 1)[1].split(
+            "\n  loader-stress:", 1
+        )[0]
+        for operating_system in ("ubuntu-latest", "macos-latest", "windows-latest"):
+            self.assertIn(operating_system, platform_job)
+        self.assertIn(".venv/Scripts/python.exe", platform_job)
+        self.assertIn("DYLD_LIBRARY_PATH", platform_job)
+        self.assertIn("--test pin_memory", platform_job)
+        stress_job = text.split("  loader-stress:\n", 1)[1].split(
+            "\n  required:", 1
+        )[0]
+        self.assertIn("for pass in 1 2 3", stress_job)
+        self.assertIn("--test checkpoint_stream", stress_job)
 
     def test_ci_preserves_real_parity_docs_and_archive_verification(self) -> None:
         text = self.read(".github/workflows/ci.yml")
@@ -802,7 +833,15 @@ class CommunityHealthTests(unittest.TestCase):
         text = self.read(".github/workflows/ci.yml")
         required = text.split("  required:\n", 1)[1]
         self.assertIn("if: always()", required)
-        for job in ("dco", "dependency-review", "quality", "msrv", "cli"):
+        for job in (
+            "dco",
+            "dependency-review",
+            "quality",
+            "msrv",
+            "cli",
+            "loader-platform",
+            "loader-stress",
+        ):
             with self.subTest(job=job):
                 self.assertRegex(required, rf"(?m)^      - {re.escape(job)}$")
         for result in (
@@ -811,6 +850,8 @@ class CommunityHealthTests(unittest.TestCase):
             "QUALITY_RESULT",
             "MSRV_RESULT",
             "CLI_RESULT",
+            "LOADER_PLATFORM_RESULT",
+            "LOADER_STRESS_RESULT",
         ):
             self.assertIn(result, required)
         self.assertIn('if [ "$EVENT_NAME" = "pull_request" ]; then', required)

@@ -29,3 +29,7 @@ tch.workspace = true
 [package.metadata.docs.rs]
 no-default-features = true
 features = ["doc-only"]
+
+[[bench]]
+name = "data_loader"
+harness = false

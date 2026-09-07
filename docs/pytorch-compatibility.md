@@ -51,8 +51,8 @@ schema version, sorted IDs, pinned metadata, source paths, exact evidence
 declarations, and all three byte-for-byte generated outputs. Package extraction
 changes symbol ownership only: `rusttorch_core` and `rusttorch_data` are the
 direct surfaces, while the existing `rusttorch` paths remain facade-compatible.
-It does not add loader workers, prefetch, pinning, distributed sampling, or
-checkpoint/resume support.
+The data ledger separately records loader workers, prefetch, pinning,
+distributed sampling, and RustTorch-native checkpoint/resume scope.
 
 The canonical deterministic CPU model is verified against Python PyTorch
 2.13.0 for strict bidirectional SafeTensors loading, forward values, input and
@@ -80,6 +80,14 @@ and documented tolerances rather than assuming identical RNG streams.
 - Rust configuration types replace Python keyword arguments and dynamic values.
 - Global hooks, decorators, arbitrary Python containers, full control flow,
   and Python class reconstruction are not supported.
+- Rust worker threads replace Python multiprocessing contexts and pickling;
+  typed collators replace the mutable Python collation registry.
+- DataPipe classes, their functional registration decorators, runtime
+  validation contexts, and dataframe tracing are separately scoped in the
+  ledger rather than inferred from ordinary Rust iterators.
+- Deprecated `pin_memory_device` is not reproduced; `.pin_memory_for(Device)`
+  is the typed explicit-device replacement. Pinned classic DataLoader 2.13 has
+  no public checkpoint API, so loader checkpoint rows are RustTorch extensions.
 - `eval()` changes module behavior but does not disable autograd.
 - Explicit unavailable devices error instead of silently falling back.
 - SafeTensors is the only model-state format accepted by RustTorch 0.1;
