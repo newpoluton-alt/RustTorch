@@ -6,7 +6,7 @@ Typed datasets, samplers, batching, and loading for RustTorch.
 
 ```toml
 [dependencies]
-rusttorch-data = { version = "0.1", features = ["download-libtorch"] }
+rusttorch-data = { version = "0.2", features = ["download-libtorch"] }
 ```
 
 ## Features

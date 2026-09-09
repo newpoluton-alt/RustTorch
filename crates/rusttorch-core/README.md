@@ -6,7 +6,7 @@ Shared runtime, device, tensor, and error contracts for RustTorch.
 
 ```toml
 [dependencies]
-rusttorch-core = { version = "0.1", features = ["download-libtorch"] }
+rusttorch-core = { version = "0.2", features = ["download-libtorch"] }
 ```
 
 ## Features
