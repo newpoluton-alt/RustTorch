@@ -5,6 +5,16 @@ or graph-format stability.
 
 ## Unreleased
 
+## 0.2.0 - 2026-09-09
+
+- Add the shared `rusttorch-core` and `rusttorch-data` workspace crates.
+- Add typed datasets, samplers, collation, threaded map and stream loaders,
+  bounded prefetch, distributed sharding, memory budgets, and pinning.
+- Add exact checkpoint/resume for the documented map and sharded-stream modes.
+- Expand API documentation, compatibility tracking, examples, and benchmarks.
+- Validate Linux, macOS, and Windows loader builds with locked Python environments.
+- Add contributor rules, required CI checks, and release provenance workflows.
+
 - Add default acquisition of the pinned official LibTorch runtime through
   `torch-sys` and keep docs.rs builds network-free.
 - Add the `rusttorch setup` project bootstrap with automatic, CPU, and CUDA
