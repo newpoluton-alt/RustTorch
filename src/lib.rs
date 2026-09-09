@@ -41,9 +41,4 @@ pub mod optim;
 
 pub use device::{DeviceCapabilities, DeviceSpec, available_devices, resolve_device};
 pub use error::{Result, RustTorchError};
-pub use tch::{Device, Kind, Reduction, Tensor, no_grad, no_grad_guard};
-
-/// Seeds LibTorch's random number generator.
-pub fn manual_seed(seed: i64) {
-    tch::manual_seed(seed);
-}
+pub use rusttorch_core::{Device, Kind, Reduction, Tensor, manual_seed, no_grad, no_grad_guard};

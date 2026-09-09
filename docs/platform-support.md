@@ -46,6 +46,15 @@ a Linux/Windows NVIDIA driver meets the compatibility floor; otherwise it
 chooses CPU on supported hosts. Driver probing selects an artifact only.
 Hardware tests, not the probe, prove that a backend executes correctly.
 
+Setup reads selectors from the workspace root's applicable Cargo configuration,
+its ancestors, and `CARGO_HOME` (defaulting to the user's `.cargo` directory).
+Legacy `config` takes precedence over `config.toml`; Cargo environment tables
+merge by field and honor process environment and `force` precedence. Explicit
+backends reject an existing runtime before driver probing or configuration writes.
+The CLI recognizes its own managed CUDA selector when switching backends.
+Config includes, conflicting string/table definitions, and inactive user-owned
+CUDA entries fail closed with instructions to resolve the configuration first.
+
 Managed CPU and CUDA use separate `target/rusttorch/cpu` and
 `target/rusttorch/cuda-12.6` directories. Managed CUDA forces `cu126`; ordinary
 CPU builds must keep `TORCH_CUDA_VERSION` unset. Setup rejects a present
@@ -53,11 +62,27 @@ CPU builds must keep `TORCH_CUDA_VERSION` unset. Setup rejects a present
 raw Cargo `--target-dir` and environment overrides can bypass the isolation.
 
 For Python, system, or offline LibTorch, use
-`rusttorch = { version = "0.2", default-features = false }` and set either
+`rusttorch = { version = "0.1.0", default-features = false }` and set either
 `LIBTORCH_USE_PYTORCH=1` or `LIBTORCH=/absolute/path/to/libtorch` while
 building. Cargo `--offline` works once the dependency and compatible LibTorch
 installation are local. The platform dynamic loader must still find the
 selected installation's shared libraries when the application runs.
+
+Windows runtime CI uses LLVM's `clang-cl` with the MSVC target for the pinned
+torch 2.13 / torch-sys 0.26 combination. Keep the binding's C++17 mode: Clang
+accepts the headers' newer constructs as extensions without enabling C++20's
+conflicting `module` syntax. With LLVM and Visual Studio C++ build tools:
+
+```powershell
+$env:CXX = "clang-cl"
+$env:CXXFLAGS = "$env:CXXFLAGS /EHsc"
+$env:CCC_OVERRIDE_OPTIONS = "x/p:DefineConstants=GLOG_USE_GLOG_EXPORT"
+```
+
+The last setting removes an MSBuild-only option emitted by torch-sys that
+MSVC ignores but Clang treats as a filename. It is a version-specific build
+workaround, not a patch to the downloaded runtime. Activate the project Python
+environment and add its `torch/lib` directory to `PATH` when using that backend.
 
 ## Contributor environment entry points
 

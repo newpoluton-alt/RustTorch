@@ -18,7 +18,10 @@ machine-readable inventory. It pins PyTorch tag `v2.13.0` at commit `cf30153`
 and `tch` 0.26.0, then records each capability's stable ID, PyTorch and
 RustTorch symbols, implementation boundary, exact scope, upstream source,
 evidence, and notes. [`api-coverage.md`](api-coverage.md) is generated from
-that ledger and included on the crate's rustdoc landing page.
+that ledger and included on the facade crate's rustdoc landing page. Filtered
+[`rusttorch-core`](../crates/rusttorch-core/COMPATIBILITY.md) and
+[`rusttorch-data`](../crates/rusttorch-data/COMPATIBILITY.md) pages are
+generated from the same ledger and included by those direct packages.
 
 The statuses mean:
 
@@ -39,13 +42,17 @@ Python, and backend evidence where each claim requires it.
 After editing the canonical ledger, regenerate and verify the public page:
 
 ```sh
-python3 scripts/check-compatibility.py --write
-python3 scripts/check-compatibility.py --check
+.venv/bin/python scripts/check-compatibility.py --write
+.venv/bin/python scripts/check-compatibility.py --check
 ```
 
-Do not edit the generated page by hand. The checker validates schema version,
-sorted IDs, pinned metadata, source paths, exact evidence declarations, and
-byte-for-byte generated output.
+Do not edit any generated compatibility page by hand. The checker validates
+schema version, sorted IDs, pinned metadata, source paths, exact evidence
+declarations, and all three byte-for-byte generated outputs. Package extraction
+changes symbol ownership only: `rusttorch_core` and `rusttorch_data` are the
+direct surfaces, while the existing `rusttorch` paths remain facade-compatible.
+The data ledger separately records loader workers, prefetch, pinning,
+distributed sampling, and RustTorch-native checkpoint/resume scope.
 
 The canonical deterministic CPU model is verified against Python PyTorch
 2.13.0 for strict bidirectional SafeTensors loading, forward values, input and
@@ -73,6 +80,14 @@ and documented tolerances rather than assuming identical RNG streams.
 - Rust configuration types replace Python keyword arguments and dynamic values.
 - Global hooks, decorators, arbitrary Python containers, full control flow,
   and Python class reconstruction are not supported.
+- Rust worker threads replace Python multiprocessing contexts and pickling;
+  typed collators replace the mutable Python collation registry.
+- DataPipe classes, their functional registration decorators, runtime
+  validation contexts, and dataframe tracing are separately scoped in the
+  ledger rather than inferred from ordinary Rust iterators.
+- Deprecated `pin_memory_device` is not reproduced; `.pin_memory_for(Device)`
+  is the typed explicit-device replacement. Pinned classic DataLoader 2.13 has
+  no public checkpoint API, so loader checkpoint rows are RustTorch extensions.
 - `eval()` changes module behavior but does not disable autograd.
 - Explicit unavailable devices error instead of silently falling back.
 - SafeTensors is the only model-state format accepted by RustTorch 0.1;

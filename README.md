@@ -12,7 +12,7 @@ An unofficial, eager-first Rust frontend over LibTorch.
 [![MSRV](https://img.shields.io/crates/msrv/rusttorch.svg)](Cargo.toml)
 [![CI](https://github.com/newpoluton-alt/RustTorch/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/newpoluton-alt/RustTorch/actions/workflows/ci.yml)
 
-[Quick start](#quick-start) · [Capabilities](#current-capabilities) ·
+[Installation](#installation-and-example) · [Capabilities](#current-capabilities) ·
 [Runtime setup](#runtime-setup) · [Documentation](#documentation) ·
 [Contributing](#contributing) · [License](#license)
 
@@ -30,7 +30,7 @@ owns tensor storage, kernels, automatic differentiation, and backend execution.
 The project credo guides API and implementation choices; it is not an
 unqualified performance claim.
 
-## Quick start
+## Installation and Example
 
 `rusttorch-cli` is not published yet, so install both packages from the current
 Git source:
@@ -68,9 +68,85 @@ Then run it:
 cargo run
 ```
 
+The `rusttorch` facade is the seamless default for data loading:
+
+```rust
+use std::convert::Infallible;
+
+use rusttorch::data::{DataLoader, Dataset, SequentialSampler};
+
+struct Rows([i64; 3]);
+
+impl Dataset for Rows {
+    type Sample = i64;
+    type Error = Infallible;
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn get(&self, index: usize) -> Result<Self::Sample, Self::Error> {
+        Ok(self.0[index])
+    }
+}
+
+fn main() {
+    let rows = Rows([2, 3, 5]);
+    let batches = DataLoader::new(&rows, SequentialSampler::new(rows.len()), 2, false)
+        .expect("batch size is nonzero")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("rows are infallible");
+
+    assert_eq!(batches, vec![vec![2, 3], vec![5]]);
+}
+```
+
+Use the separate `rusttorch-data` package when an application wants the data
+layer without the facade; it provides the same loader surface directly.
+
+Owned, ordered, zero-worker map loaders also support versioned exact resume at
+consumer-visible batch boundaries. Opt in with an explicit replay-safe or
+transactional dataset wrapper and `.dataset_identity(...)`, persist the typed
+serde `LoaderState` in the format your application chooses, then pass it to
+`.resume_from(...)`. Built-in samplers (including distributed and weighted
+sampling), automatic or explicit batching, no-batch conversion, component
+state, deterministic seed metadata, and effective pinning status are validated
+before any restored state is applied. Positive-worker, prefetched, and stream
+resume are not yet supported; see the
+[`rusttorch-data` guide](crates/rusttorch-data/README.md#exact-serial-checkpoint-and-resume)
+for the complete contract and example.
+
+Owned map and explicitly sharded stream loaders support strict
+post-transform queue budgets through `.prefetch_bytes(...)` and recursive
+post-collation batch pinning through `.pin_memory()` or
+`.pin_memory_for(Device)`. Automatic pinning uses CUDA device zero when CUDA is
+available and otherwise reports a typed no-accelerator no-op. The byte estimate
+is a conservative logical payload bound for prefetched values, not a claim
+about whole-process RSS; the coordinator's active item-bounded collation batch
+is outside it.
+
 The first setup may download a large official LibTorch artifact into Cargo
 build storage. RustTorch links LibTorch dynamically, so the platform loader
 must also be able to find its shared libraries at runtime.
+
+## Features
+
+The default `download-libtorch` feature lets `tch` acquire its compatible
+LibTorch 2.13.0 runtime. For checks and rustdoc without a runtime, use
+`doc-only` with default features disabled:
+
+```toml
+[dependencies]
+rusttorch = { version = "0.1", default-features = false, features = ["doc-only"] }
+```
+
+## Native runtime
+
+Executables need LibTorch/PyTorch 2.13.0, matching `tch` 0.26.0. The default
+feature uses the downloaded runtime; alternatively, disable default features
+and build with `LIBTORCH_USE_PYTORCH=1` against Python `torch` 2.13.0 or set
+`LIBTORCH=/absolute/path/to/libtorch`. The platform dynamic loader must find
+the selected shared libraries at runtime.
 
 ## Current capabilities
 
@@ -81,7 +157,7 @@ must also be able to find its shared libraries at runtime.
 | Devices | Explicit CPU, CUDA, and MPS requests plus checked automatic selection |
 | State interchange | Strict, non-strict, mapped, and dry-run SafeTensors loading |
 | Graphs | Optional named-input graph API with branching, validation, summaries, and DOT output |
-| Data loading | Fallible map datasets and streams, seeded local sampling, batching, and custom collation |
+| Data loading | Fallible map datasets and explicitly sharded streams, bounded workers, seeded transforms, batching, and custom collation |
 | Runtime | Project-local managed CPU or CUDA 12.6 setup over official LibTorch artifacts |
 
 The machine-readable [compatibility ledger](compat/pytorch_api.toml) is the
@@ -126,7 +202,10 @@ isolation, retry behavior, and dynamic-loader requirements.
 | [API documentation](https://docs.rs/rusttorch) | Public Rust types and functions |
 | [Compatibility ledger](compat/pytorch_api.toml) | Canonical machine-readable scopes and evidence |
 | [Compatibility coverage](docs/api-coverage.md) | Generated status view of PyTorch API areas |
+| [`rusttorch-core` compatibility](crates/rusttorch-core/COMPATIBILITY.md) | Generated core-package compatibility scope |
+| [`rusttorch-data` compatibility](crates/rusttorch-data/COMPATIBILITY.md) | Generated data-package compatibility scope |
 | [Architecture](docs/architecture.md) | Eager frontend and LibTorch boundary |
+| [`rusttorch-data` loader guide](crates/rusttorch-data/README.md) | Borrowed, threaded, sharded-stream, resource, and checkpoint modes |
 | [Platform support](docs/platform-support.md) | Runtime, devices, and system/Python setup |
 | [Backend evidence](docs/backend-parity.md) | Hardware-specific validation and parity scope |
 | [Graph system](docs/graph-system.md) | Optional graph construction, validation, and execution |
@@ -144,8 +223,17 @@ surface; distributed training; quantization; replacement autograd;
 `torch.compile`; or custom-kernel framework. SafeTensors is the supported
 model-state format. Python pickle models, TorchScript, `torch.export`, and
 cross-language optimizer checkpoint resume are not exposed by the current API.
-Data loading is currently single-threaded; workers, prefetch, pinned memory,
-distributed sampling, and loader checkpoint/resume remain planned.
+Map datasets and explicitly sharded stream factories support bounded Rust
+worker threads, cooperative per-batch timeouts and cancellation, loader-owned
+persistent worker pools, and ordered or completion-order delivery. Stream
+records merge globally before batching, so `drop_last` removes at most one
+global tail. Rust cannot force-cancel a blocking foreign or native call, so
+drop waits for non-cooperative work to return. Exact loader checkpoint/resume
+supports owned ordered map loaders and explicitly checkpointable sharded
+streams. Exact worker replay requires nonpersistent workers, no custom worker
+initializer, no timeout, and no byte budget. Streams retain paired source and
+transform states and validate all shards before applying a resume. Distributed
+sampling is available without distributed training orchestration.
 
 ## Contributing
 

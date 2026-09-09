@@ -60,6 +60,211 @@ fn sequential_sampler_yields_every_index_in_order() {
 }
 
 #[test]
+fn direct_package_and_facade_sampler_match() {
+    let direct = rusttorch_data::SequentialSampler::new(2).collect::<Vec<_>>();
+    let facade = rusttorch::data::SequentialSampler::new(2).collect::<Vec<_>>();
+    assert_eq!(direct, facade);
+}
+
+#[test]
+fn facade_exposes_the_owned_loader_builder() {
+    use rusttorch::data::VecCollate;
+
+    let mut loader = DataLoader::builder(CountingDataset::new(vec![2, 3, 5]))
+        .batch_size(2)
+        .collate(VecCollate)
+        .build()
+        .expect("owned loader configuration is valid");
+    let batches = loader
+        .iter()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("dataset and collation are infallible");
+    assert_eq!(batches, [vec![2, 3], vec![5]]);
+}
+
+#[derive(Clone)]
+struct FacadeReplayRows(Vec<i64>);
+
+impl Dataset for FacadeReplayRows {
+    type Sample = i64;
+    type Error = Infallible;
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn get(&self, index: usize) -> Result<Self::Sample, Self::Error> {
+        Ok(self.0[index])
+    }
+}
+
+impl rusttorch::data::ReplaySafeDataset for FacadeReplayRows {}
+
+#[test]
+fn facade_reexports_exact_serial_checkpoint_contracts() {
+    use rusttorch::data::{CheckpointBuildError, LoaderState, ReplaySafeMap, VecCollate};
+
+    let rows = || ReplaySafeMap::new(FacadeReplayRows(vec![2, 3, 5]));
+    let mut loader = DataLoader::builder(rows())
+        .batch_size(2)
+        .collate(VecCollate)
+        .dataset_identity("facade-rows-v1".to_owned())
+        .build()
+        .expect("fresh exact loader configuration is valid");
+    let mut iteration = loader.iter();
+    assert_eq!(iteration.next().unwrap().unwrap(), [2, 3]);
+    let state = iteration
+        .checkpoint()
+        .expect("visible boundary checkpoints");
+    let json = serde_json::to_string(&state).expect("facade state serializes");
+    let decoded: LoaderState<_, _, _, _> =
+        serde_json::from_str(&json).expect("facade state deserializes");
+
+    let mut resumed = match DataLoader::builder(rows())
+        .batch_size(2)
+        .collate(VecCollate)
+        .dataset_identity("facade-rows-v1".to_owned())
+        .resume_from(decoded)
+        .build()
+    {
+        Ok(loader) => loader,
+        Err(CheckpointBuildError::Configuration(error)) => {
+            panic!("valid facade checkpoint rejected: {error}")
+        }
+        Err(CheckpointBuildError::TransformFactory(error)) => match error {},
+    };
+    assert_eq!(
+        resumed
+            .iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("resumed facade loader is infallible"),
+        [vec![5]]
+    );
+}
+
+#[test]
+fn facade_exposes_explicit_stream_worker_contracts() {
+    use rusttorch::data::{
+        LogicalSampleId, SequenceId, StreamDataLoaderBuilder, VecCollate, WorkerContext,
+        WorkerRecord, WorkerSourceFactory,
+    };
+
+    struct OneShard;
+
+    impl WorkerSourceFactory for OneShard {
+        type Sample = usize;
+        type Error = Infallible;
+        type Source = std::vec::IntoIter<Result<WorkerRecord<usize>, Infallible>>;
+
+        fn create(&self, worker: WorkerContext) -> Result<Self::Source, Self::Error> {
+            Ok(vec![Ok(WorkerRecord {
+                sequence: Some(SequenceId::new(0)),
+                logical_id: LogicalSampleId::new(worker.info.id as u64),
+                sample: 7,
+            })]
+            .into_iter())
+        }
+
+        fn exact_len(&self) -> Option<usize> {
+            Some(1)
+        }
+    }
+
+    let mut loader = StreamDataLoaderBuilder::new(OneShard)
+        .collate(VecCollate)
+        .build()
+        .expect("stream configuration is valid");
+    assert_eq!(
+        loader.iter().next().unwrap().expect("source is infallible"),
+        vec![7]
+    );
+}
+
+#[test]
+fn facade_reexports_task_transform_and_worker_context_contracts() {
+    use rusttorch::data::{
+        CancellationToken, Deadline, FnTransform, PipelineError, TaskContext, Transform,
+        WorkerInfo, get_worker_info,
+    };
+
+    let context = TaskContext {
+        loader_seed: 42,
+        epoch: 3,
+        rank: 1,
+        logical_sample: 99,
+        stage: 7,
+        cancellation: CancellationToken::new(),
+        deadline: Deadline::none(),
+    };
+    let mut transform =
+        FnTransform::new(|value: i64, _: &TaskContext| Ok::<_, Infallible>(value + 1));
+    assert_eq!(transform.transform(2, &context), Ok(3));
+    assert_eq!(context.deterministic_seed(), 0x1d7d_73dc_f6e9_4f2d);
+    assert_eq!(get_worker_info(), None);
+    assert_eq!(
+        WorkerInfo::from_loader_seed(3, 4, 42, 1, 2)
+            .expect("worker identity is valid")
+            .seed,
+        0xdcae_5da8_9952_36e4
+    );
+
+    let error: PipelineError<&str, &str, &str, &str, &str> = PipelineError::Dataset("fetch");
+    assert!(matches!(error, PipelineError::Dataset("fetch")));
+}
+
+#[test]
+fn facade_reexports_memory_and_pinning_contracts() {
+    use rusttorch::{
+        Device,
+        data::{Bytes, MemoryFootprint, PinMemory, PinMemoryStatus},
+    };
+
+    assert_eq!(Bytes(vec![1, 2, 3]).resident_bytes(), 3);
+    assert_eq!(7_i64.pin_memory(Device::Cpu).unwrap(), 7);
+    assert_eq!(PinMemoryStatus::Disabled, PinMemoryStatus::Disabled);
+}
+
+#[test]
+fn facade_reexports_typed_collation_contracts() {
+    use rusttorch::{
+        Kind, Tensor,
+        data::{
+            Bytes, Collate, CollateError, DefaultCollate, DefaultCollator, DefaultConvert,
+            DefaultConverter, FnCollate, VecCollate,
+        },
+    };
+
+    fn accepts_default_collate<T: DefaultCollate>() {}
+    fn accepts_default_convert<T: DefaultConvert>() {}
+    accepts_default_collate::<i64>();
+    accepts_default_convert::<i64>();
+
+    let mut default = DefaultCollator;
+    let numbers: Result<Tensor, CollateError> = default.collate(vec![1_i64, 2]);
+    let numbers = numbers.expect("facade default collation succeeds");
+    assert_eq!(numbers.kind(), Kind::Int64);
+
+    let records = default
+        .collate(vec![Bytes(vec![1, 2]), Bytes(vec![3])])
+        .expect("facade byte records collate");
+    assert_eq!(records, [Bytes(vec![1, 2]), Bytes(vec![3])]);
+
+    let mut converter = DefaultConverter;
+    assert_eq!(
+        converter
+            .convert(vec![1_i64, 2])
+            .expect("facade conversion succeeds"),
+        [1, 2]
+    );
+
+    let mut custom = FnCollate::new(|samples: Vec<i64>| Ok::<_, Infallible>(samples.len()));
+    assert_eq!(custom.collate(vec![1, 2]), Ok(2));
+
+    let mut vector = VecCollate;
+    assert_eq!(vector.collate(vec![1_i64, 2]), Ok(vec![1, 2]));
+}
+
+#[test]
 fn random_sampler_is_seeded_and_yields_a_permutation() {
     let first = RandomSampler::new(8, 42)
         .expect("positive length must be valid")

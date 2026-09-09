@@ -75,3 +75,10 @@ fn explicit_mps_is_resolved_or_rejected_without_fallback() {
         (_, other) => panic!("MPS resolution contradicted reported capabilities: {other:?}"),
     }
 }
+
+#[test]
+fn core_device_spec_matches_both_facade_paths() {
+    let direct: rusttorch_core::DeviceSpec = rusttorch::DeviceSpec::Cpu;
+    let facade: rusttorch::device::DeviceSpec = direct;
+    assert_eq!(facade, rusttorch::DeviceSpec::Cpu);
+}

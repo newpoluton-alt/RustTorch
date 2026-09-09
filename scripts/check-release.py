@@ -17,8 +17,10 @@ import tomllib
 
 TAG_PATTERN = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 PACKAGE_MANIFESTS = (
-    ("rusttorch", Path("Cargo.toml")),
+    ("rusttorch-core", Path("crates/rusttorch-core/Cargo.toml")),
+    ("rusttorch-data", Path("crates/rusttorch-data/Cargo.toml")),
     ("rusttorch-cli", Path("crates/rusttorch-cli/Cargo.toml")),
+    ("rusttorch", Path("Cargo.toml")),
 )
 FORBIDDEN_ARCHIVE_PARTS = {".venv", "target", "__pycache__", "libtorch"}
 FORBIDDEN_ARCHIVE_FILES = {"pyproject.toml", "uv.lock"}
@@ -50,9 +52,19 @@ def _load_toml(path: Path, label: str) -> dict:
 
 
 def _package_metadata(root: Path, version: str) -> None:
+    root_manifest = _load_toml(root / "Cargo.toml", "Cargo.toml")
+    workspace = root_manifest.get("workspace")
+    workspace_package = workspace.get("package") if isinstance(workspace, dict) else None
+    workspace_version = (
+        workspace_package.get("version") if isinstance(workspace_package, dict) else None
+    )
     versions: list[str] = []
     for expected_name, relative_manifest in PACKAGE_MANIFESTS:
-        manifest = _load_toml(root / relative_manifest, relative_manifest.as_posix())
+        manifest = (
+            root_manifest
+            if relative_manifest == Path("Cargo.toml")
+            else _load_toml(root / relative_manifest, relative_manifest.as_posix())
+        )
         package = manifest.get("package")
         if not isinstance(package, dict):
             raise ReleaseError(f"{relative_manifest.as_posix()} has no package table")
@@ -63,9 +75,14 @@ def _package_metadata(root: Path, version: str) -> None:
                 f"{relative_manifest.as_posix()} package name must be {expected_name!r}, "
                 f"found {actual_name!r}"
             )
-        if not isinstance(actual_version, str):
+        if actual_version == {"workspace": True}:
+            if not isinstance(workspace_version, str):
+                raise ReleaseError("Cargo.toml workspace package version must be a string")
+            actual_version = workspace_version
+        elif not isinstance(actual_version, str):
             raise ReleaseError(
-                f"{relative_manifest.as_posix()} package version must be a string"
+                f"{relative_manifest.as_posix()} package version must be a string or "
+                "inherit the workspace version"
             )
         versions.append(actual_version)
 
@@ -191,23 +208,20 @@ def _sha256(path: Path) -> str:
 
 
 def write_subjects(dist: Path, version: str, output: Path) -> str:
-    """Validate two release archives, write GNU SHA-256 subjects, and return base64."""
+    """Validate release archives, write GNU SHA-256 subjects, and return base64."""
 
-    archive_names = (
-        f"rusttorch-{version}.crate",
-        f"rusttorch-cli-{version}.crate",
-    )
+    expected_names = [f"{name}-{version}.crate" for name, _ in PACKAGE_MANIFESTS]
     try:
         entries = sorted(path.name for path in dist.iterdir())
     except OSError as error:
         raise ReleaseError(f"cannot inspect release directory: {error}") from error
-    if entries != sorted(archive_names):
+    if entries != sorted(expected_names):
         raise ReleaseError(
-            f"release directory must contain exactly {list(archive_names)!r}, found {entries!r}"
+            f"release directory must contain exactly {expected_names!r}, found {entries!r}"
         )
 
     lines: list[str] = []
-    for archive_name in archive_names:
+    for archive_name in expected_names:
         archive_path = dist / archive_name
         if not archive_path.is_file() or archive_path.is_symlink():
             raise ReleaseError(f"release archive {archive_name!r} must be a regular file")
@@ -227,7 +241,7 @@ def write_subjects(dist: Path, version: str, output: Path) -> str:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag", required=True, help="exact release tag, such as v0.2.0")
-    parser.add_argument("--dist", type=Path, help="directory containing both package archives")
+    parser.add_argument("--dist", type=Path, help="directory containing all workspace package archives")
     parser.add_argument("--subjects-output", type=Path, help="path for GNU SHA-256 subjects")
     return parser
 

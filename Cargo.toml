@@ -1,15 +1,15 @@
 [package]
 name = "rusttorch"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.88"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Eager PyTorch-style neural networks and graph execution for Rust, backed by LibTorch"
 documentation = "https://docs.rs/rusttorch"
-repository = "https://github.com/newpoluton-alt/RustTorch"
+repository.workspace = true
 readme = "README.md"
 keywords = ["pytorch", "libtorch", "machine-learning", "deep-learning", "autograd"]
 categories = ["science", "api-bindings"]
-license = "MIT OR Apache-2.0"
+license.workspace = true
 publish = ["crates-io"]
 exclude = [
     "/rustorch_codex_project_prompt.md",
@@ -24,27 +24,41 @@ exclude = [
 name = "rusttorch"
 
 [workspace]
-members = ["crates/rusttorch-cli"]
+members = ["crates/*"]
 default-members = ["."]
 resolver = "2"
 
-[features]
-default = ["download-libtorch"]
-download-libtorch = ["tch/download-libtorch"]
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+repository = "https://github.com/newpoluton-alt/RustTorch"
+license = "MIT OR Apache-2.0"
 
-[dependencies]
+[workspace.dependencies]
+tch = { version = "=0.26.0", default-features = false }
+thiserror = "2.0"
 rand = "0.8"
 rand_chacha = "0.3"
-tch = "0.26.0"
-thiserror = "2.0"
+crossbeam-channel = "0.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rusttorch-core = { version = "=0.1.0", path = "crates/rusttorch-core", default-features = false }
+rusttorch-data = { version = "=0.1.0", path = "crates/rusttorch-data", default-features = false }
+
+[features]
+default = ["download-libtorch"]
+download-libtorch = ["rusttorch-core/download-libtorch"]
+doc-only = ["rusttorch-core/doc-only"]
+
+[dependencies]
+rusttorch-core.workspace = true
+rusttorch-data.workspace = true
+tch.workspace = true
 
 [dev-dependencies]
-serde_json = "1.0"
+serde_json.workspace = true
 
 [package.metadata.docs.rs]
 no-default-features = true
-features = ["tch/doc-only"]
-
-[[bench]]
-name = "data_loader"
-harness = false
+features = ["doc-only"]

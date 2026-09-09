@@ -1,4 +1,5 @@
 import re
+import shlex
 import subprocess
 import tomllib
 import unittest
@@ -35,6 +36,18 @@ APPROVED_CI_ACTIONS = {
         DEPENDENCY_REVIEW,
     )
 }
+WORKSPACE_PACKAGES = (
+    "rusttorch-core",
+    "rusttorch-data",
+    "rusttorch",
+    "rusttorch-cli",
+)
+PUBLISHABLE_PACKAGE_READMES = (
+    "README.md",
+    "crates/rusttorch-core/README.md",
+    "crates/rusttorch-data/README.md",
+    "crates/rusttorch-cli/README.md",
+)
 
 REQUIRED_FILES = (
     "CODE_OF_CONDUCT.md",
@@ -107,7 +120,16 @@ class CommunityHealthTests(unittest.TestCase):
         }
         self.assertEqual(
             set(jobs),
-            {"dco", "dependency-review", "quality", "msrv", "cli", "required"},
+            {
+                "dco",
+                "dependency-review",
+                "quality",
+                "msrv",
+                "cli",
+                "loader-platform",
+                "loader-stress",
+                "required",
+            },
         )
         self.assertRegex(jobs["required"], r"(?m)^    name: required$")
 
@@ -121,13 +143,13 @@ class CommunityHealthTests(unittest.TestCase):
         self.assertNotRegex(text, r"(?i)\bsecrets\b")
         cache_key_pattern = r"(?i)(?<![a-z0-9_-])cache(?:-[a-z0-9_-]+)?\s*:"
         setup_rust_sections = text.split(f"uses: {SETUP_RUST}")
-        self.assertEqual(len(setup_rust_sections) - 1, 3)
+        self.assertEqual(len(setup_rust_sections) - 1, 5)
         for section in setup_rust_sections[1:]:
             step = section.split("\n      - name:", 1)[0]
             self.assertEqual(len(re.findall(cache_key_pattern, step)), 1)
             self.assertRegex(step, r"(?m)^          cache: false$")
-        self.assertEqual(len(re.findall(cache_key_pattern, text)), 3)
-        self.assertEqual(text.count("          cache: false"), 3)
+        self.assertEqual(len(re.findall(cache_key_pattern, text)), 5)
+        self.assertEqual(text.count("          cache: false"), 5)
         self.assertNotRegex(text, r"(?i)(?:^|/)cache@")
         self.assertNotRegex(text, r"(?m)^\s*[^#\n]*:\s*write(?:-all)?\s*$")
         self.assertNotRegex(text, r"(?m)^\s*permissions:.*\bwrite\b")
@@ -158,7 +180,7 @@ class CommunityHealthTests(unittest.TestCase):
         normalized_quality = normalized_text.split("  quality:\n", 1)[1].split(
             "\n  msrv:", 1
         )[0]
-        self.assertEqual(text.count(f"uses: {SETUP_UV}"), 1)
+        self.assertEqual(text.count(f"uses: {SETUP_UV}"), 3)
         setup_uv = quality.split(f"uses: {SETUP_UV}", 1)[1].split(
             "\n      - name:", 1
         )[0]
@@ -166,8 +188,8 @@ class CommunityHealthTests(unittest.TestCase):
             '\n        with:\n          version: "0.12.3"\n          enable-cache: false\n',
             setup_uv,
         )
-        self.assertEqual(len(re.findall(r"(?i)\benable-cache\s*:", text)), 1)
-        self.assertEqual(text.count("          enable-cache: false"), 1)
+        self.assertEqual(len(re.findall(r"(?i)\benable-cache\s*:", text)), 3)
+        self.assertEqual(text.count("          enable-cache: false"), 3)
         self.assertEqual(
             len(re.findall(r"(?i)\buv\s+lock\b", normalized_quality)), 1
         )
@@ -228,6 +250,23 @@ class CommunityHealthTests(unittest.TestCase):
         self.assertNotIn("include", package)
         self.assertIn("/pyproject.toml", package["exclude"])
         self.assertIn("/uv.lock", package["exclude"])
+
+    def assert_workspace_package_policy(self, text: str) -> None:
+        quality = text.split("  quality:\n", 1)[1].split("\n  msrv:", 1)[0]
+        normalized_quality = re.sub(r"\\\r?\n[ \t]*", "", quality)
+        self.assertEqual(
+            normalized_quality.count("cargo package --workspace --locked"),
+            1,
+        )
+        for line in normalized_quality.splitlines():
+            if "cargo package" not in line:
+                continue
+            command = re.split(
+                r"[|;&]", line[line.index("cargo package") :], maxsplit=1
+            )[0]
+            arguments = shlex.split(command)
+            if "-p" in arguments:
+                self.assertIn("--list", arguments, command)
 
     def test_required_files_exist(self) -> None:
         for relative in REQUIRED_FILES:
@@ -314,6 +353,44 @@ class CommunityHealthTests(unittest.TestCase):
         self.assertNotEqual(mutation, manifest)
         with self.assertRaises(AssertionError):
             self.assert_cargo_package_contract(mutation)
+
+    def test_publishable_library_crates_deny_missing_documentation(self) -> None:
+        for manifest, library_root in (
+            ("Cargo.toml", "src/lib.rs"),
+            ("crates/rusttorch-core/Cargo.toml", "crates/rusttorch-core/src/lib.rs"),
+            ("crates/rusttorch-data/Cargo.toml", "crates/rusttorch-data/src/lib.rs"),
+        ):
+            with self.subTest(manifest=manifest):
+                package = tomllib.loads(self.read(manifest))["package"]
+                self.assertTrue(package["publish"])
+                self.assertIn("#![deny(missing_docs)]", self.read(library_root))
+
+    def test_publishable_package_readmes_cover_required_sections(self) -> None:
+        for relative in PUBLISHABLE_PACKAGE_READMES:
+            with self.subTest(readme=relative):
+                text = self.read(relative)
+                for heading in (
+                    "Installation",
+                    "Features",
+                    "Native runtime",
+                    "Example",
+                ):
+                    self.assertIn(heading, text)
+                self.assertIn("download-libtorch", text)
+                self.assertIn("doc-only", text)
+                self.assertIn("2.13.0", text)
+
+    def test_unpublished_packages_use_current_git_source_installation(self) -> None:
+        root_readme = self.read("README.md")
+        cli_readme = self.read("crates/rusttorch-cli/README.md")
+        for command in (
+            "cargo install --git https://github.com/newpoluton-alt/RustTorch rusttorch-cli",
+            "cargo add rusttorch --git https://github.com/newpoluton-alt/RustTorch",
+        ):
+            self.assertIn(command, root_readme)
+            self.assertIn(command, cli_readme)
+        self.assertNotIn("cargo install rusttorch-cli", cli_readme)
+        self.assertNotIn("cargo add rusttorch\n", cli_readme)
 
     def test_dependabot_checks_cargo_and_actions_weekly(self) -> None:
         text = self.read(".github/dependabot.yml")
@@ -659,7 +736,16 @@ class CommunityHealthTests(unittest.TestCase):
 
     def test_ci_checks_dco_dependency_changes_msrv_and_cli_platforms(self) -> None:
         text = self.read(".github/workflows/ci.yml")
-        for job in ("dco", "dependency-review", "quality", "msrv", "cli", "required"):
+        for job in (
+            "dco",
+            "dependency-review",
+            "quality",
+            "msrv",
+            "cli",
+            "loader-platform",
+            "loader-stress",
+            "required",
+        ):
             self.assertRegex(text, rf"(?m)^  {re.escape(job)}:$")
         dco_job = text.split("  dco:\n", 1)[1].split("\n  dependency-review:", 1)[0]
         self.assertIn("if: github.event_name == 'pull_request'", dco_job)
@@ -672,12 +758,41 @@ class CommunityHealthTests(unittest.TestCase):
         self.assertIn("if: github.event_name == 'pull_request'", dependency_job)
         msrv_job = text.split("  msrv:\n", 1)[1].split("\n  cli:", 1)[0]
         self.assertIn('toolchain: "1.88"', msrv_job)
-        self.assertIn("cargo check -p rusttorch ", msrv_job)
-        self.assertIn("cargo check -p rusttorch-cli ", msrv_job)
+        matrix = msrv_job.split("        package:\n", 1)[1].split("    steps:\n", 1)[0]
+        self.assertEqual(
+            re.findall(r"(?m)^          - ([a-z0-9-]+)$", matrix),
+            list(WORKSPACE_PACKAGES),
+        )
+        library_condition = "matrix.package != 'rusttorch-cli'"
+        cli_condition = "matrix.package == 'rusttorch-cli'"
+        self.assertEqual(msrv_job.count(f"if: {library_condition}"), 1)
+        self.assertEqual(msrv_job.count(f"if: {cli_condition}"), 1)
+        self.assertIn("cargo check -p ${{ matrix.package }} --all-targets --locked", msrv_job)
+        self.assertIn("--no-default-features --features doc-only", msrv_job)
+        self.assertIn("cargo check -p rusttorch-cli --all-targets --locked", msrv_job)
+        for package in WORKSPACE_PACKAGES:
+            with self.subTest(package=package):
+                selected_commands = int(package != "rusttorch-cli") + int(
+                    package == "rusttorch-cli"
+                )
+                self.assertEqual(selected_commands, 1)
         cli_job = text.split("  cli:\n", 1)[1].split("\n  required:", 1)[0]
         for operating_system in ("ubuntu-latest", "macos-latest", "windows-latest"):
             self.assertIn(operating_system, cli_job)
         self.assertIn("cargo test -p rusttorch-cli --all-targets --locked", cli_job)
+        platform_job = text.split("  loader-platform:\n", 1)[1].split(
+            "\n  loader-stress:", 1
+        )[0]
+        for operating_system in ("ubuntu-latest", "macos-latest", "windows-latest"):
+            self.assertIn(operating_system, platform_job)
+        self.assertIn(".venv/Scripts/python.exe", platform_job)
+        self.assertIn("DYLD_LIBRARY_PATH", platform_job)
+        self.assertIn("--test pin_memory", platform_job)
+        stress_job = text.split("  loader-stress:\n", 1)[1].split(
+            "\n  required:", 1
+        )[0]
+        self.assertIn("for pass in 1 2 3", stress_job)
+        self.assertIn("--test checkpoint_stream", stress_job)
 
     def test_ci_preserves_real_parity_docs_and_archive_verification(self) -> None:
         text = self.read(".github/workflows/ci.yml")
@@ -689,20 +804,44 @@ class CommunityHealthTests(unittest.TestCase):
         self.assertIn("python -m unittest discover", quality)
         self.assertIn("cargo doc -p rusttorch --no-deps", quality)
         self.assertIn("cargo doc -p rusttorch-cli --no-deps", quality)
-        for package in ("rusttorch", "rusttorch-cli"):
+        for package in ("rusttorch-core", "rusttorch-data"):
+            self.assertRegex(
+                quality,
+                rf"cargo doc -p {re.escape(package)} --no-deps --locked "
+                r"--no-default-features\s+--features doc-only",
+            )
+        for package in WORKSPACE_PACKAGES:
             with self.subTest(package=package):
                 self.assertIn(f"cargo package -p {package} --locked --list", quality)
-                self.assertRegex(
-                    quality,
-                    rf"(?m)^\s+run: cargo package -p {re.escape(package)} --locked$",
-                )
+        self.assert_workspace_package_policy(text)
         self.assertIn("Reject unsafe package contents", quality)
+
+    def test_ci_workspace_packaging_policy_rejects_individual_archive_builds(self) -> None:
+        text = self.read(".github/workflows/ci.yml")
+        self.assert_workspace_package_policy(text)
+        for command in (
+            "cargo package -p rusttorch --locked",
+            "cargo package --locked -p rusttorch",
+        ):
+            with self.subTest(command=command):
+                mutation = text.replace("cargo package --workspace --locked", command, 1)
+                self.assertNotEqual(mutation, text)
+                with self.assertRaises(AssertionError):
+                    self.assert_workspace_package_policy(mutation)
 
     def test_required_ci_result_handles_pr_only_skips_explicitly(self) -> None:
         text = self.read(".github/workflows/ci.yml")
         required = text.split("  required:\n", 1)[1]
         self.assertIn("if: always()", required)
-        for job in ("dco", "dependency-review", "quality", "msrv", "cli"):
+        for job in (
+            "dco",
+            "dependency-review",
+            "quality",
+            "msrv",
+            "cli",
+            "loader-platform",
+            "loader-stress",
+        ):
             with self.subTest(job=job):
                 self.assertRegex(required, rf"(?m)^      - {re.escape(job)}$")
         for result in (
@@ -711,6 +850,8 @@ class CommunityHealthTests(unittest.TestCase):
             "QUALITY_RESULT",
             "MSRV_RESULT",
             "CLI_RESULT",
+            "LOADER_PLATFORM_RESULT",
+            "LOADER_STRESS_RESULT",
         ):
             self.assertIn(result, required)
         self.assertIn('if [ "$EVENT_NAME" = "pull_request" ]; then', required)

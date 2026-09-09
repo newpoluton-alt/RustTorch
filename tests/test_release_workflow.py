@@ -1,7 +1,9 @@
 import base64
+import hashlib
 import importlib.util
 import io
 import re
+import shlex
 import tarfile
 import tempfile
 import unittest
@@ -11,6 +13,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/check-release.py"
 WORKFLOW = ROOT / ".github/workflows/release.yml"
+PACKAGE_MANIFESTS = (
+    ("rusttorch-core", Path("crates/rusttorch-core/Cargo.toml")),
+    ("rusttorch-data", Path("crates/rusttorch-data/Cargo.toml")),
+    ("rusttorch-cli", Path("crates/rusttorch-cli/Cargo.toml")),
+    ("rusttorch", Path("Cargo.toml")),
+)
 
 CHECKOUT = (
     "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1"
@@ -60,14 +68,6 @@ CLI_ARCHIVE = bytes.fromhex(
     "949739faae2fcb3ecd73fa82b87f5f637dfa4ff1f559020000000000000000e0e73c00c4164e890028"
     "0000"
 )
-EXPECTED_SUBJECTS = (
-    b"105eb2e7eeab9fd3250acec60b43acb34a904f6788b0e305b7bd934e17abcca2"
-    b"  rusttorch-0.1.0.crate\n"
-    b"2dbed70cf9dc3f093d70cf9701f6f79d8bd9db29f50d2bd5cc4aff4e18cf5564"
-    b"  rusttorch-cli-0.1.0.crate\n"
-)
-
-
 def load_release_module():
     spec = importlib.util.spec_from_file_location("check_release", SCRIPT)
     if spec is None or spec.loader is None:
@@ -96,7 +96,16 @@ class ReleasePreflightTests(unittest.TestCase):
     def write_valid_repository(self) -> None:
         self.write(
             "Cargo.toml",
-            '[package]\nname = "rusttorch"\nversion = "0.1.0"\n',
+            '[package]\nname = "rusttorch"\nversion = "0.1.0"\n'
+            '\n[workspace.package]\nversion = "0.1.0"\n',
+        )
+        self.write(
+            "crates/rusttorch-core/Cargo.toml",
+            '[package]\nname = "rusttorch-core"\nversion.workspace = true\n',
+        )
+        self.write(
+            "crates/rusttorch-data/Cargo.toml",
+            '[package]\nname = "rusttorch-data"\nversion = { workspace = true }\n',
         )
         self.write(
             "crates/rusttorch-cli/Cargo.toml",
@@ -104,8 +113,10 @@ class ReleasePreflightTests(unittest.TestCase):
         )
         self.write(
             "Cargo.lock",
-            'version = 4\n\n[[package]]\nname = "rusttorch"\nversion = "0.1.0"\n'
-            '\n[[package]]\nname = "rusttorch-cli"\nversion = "0.1.0"\n',
+            'version = 4\n\n[[package]]\nname = "rusttorch-core"\nversion = "0.1.0"\n'
+            '\n[[package]]\nname = "rusttorch-data"\nversion = "0.1.0"\n'
+            '\n[[package]]\nname = "rusttorch-cli"\nversion = "0.1.0"\n'
+            '\n[[package]]\nname = "rusttorch"\nversion = "0.1.0"\n',
         )
         self.write(
             "CHANGELOG.md",
@@ -119,6 +130,55 @@ class ReleasePreflightTests(unittest.TestCase):
 
     def test_matching_tag_manifests_lock_changelog_and_ledger_pass(self) -> None:
         self.assertEqual(self.release.validate_release(self.root, "v0.1.0"), "0.1.0")
+
+    def test_dist_help_covers_all_workspace_package_archives(self) -> None:
+        self.assertIn(
+            "directory containing all workspace package archives",
+            self.release._parser().format_help(),
+        )
+
+    def test_workspace_inherited_member_versions_resolve_from_the_root(self) -> None:
+        for name, manifest in PACKAGE_MANIFESTS:
+            with self.subTest(package=name):
+                self.assertIn(
+                    (name, manifest),
+                    self.release.PACKAGE_MANIFESTS,
+                )
+        self.assertEqual(self.release.validate_release(self.root, "v0.1.0"), "0.1.0")
+
+    def test_inherited_versions_fail_closed_when_missing_malformed_or_conflicting(self) -> None:
+        mutations = {
+            "missing workspace version": (
+                "Cargo.toml",
+                '[workspace.package]\nversion = "0.1.0"',
+                "[workspace.package]",
+            ),
+            "malformed inherited version": (
+                "crates/rusttorch-core/Cargo.toml",
+                "version.workspace = true",
+                "version = { workspace = true, fallback = true }",
+            ),
+            "disabled inherited version": (
+                "crates/rusttorch-data/Cargo.toml",
+                "version = { workspace = true }",
+                "version = { workspace = false }",
+            ),
+            "conflicting literal version": (
+                "crates/rusttorch-cli/Cargo.toml",
+                'version = "0.1.0"',
+                'version = "0.1.1"',
+            ),
+        }
+        for name, (relative, old, new) in mutations.items():
+            with self.subTest(mutation=name):
+                self.write_valid_repository()
+                path = self.root / relative
+                path.write_text(
+                    path.read_text(encoding="utf-8").replace(old, new, 1),
+                    encoding="utf-8",
+                )
+                with self.assertRaises(self.release.ReleaseError):
+                    self.release.validate_release(self.root, "v0.1.0")
 
     def test_release_tags_are_strict_stable_semver(self) -> None:
         for tag in (
@@ -223,8 +283,20 @@ class ReleaseSubjectTests(unittest.TestCase):
         self.root = Path(self.temporary_directory.name)
         self.dist = self.root / "dist"
         self.dist.mkdir()
-        (self.dist / "rusttorch-0.1.0.crate").write_bytes(LIBRARY_ARCHIVE)
-        (self.dist / "rusttorch-cli-0.1.0.crate").write_bytes(CLI_ARCHIVE)
+        self.archives = {
+            "rusttorch-core-0.1.0.crate": LIBRARY_ARCHIVE,
+            "rusttorch-data-0.1.0.crate": CLI_ARCHIVE,
+            "rusttorch-cli-0.1.0.crate": CLI_ARCHIVE,
+            "rusttorch-0.1.0.crate": LIBRARY_ARCHIVE,
+        }
+        for archive_name, contents in self.archives.items():
+            package_root = archive_name.removesuffix(".crate")
+            archive_path = self.dist / archive_name
+            with tarfile.open(archive_path, "w:gz") as archive:
+                data = contents
+                member = tarfile.TarInfo(f"{package_root}/Cargo.toml")
+                member.size = len(data)
+                archive.addfile(member, io.BytesIO(data))
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
@@ -232,8 +304,14 @@ class ReleaseSubjectTests(unittest.TestCase):
     def test_subjects_are_byte_exact_gnu_sha256_in_package_order(self) -> None:
         output = self.root / "subjects.txt"
         encoded = self.release.write_subjects(self.dist, "0.1.0", output)
-        self.assertEqual(output.read_bytes(), EXPECTED_SUBJECTS)
-        self.assertEqual(encoded, base64.b64encode(EXPECTED_SUBJECTS).decode("ascii"))
+        expected = b"".join(
+            f"{hashlib.sha256((self.dist / name).read_bytes()).hexdigest()}  {name}\n".encode()
+            for name in self.archives
+        )
+        self.assertEqual(output.read_bytes(), expected)
+        self.assertEqual(encoded, base64.b64encode(expected).decode("ascii"))
+        for name in self.archives:
+            self.assertEqual(output.read_text(encoding="ascii").count(name), 1)
 
     def test_subject_generation_rejects_extra_or_missing_dist_entries(self) -> None:
         (self.dist / "unexpected.txt").write_text("stale", encoding="utf-8")
@@ -243,7 +321,7 @@ class ReleaseSubjectTests(unittest.TestCase):
             )
 
         (self.dist / "unexpected.txt").unlink()
-        (self.dist / "rusttorch-cli-0.1.0.crate").unlink()
+        (self.dist / "rusttorch-data-0.1.0.crate").unlink()
         with self.assertRaisesRegex(self.release.ReleaseError, "exactly"):
             self.release.write_subjects(
                 self.dist, "0.1.0", self.root / "subjects.txt"
@@ -379,6 +457,16 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
         build = jobs["build"]
         normalized_build = re.sub(r"\\\r?\n[ \t]*", "", build)
+        self.assertEqual(normalized_build.count("cargo package --workspace --locked"), 1)
+        for line in normalized_build.splitlines():
+            if "cargo package" not in line:
+                continue
+            command = re.split(
+                r"[|;&]", line[line.index("cargo package") :], maxsplit=1
+            )[0]
+            arguments = shlex.split(command)
+            if "-p" in arguments:
+                self.assertIn("--list", arguments, command)
         self.assertEqual(build.count(lock_policy_step), 1)
         self.assertEqual(build.count(lock_policy_boundary), 1)
         self.assertEqual(build.count("scripts/check-python-lock.py"), 1)
@@ -413,7 +501,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
             text,
         )
 
-    def test_build_uses_locked_python_and_packages_each_archive_once(self) -> None:
+    def test_build_uses_locked_python_and_packages_the_workspace_once(self) -> None:
         text = self.read_workflow()
         build = self.jobs(text)["build"]
         self.assertIn('LIBTORCH_USE_PYTORCH: "1"', build)
@@ -450,18 +538,17 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
         self.assertIn("test ! -e dist", build)
         self.assertIn("mkdir dist", build)
-        for package in ("rusttorch", "rusttorch-cli"):
-            self.assertEqual(
-                len(
-                    re.findall(
-                        rf"cargo package -p {re.escape(package)} --locked(?:\s|$)",
-                        re.sub(r"\\\r?\n[ \t]*", "", build),
-                    )
-                ),
-                1,
-            )
-        self.assertIn('target/package/rusttorch-$VERSION.crate', build)
-        self.assertIn('target/package/rusttorch-cli-$VERSION.crate', build)
+        self.assertEqual(build.count("cargo package --workspace --locked"), 1)
+        self.assertNotRegex(
+            build,
+            r"cargo\s+package\s+-p\s+[^\s]+\s+--locked(?!\s+--list)",
+        )
+        archive_names = [f"{name}-$VERSION.crate" for name, _ in PACKAGE_MANIFESTS]
+        archive_positions = []
+        for archive_name in archive_names:
+            self.assertIn(f'target/package/{archive_name}', build)
+            archive_positions.append(build.index(f'cp "target/package/{archive_name}"'))
+        self.assertEqual(archive_positions, sorted(archive_positions))
         self.assertIn(
             '--dist dist --subjects-output dist/subjects.txt',
             build,
@@ -470,16 +557,17 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('echo "base64-subjects=$base64_subjects" >> "$GITHUB_OUTPUT"', build)
         upload = build.split(f"uses: {UPLOAD_ARTIFACT}", 1)[1]
         self.assertIn("name: release-packages", upload)
-        self.assertIn("dist/rusttorch-${{ steps.preflight.outputs.version }}.crate", upload)
-        self.assertIn(
-            "dist/rusttorch-cli-${{ steps.preflight.outputs.version }}.crate", upload
-        )
+        for package, _ in PACKAGE_MANIFESTS:
+            self.assertIn(
+                f"dist/{package}-${{{{ steps.preflight.outputs.version }}}}.crate",
+                upload,
+            )
         self.assertIn("dist/subjects.txt", upload)
         self.assertIn("if-no-files-found: error", upload)
         self.assertIn("compression-level: 0", upload)
         self.assertIn("overwrite: false", upload)
         self.assertIn("include-hidden-files: false", upload)
-        self.assertRegex(upload, r"(?m)^          retention-days: [1-9][0-9]?$",)
+        self.assertRegex(upload, r"(?m)^          retention-days: 7$")
 
     def test_provenance_has_only_the_required_oidc_contract(self) -> None:
         text = self.read_workflow()
@@ -511,6 +599,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("sha256sum --check subjects.txt", release)
         self.assertIn("base64 -w 0 subjects.txt", release)
         self.assertIn('test "$actual_base64" = "$EXPECTED_BASE64_SUBJECTS"', release)
+        self.assertIn('test "$(find . -mindepth 1 -maxdepth 1 | wc -l)" -eq 5', release)
+        for package, _ in PACKAGE_MANIFESTS:
+            self.assertIn(
+                f'test -f "{package}-$VERSION.crate" && test ! -L "{package}-$VERSION.crate"',
+                release,
+            )
         self.assertIn("GH_TOKEN: ${{ github.token }}", release)
         self.assertIn("GH_REPO: ${{ github.repository }}", release)
         draft_check = (
@@ -518,20 +612,33 @@ class ReleaseWorkflowTests(unittest.TestCase):
             '= "true"'
         )
         self.assertIn(draft_check, release)
-        upload = 'gh release upload "$GITHUB_REF_NAME" dist/*.crate --clobber'
-        self.assertIn(upload, release)
+        upload = (
+            'gh release upload "$GITHUB_REF_NAME" '
+            '"dist/rusttorch-core-$VERSION.crate" '
+            '"dist/rusttorch-data-$VERSION.crate" '
+            '"dist/rusttorch-cli-$VERSION.crate" '
+            '"dist/rusttorch-$VERSION.crate" --clobber'
+        )
+        normalized_release = re.sub(r"\\\r?\n[ \t]*", "", release)
+        self.assertEqual(normalized_release.count(upload), 1)
+        self.assertNotIn("dist/*.crate", release)
         self.assertIn(".assets[].name", release)
         for asset in (
-            "rusttorch-$VERSION.crate",
-            "rusttorch-cli-$VERSION.crate",
+            *(f"{package}-$VERSION.crate" for package, _ in PACKAGE_MANIFESTS),
             "rusttorch-$VERSION.intoto.jsonl",
         ):
             self.assertIn(asset, release)
         self.assertIn('test "$actual_assets" = "$expected_assets"', release)
         publish = 'gh release edit "$GITHUB_REF_NAME" --draft=false'
-        self.assertLess(release.index(draft_check), release.index(upload))
-        self.assertLess(release.index(upload), release.index("actual_assets="))
-        self.assertLess(release.index("actual_assets="), release.index(publish))
+        self.assertLess(
+            normalized_release.index(draft_check), normalized_release.index(upload)
+        )
+        self.assertLess(
+            normalized_release.index(upload), normalized_release.index("actual_assets=")
+        )
+        self.assertLess(
+            normalized_release.index("actual_assets="), normalized_release.index(publish)
+        )
         self.assertEqual(text.rstrip().splitlines()[-1].strip(), publish)
 
     def test_release_security_contract_fails_closed_on_workflow_drift(self) -> None:
@@ -686,8 +793,18 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 1,
             ),
             "Cargo publish": text.replace(
+                "cargo package --workspace --locked",
+                "cargo package --workspace --locked\n          cargo publish -p rusttorch",
+                1,
+            ),
+            "individual package build": text.replace(
+                "cargo package --workspace --locked",
                 "cargo package -p rusttorch --locked",
-                "cargo package -p rusttorch --locked\n          cargo publish -p rusttorch",
+                1,
+            ),
+            "reordered individual package build": text.replace(
+                "cargo package --workspace --locked",
+                "cargo package --locked -p rusttorch",
                 1,
             ),
             "second GitHub release": text.replace(

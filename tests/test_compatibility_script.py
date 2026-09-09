@@ -78,7 +78,7 @@ class CompatibilityScriptTests(unittest.TestCase):
         (self.root / "Cargo.toml").write_text(
             '[package]\nname = "rusttorch"\nversion = "9.9.9"\n\n'
             '[lib]\nname = "rusttorch"\n\n'
-            '[dependencies]\ntch = "0.26.0"\n',
+            '[dependencies]\ntch = "=0.26.0"\n',
             encoding="utf-8",
         )
 
@@ -224,6 +224,60 @@ class CompatibilityScriptTests(unittest.TestCase):
                 ledger = self.ledger()
                 ledger[field] = replacement
                 self.assert_error_contains(ledger, fragment)
+
+    def test_workspace_inherited_manifest_metadata_is_valid(self) -> None:
+        (self.root / "Cargo.toml").write_text(
+            '[package]\nname = "rusttorch"\nversion.workspace = true\n\n'
+            '[lib]\nname = "rusttorch"\n\n'
+            '[workspace.package]\nversion = "0.1.0"\n\n'
+            '[workspace.dependencies]\n'
+            'tch = { version = "=0.26.0", default-features = false }\n\n'
+            '[dependencies]\ntch.workspace = true\n',
+            encoding="utf-8",
+        )
+
+        self.assertEqual(self.errors(self.ledger()), [])
+
+    def test_workspace_inherited_manifest_metadata_fails_closed(self) -> None:
+        valid = (
+            '[package]\nname = "rusttorch"\nversion.workspace = true\n\n'
+            '[lib]\nname = "rusttorch"\n\n'
+            '[workspace.package]\nversion = "0.1.0"\n\n'
+            '[workspace.dependencies]\n'
+            'tch = { version = "=0.26.0", default-features = false }\n\n'
+            '[dependencies]\ntch.workspace = true\n'
+        )
+        mutations = {
+            "missing workspace package version": valid.replace(
+                'version = "0.1.0"', "", 1
+            ),
+            "non-string workspace package version": valid.replace(
+                'version = "0.1.0"', "version = 1", 1
+            ),
+            "conflicting package inheritance": valid.replace(
+                "version.workspace = true",
+                'version = { workspace = true, value = "0.1.0" }',
+                1,
+            ),
+            "missing workspace tch": valid.replace(
+                'tch = { version = "=0.26.0", default-features = false }',
+                "",
+                1,
+            ),
+            "non-string workspace tch": valid.replace(
+                'version = "=0.26.0"', "version = 26", 1
+            ),
+            "unbounded workspace tch": valid.replace("=0.26.0", "0.26.0", 1),
+            "conflicting dependency inheritance": valid.replace(
+                "tch.workspace = true",
+                'tch = { workspace = true, version = "=0.26.0" }',
+                1,
+            ),
+        }
+        for name, manifest in mutations.items():
+            with self.subTest(mutation=name):
+                (self.root / "Cargo.toml").write_text(manifest, encoding="utf-8")
+                self.assert_error_contains(self.ledger(), "Cargo.toml")
 
     def test_release_version_is_not_part_of_compatibility_validation(self) -> None:
         self.assertEqual(self.errors(self.ledger()), [])
@@ -381,14 +435,84 @@ class CompatibilityScriptTests(unittest.TestCase):
         self.assertIn("../tests/odd%20file.rs", rendered)
         self.assertIn(r"Line\_one<br>Line \*two\*.", rendered)
 
+    def test_render_markdown_filters_package_rows_and_adjusts_links(self) -> None:
+        ledger = self.ledger()
+        data_row = ledger["api"][0]
+        data_row["id"] = "data.loader"
+        planned_row = copy.deepcopy(VALID_ROW)
+        planned_row["id"] = "data.loader.workers"
+        planned_row["status"] = "planned"
+        planned_row["implementation"] = "none"
+        planned_row["rust_symbols"] = []
+        planned_row["evidence"] = []
+        unrelated_row = copy.deepcopy(VALID_ROW)
+        unrelated_row["id"] = "nn.linear"
+        ledger["api"] = [data_row, planned_row, unrelated_row]
+
+        rendered = CHECKER.render_markdown(
+            ledger,
+            title="rusttorch-data compatibility",
+            row_prefixes=("data.",),
+            relative_root="../..",
+        )
+
+        self.assertIn("# rusttorch-data compatibility", rendered)
+        self.assertIn("`data.loader`", rendered)
+        self.assertIn("`data.loader.workers`", rendered)
+        self.assertNotIn("`nn.linear`", rendered)
+        self.assertIn("[`compat/pytorch_api.toml`](../../compat/pytorch_api.toml)", rendered)
+        self.assertIn(
+            "[`tests/eager.rs::linear_bias_and_no_bias_have_expected_shapes_and_values`](../../tests/eager.rs)",
+            rendered,
+        )
+
     def test_real_ledger_validates(self) -> None:
         ledger = CHECKER.load_ledger(ROOT / "compat" / "pytorch_api.toml")
         self.assertEqual(CHECKER.validate_ledger(ROOT, ledger), [])
+
+    def test_pinned_torch_utils_data_exports_are_explicitly_inventoried(self) -> None:
+        expected = {
+            "BatchSampler", "ChainDataset", "ConcatDataset", "DFIterDataPipe",
+            "DataChunk", "DataLoader", "Dataset", "DistributedSampler",
+            "IterDataPipe", "IterableDataset", "MapDataPipe", "RandomSampler",
+            "Sampler", "SequentialSampler", "StackDataset", "Subset",
+            "SubsetRandomSampler", "TensorDataset", "WeightedRandomSampler",
+            "_DatasetKind", "argument_validation", "default_collate",
+            "default_convert", "functional_datapipe", "get_worker_info",
+            "guaranteed_datapipes_determinism", "non_deterministic",
+            "random_split", "runtime_validation", "runtime_validation_disabled",
+        }
+        ledger = CHECKER.load_ledger(ROOT / "compat" / "pytorch_api.toml")
+        symbols = {
+            symbol.removeprefix("torch.utils.data.").split("(", 1)[0]
+            for row in ledger["api"]
+            for symbol in row["python_symbols"]
+            if symbol.startswith("torch.utils.data.")
+        }
+        self.assertEqual(expected - symbols, set())
+
+    def test_pinned_data_helper_sources_are_attributed_to_defining_modules(self) -> None:
+        ledger = CHECKER.load_ledger(ROOT / "compat" / "pytorch_api.toml")
+        sources = {
+            symbol: row["source"]
+            for row in ledger["api"]
+            for symbol in row["python_symbols"]
+        }
+        self.assertEqual(
+            sources["torch.utils.data.argument_validation"],
+            "torch/utils/data/datapipes/_decorator.py",
+        )
+        self.assertEqual(
+            sources["torch.utils.data._DatasetKind"],
+            "torch/utils/data/dataloader.py",
+        )
 
     def cli_root(self) -> Path:
         (self.root / "scripts").mkdir()
         (self.root / "compat").mkdir()
         (self.root / "docs").mkdir()
+        (self.root / "crates" / "rusttorch-core").mkdir(parents=True)
+        (self.root / "crates" / "rusttorch-data").mkdir(parents=True)
         shutil.copyfile(SCRIPT, self.root / "scripts" / SCRIPT.name)
         (self.root / "compat" / "pytorch_api.toml").write_text(
             VALID_LEDGER_TOML, encoding="utf-8"
@@ -409,8 +533,40 @@ class CompatibilityScriptTests(unittest.TestCase):
         (self.root / "docs" / "api-coverage.md").write_text(
             CHECKER.render_markdown(self.ledger()), encoding="utf-8"
         )
+        (self.root / "crates" / "rusttorch-core" / "COMPATIBILITY.md").write_text(
+            CHECKER.render_markdown(
+                self.ledger(),
+                title="rusttorch-core compatibility",
+                row_prefixes=("autograd.", "core."),
+                relative_root="../..",
+            ),
+            encoding="utf-8",
+        )
+        (self.root / "crates" / "rusttorch-data" / "COMPATIBILITY.md").write_text(
+            CHECKER.render_markdown(
+                self.ledger(),
+                title="rusttorch-data compatibility",
+                row_prefixes=("data.",),
+                relative_root="../..",
+            ),
+            encoding="utf-8",
+        )
         result = self.run_cli("--check")
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_cli_check_rejects_newline_normalization(self) -> None:
+        self.cli_root()
+        for path, contents in CHECKER.generated_documents(
+            self.root, self.ledger()
+        ).items():
+            path.write_text(contents, encoding="utf-8")
+        coverage = self.root / "docs" / "api-coverage.md"
+        coverage.write_bytes(coverage.read_bytes().replace(b"\n", b"\r\n"))
+
+        result = self.run_cli("--check")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("docs/api-coverage.md is stale", result.stderr)
 
     def test_cli_check_reports_stale_docs_without_changing_them(self) -> None:
         self.cli_root()
@@ -443,6 +599,26 @@ class CompatibilityScriptTests(unittest.TestCase):
         self.assertEqual(first_write.returncode, 0, first_write.stderr)
         first_bytes = coverage.read_bytes()
         self.assertEqual(first_bytes, CHECKER.render_markdown(self.ledger()).encode())
+        core_compatibility = self.root / "crates" / "rusttorch-core" / "COMPATIBILITY.md"
+        data_compatibility = self.root / "crates" / "rusttorch-data" / "COMPATIBILITY.md"
+        self.assertEqual(
+            core_compatibility.read_bytes(),
+            CHECKER.render_markdown(
+                self.ledger(),
+                title="rusttorch-core compatibility",
+                row_prefixes=("autograd.", "core."),
+                relative_root="../..",
+            ).encode(),
+        )
+        self.assertEqual(
+            data_compatibility.read_bytes(),
+            CHECKER.render_markdown(
+                self.ledger(),
+                title="rusttorch-data compatibility",
+                row_prefixes=("data.",),
+                relative_root="../..",
+            ).encode(),
+        )
 
         check = self.run_cli("--check")
         self.assertEqual(check.returncode, 0, check.stderr)
