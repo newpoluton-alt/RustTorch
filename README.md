@@ -32,14 +32,13 @@ unqualified performance claim.
 
 ## Installation and Example
 
-`rusttorch-cli` is not published yet, so install both packages from the current
-Git source:
+Install the 0.2 release from crates.io:
 
 ```sh
-cargo install --git https://github.com/newpoluton-alt/RustTorch rusttorch-cli
+cargo install rusttorch-cli --version 0.2.0
 cargo new rusttorch-demo
 cd rusttorch-demo
-cargo add rusttorch --git https://github.com/newpoluton-alt/RustTorch
+cargo add rusttorch@0.2
 rusttorch setup --backend auto
 ```
 
@@ -137,7 +136,7 @@ LibTorch 2.13.0 runtime. For checks and rustdoc without a runtime, use
 
 ```toml
 [dependencies]
-rusttorch = { version = "0.1", default-features = false, features = ["doc-only"] }
+rusttorch = { version = "0.2", default-features = false, features = ["doc-only"] }
 ```
 
 ## Native runtime

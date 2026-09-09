@@ -29,7 +29,7 @@ default-members = ["."]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 repository = "https://github.com/newpoluton-alt/RustTorch"
@@ -43,8 +43,8 @@ rand_chacha = "0.3"
 crossbeam-channel = "0.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-rusttorch-core = { version = "=0.1.0", path = "crates/rusttorch-core", default-features = false }
-rusttorch-data = { version = "=0.1.0", path = "crates/rusttorch-data", default-features = false }
+rusttorch-core = { version = "=0.2.0", path = "crates/rusttorch-core", default-features = false }
+rusttorch-data = { version = "=0.2.0", path = "crates/rusttorch-data", default-features = false }
 
 [features]
 default = ["download-libtorch"]
