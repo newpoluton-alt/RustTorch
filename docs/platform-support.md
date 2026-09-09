@@ -68,6 +68,22 @@ building. Cargo `--offline` works once the dependency and compatible LibTorch
 installation are local. The platform dynamic loader must still find the
 selected installation's shared libraries when the application runs.
 
+Windows runtime CI uses LLVM's `clang-cl` with the MSVC target for the pinned
+torch 2.13 / torch-sys 0.26 combination. Keep the binding's C++17 mode: Clang
+accepts the headers' newer constructs as extensions without enabling C++20's
+conflicting `module` syntax. With LLVM and Visual Studio C++ build tools:
+
+```powershell
+$env:CXX = "clang-cl"
+$env:CXXFLAGS = "$env:CXXFLAGS /EHsc"
+$env:CCC_OVERRIDE_OPTIONS = "x/p:DefineConstants=GLOG_USE_GLOG_EXPORT"
+```
+
+The last setting removes an MSBuild-only option emitted by torch-sys that
+MSVC ignores but Clang treats as a filename. It is a version-specific build
+workaround, not a patch to the downloaded runtime. Activate the project Python
+environment and add its `torch/lib` directory to `PATH` when using that backend.
+
 ## Contributor environment entry points
 
 From the repository root, source one script:

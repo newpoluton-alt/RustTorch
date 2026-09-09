@@ -302,6 +302,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          # Keep torch-sys's C++17 mode: Clang supports the header extensions
+          # without treating the binding's `module` typedef as C++20 syntax.
+          "CXX=clang-cl" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "CXXFLAGS=$env:CXXFLAGS /EHsc" | Out-File -FilePath $env:GITHUB_ENV -Append
+          # This upstream MSBuild-only option is ignored by cl.exe, not Clang.
+          "CCC_OVERRIDE_OPTIONS=x/p:DefineConstants=GLOG_USE_GLOG_EXPORT" | Out-File -FilePath $env:GITHUB_ENV -Append
           "VIRTUAL_ENV=$PWD/.venv" | Out-File -FilePath $env:GITHUB_ENV -Append
           "$PWD/.venv/Scripts" | Out-File -FilePath $env:GITHUB_PATH -Append
           $torchLib = .venv/Scripts/python.exe -c "from pathlib import Path; import torch; print(Path(torch.__file__).resolve().parent / 'lib')"
