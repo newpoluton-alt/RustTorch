@@ -971,7 +971,10 @@ fn queued_low_record_beats_an_expired_deadline_after_high_reassembly() -> Result
     queued_rx.recv().unwrap();
     assert_eq!(iterator.next().unwrap().unwrap(), vec![0]);
     assert_eq!(iterator.next().unwrap().unwrap(), vec![1]);
-    assert!(iterator.next().is_none());
+    // The source signals after both records are queued, before returning None.
+    // Its terminal event may still be in flight, so another 1 ns receive can
+    // legitimately time out. Drop joins the worker without racing that event.
+    drop(iterator);
     Ok(())
 }
 
