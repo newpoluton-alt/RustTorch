@@ -46,8 +46,10 @@ always bounded and an optional logical-payload byte budget adds backpressure.
 Exact next-visible-batch checkpoints are a RustTorch extension. They cover
 ordered replay-safe or transactional map configurations and explicitly
 checkpointable ordered sharded streams; unsupported settings fail at build or
-checkpoint time. Iterator drop cooperatively cancels and joins all workers, so
-a native callback that ignores cancellation can delay teardown.
+checkpoint time. Iterator drop cooperatively cancels active work. Nonpersistent
+workers are joined; persistent pools quiesce and retain their threads until the
+loader is dropped. A native callback that ignores cancellation can delay either
+operation.
 
 ## Eager path
 
@@ -56,7 +58,7 @@ operations, so LibTorch records the runtime autograd graph directly. RustTorch
 must not detach, copy through host memory, change device, or enter no-gradient
 mode unless the caller explicitly requests it.
 
-Models use `tch::nn::VarStore` for parameters. Module wrappers own high-level
+Models use `nn::VarStore` (the existing LibTorch-backed parameter store) for parameters. Module wrappers own high-level
 configuration, validation, names, initialization behavior, and train/eval
 state; numerical work remains in `tch`/LibTorch.
 

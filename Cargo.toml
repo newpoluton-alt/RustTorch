@@ -3,7 +3,7 @@ name = "rusttorch"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Eager PyTorch-style neural networks and graph execution for Rust, backed by LibTorch"
+description = "Build, train, and run neural networks in Rust with LibTorch"
 documentation = "https://docs.rs/rusttorch"
 repository.workspace = true
 readme = "README.md"
@@ -12,6 +12,7 @@ categories = ["science", "api-bindings"]
 license.workspace = true
 publish = ["crates-io"]
 exclude = [
+    "/.serena",
     "/rustorch_codex_project_prompt.md",
     "/crates/rusttorch-cli",
     "/pyproject.toml",

@@ -2,38 +2,33 @@
 
 # RustTorch
 
-**easy to use and easy to implement, but crazy fast**
-
-An unofficial, eager-first Rust frontend over LibTorch.
+**Build, train, and run neural networks in Rust.**
 
 [![crates.io](https://img.shields.io/crates/v/rusttorch.svg)](https://crates.io/crates/rusttorch)
 [![docs.rs](https://img.shields.io/docsrs/rusttorch)](https://docs.rs/rusttorch)
 [![license](https://img.shields.io/crates/l/rusttorch.svg)](#license)
-[![MSRV](https://img.shields.io/crates/msrv/rusttorch.svg)](Cargo.toml)
 [![CI](https://github.com/newpoluton-alt/RustTorch/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/newpoluton-alt/RustTorch/actions/workflows/ci.yml)
 
-[Installation](#installation-and-example) · [Capabilities](#current-capabilities) ·
-[Runtime setup](#runtime-setup) · [Documentation](#documentation) ·
-[Contributing](#contributing) · [License](#license)
+[Get started](#installation) · [Train a model](#example-train-a-regressor) ·
+[Guides](#documentation) · [Roadmap](docs/roadmap.md) · [Contribute](CONTRIBUTING.md)
 
 </div>
 
-> [!IMPORTANT]
-> RustTorch is early-stage software with a deliberately small API. It does not
-> provide full PyTorch parity, and the 0.x series does not promise API or graph
-> format stability. Use the [canonical compatibility ledger](compat/pytorch_api.toml)
-> and its [generated coverage page](docs/api-coverage.md) to evaluate
-> implemented scope.
+RustTorch brings tensor computation, automatic differentiation, neural-network
+layers, optimizers, and typed data pipelines to Rust. Write ordinary Rust
+functions, compose layers, and train on CPU or an available CUDA or MPS device.
+LibTorch supplies the numerical kernels; RustTorch supplies model construction,
+validation, data loading, and weight management.
 
-RustTorch offers fallible Rust APIs for common eager model code while LibTorch
-owns tensor storage, kernels, automatic differentiation, and backend execution.
-The project credo guides API and implementation choices; it is not an
-unqualified performance claim.
+Use it for regression and classification, convolutional feature extraction,
+learned token embeddings, streaming training data, and inference inside a Rust
+application. The API is evolving in the 0.x series. The
+[roadmap](docs/roadmap.md) separates available functionality from future work.
 
-## Installation and Example
+## Installation
 
-`rusttorch-cli` is not published yet, so install both packages from the current
-Git source:
+Install from the current repository while the workspace packages are prepared
+for publication. Rust 1.88 or newer is required.
 
 ```sh
 cargo install --git https://github.com/newpoluton-alt/RustTorch rusttorch-cli
@@ -43,210 +38,161 @@ cargo add rusttorch --git https://github.com/newpoluton-alt/RustTorch
 rusttorch setup --backend auto
 ```
 
-Replace `src/main.rs` with this eager example:
+Setup selects a compatible native runtime and checks your project. The first
+setup can download a large LibTorch archive. Use `--backend cpu` to select CPU
+or `--backend cuda-12.6` for the managed CUDA distribution on a supported host.
+See [platform setup](docs/platform-support.md) for prerequisites and runtime
+library paths.
+
+## Example: train a regressor
+
+Put this in `src/main.rs`, then run `cargo run`. Each row contains two numeric
+features; the model learns one target value per row.
 
 ```rust
-use rusttorch::nn::Sequential;
-use rusttorch::{DeviceSpec, Kind, Result, Tensor};
+use rusttorch::{DeviceSpec, Result, Tensor, no_grad};
+use rusttorch::nn::{Sequential, functional};
+use rusttorch::optim::AdamW;
 
 fn main() -> Result<()> {
-    let model = Sequential::builder()
-        .linear(2, 4)
+    let mut model = Sequential::builder()
+        .linear(2, 16)
         .relu()
-        .linear(4, 1)
+        .linear(16, 1)
         .build(DeviceSpec::Auto)?;
-    let input = Tensor::f_zeros([8, 2], (Kind::Float, model.device()))?;
-    let output = model.forward(&input)?;
-    assert_eq!(output.size(), [8, 1]);
+    let inputs = Tensor::from_slice(&[0_f32, 0., 0., 1., 1., 0., 1., 1.])
+        .f_reshape([4, 2])?.f_to_device(model.device())?;
+    let targets = Tensor::from_slice(&[0_f32, 1., 1., 2.])
+        .f_reshape([4, 1])?.f_to_device(model.device())?;
+    let mut optimizer = AdamW::builder()
+        .learning_rate(0.01)
+        .build(model.var_store())?;
+
+    model.train();
+    for _ in 0..200 {
+        let predictions = model.forward(&inputs)?;
+        let loss = functional::mse_loss(&predictions, &targets)?;
+        optimizer.backward_step(&loss)?;
+    }
+
+    model.eval();
+    let predictions = no_grad(|| model.forward(&inputs))?;
+    println!("predictions: {predictions:?}");
+    model.save_weights("regressor.safetensors")?;
     Ok(())
 }
 ```
 
-Then run it:
+For classification, make the final layer output one logit per class and use
+`functional::cross_entropy` with `Int64` class indices. For inference, rebuild
+the same architecture, call `load_weights("regressor.safetensors")`, switch to
+`eval()`, and run the forward pass inside `no_grad`. Evaluation mode controls
+layers such as dropout; `no_grad` controls gradient recording.
 
-```sh
-cargo run
-```
+The [training guide](docs/training.md) covers custom models, optimizer choice,
+gradient accumulation and clipping, learning-rate changes, and saving weights.
 
-The `rusttorch` facade is the seamless default for data loading:
+## Example: batch a dataset
+
+A dataset returns owned samples and its own error type. The borrowed loader is
+useful for a small dataset or for debugging a preprocessing pipeline.
 
 ```rust
 use std::convert::Infallible;
-
 use rusttorch::data::{DataLoader, Dataset, SequentialSampler};
 
-struct Rows([i64; 3]);
-
+struct Rows(Vec<f32>);
 impl Dataset for Rows {
-    type Sample = i64;
+    type Sample = f32;
     type Error = Infallible;
-
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    fn get(&self, index: usize) -> Result<Self::Sample, Self::Error> {
+    fn len(&self) -> usize { self.0.len() }
+    fn get(&self, index: usize) -> Result<f32, Infallible> {
         Ok(self.0[index])
     }
 }
 
-fn main() {
-    let rows = Rows([2, 3, 5]);
-    let batches = DataLoader::new(&rows, SequentialSampler::new(rows.len()), 2, false)
-        .expect("batch size is nonzero")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("rows are infallible");
-
-    assert_eq!(batches, vec![vec![2, 3], vec![5]]);
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let data = Rows(vec![2.0, 3.0, 5.0]);
+    let batches = DataLoader::new(&data, SequentialSampler::new(data.len()), 2, false)?
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(batches, [vec![2.0, 3.0], vec![5.0]]);
+    Ok(())
 }
 ```
 
-Use the separate `rusttorch-data` package when an application wants the data
-layer without the facade; it provides the same loader surface directly.
-
-Owned, ordered, zero-worker map loaders also support versioned exact resume at
-consumer-visible batch boundaries. Opt in with an explicit replay-safe or
-transactional dataset wrapper and `.dataset_identity(...)`, persist the typed
-serde `LoaderState` in the format your application chooses, then pass it to
-`.resume_from(...)`. Built-in samplers (including distributed and weighted
-sampling), automatic or explicit batching, no-batch conversion, component
-state, deterministic seed metadata, and effective pinning status are validated
-before any restored state is applied. Positive-worker, prefetched, and stream
-resume are not yet supported; see the
-[`rusttorch-data` guide](crates/rusttorch-data/README.md#exact-serial-checkpoint-and-resume)
-for the complete contract and example.
-
-Owned map and explicitly sharded stream loaders support strict
-post-transform queue budgets through `.prefetch_bytes(...)` and recursive
-post-collation batch pinning through `.pin_memory()` or
-`.pin_memory_for(Device)`. Automatic pinning uses CUDA device zero when CUDA is
-available and otherwise reports a typed no-accelerator no-op. The byte estimate
-is a conservative logical payload bound for prefetched values, not a claim
-about whole-process RSS; the coordinator's active item-bounded collation batch
-is outside it.
-
-The first setup may download a large official LibTorch artifact into Cargo
-build storage. RustTorch links LibTorch dynamically, so the platform loader
-must also be able to find its shared libraries at runtime.
+Use `DataLoader::builder(dataset)` for reusable epochs, shuffling, transforms,
+worker threads, and prefetching. Use `StreamDataLoader` for explicitly sharded
+streams. See the [data guide](crates/rusttorch-data/README.md) for worker
+configuration, distributed sampling, memory budgets, and the supported exact
+checkpoint/resume combinations.
 
 ## Features
 
-The default `download-libtorch` feature lets `tch` acquire its compatible
-LibTorch 2.13.0 runtime. For checks and rustdoc without a runtime, use
-`doc-only` with default features disabled:
+| Need | RustTorch API |
+|---|---|
+| Tensor math and gradients | `Tensor`, `Kind`, `no_grad`, and fallible tensor operations |
+| Dense models | `nn::Linear`, `Sequential`, ReLU, GELU, Dropout, and Flatten |
+| Spatial or sequence features | `nn::Conv1d`, `Conv2d`, and `Conv3d` |
+| Feature normalization | `nn::LayerNorm` |
+| Learned categorical or token features | `nn::Embedding` |
+| Model training | MSE, cross-entropy, Adam, AdamW, RMSprop, SGD, and gradient clipping |
+| Input pipelines | Datasets, samplers, collation, bounded workers, streams, and checkpoints |
+| Weight persistence | SafeTensors with strict validation and explicit name mappings |
+| Model inspection | Named graph inputs, validation, summaries, and DOT diagrams |
 
-```toml
-[dependencies]
-rusttorch = { version = "0.1", default-features = false, features = ["doc-only"] }
-```
+`download-libtorch` is enabled by default and acquires the compatible native
+runtime. For documentation builds without a native runtime, disable defaults
+and enable `doc-only`. **`doc-only` cannot run a model.**
 
 ## Native runtime
 
-Executables need LibTorch/PyTorch 2.13.0, matching `tch` 0.26.0. The default
-feature uses the downloaded runtime; alternatively, disable default features
-and build with `LIBTORCH_USE_PYTORCH=1` against Python `torch` 2.13.0 or set
-`LIBTORCH=/absolute/path/to/libtorch`. The platform dynamic loader must find
-the selected shared libraries at runtime.
+RustTorch currently uses `tch` 0.26.0 and LibTorch 2.13.0. LibTorch is the C++
+numerical library also used by PyTorch; your Rust application does not need a
+Python training loop. You can use the managed download, an installed LibTorch
+selected with `LIBTORCH`, or Python `torch` 2.13.0 selected with
+`LIBTORCH_USE_PYTORCH=1`. The platform loader must find the selected shared
+libraries when your executable runs.
 
-## Current capabilities
-
-| Area | Implemented scope |
-|---|---|
-| Eager models | `Linear`, `Identity`, ReLU, GELU, Dropout, Flatten, and `Sequential` |
-| Training | LibTorch autograd, MSE and cross-entropy losses, Adam, and SGD |
-| Devices | Explicit CPU, CUDA, and MPS requests plus checked automatic selection |
-| State interchange | Strict, non-strict, mapped, and dry-run SafeTensors loading |
-| Graphs | Optional named-input graph API with branching, validation, summaries, and DOT output |
-| Data loading | Fallible map datasets and explicitly sharded streams, bounded workers, seeded transforms, batching, and custom collation |
-| Runtime | Project-local managed CPU or CUDA 12.6 setup over official LibTorch artifacts |
-
-The machine-readable [compatibility ledger](compat/pytorch_api.toml) is the
-canonical inventory; [API coverage](docs/api-coverage.md) is its generated
-human-readable view. Every entry has an exact scope and one of `supported`,
-`partial`, `planned`, `python_only`, or `not_supported`. `supported` applies
-only to the written scope. Rows cover differently sized capabilities, so their
-count is not converted into a support percentage.
-
-Backend availability depends on the linked LibTorch build and host; explicit
-unavailable device requests return errors rather than silently falling back.
-
-## Runtime setup
-
-Run one of the three supported commands inside a Cargo project:
-
-```sh
-rusttorch setup --backend auto
-rusttorch setup --backend cpu
-rusttorch setup --backend cuda-12.6
-```
-
-- `auto` preserves an active Python, system LibTorch, or CUDA selector.
-  Otherwise it chooses CUDA 12.6 on a compatible Linux or Windows NVIDIA host
-  and CPU on the remaining supported hosts.
-- `cpu` selects the managed CPU distribution. On supported macOS systems that
-  distribution can expose MPS.
-- `cuda-12.6` selects `cu126` on Linux or Windows after checking the NVIDIA
-  driver. It never installs or changes drivers or CUDA toolkits.
-
-Setup locates the Cargo workspace root, keeps managed CPU and CUDA artifacts
-separate, writes project-local Cargo settings, and runs `cargo check`. Existing
-Python, system, and offline LibTorch workflows remain available. See
-[platform setup](docs/platform-support.md) and
-[CUDA support](docs/cuda-support.md) for selectors, driver floors, target
-isolation, retry behavior, and dynamic-loader requirements.
+`DeviceSpec::Auto` selects CUDA, then MPS, then CPU according to runtime
+availability. An explicit unavailable device returns an error. Consult the
+[device guide](docs/device-system.md), [CUDA guide](docs/cuda-support.md), and
+[MPS guide](docs/mps-support.md) for backend requirements.
 
 ## Documentation
 
-| Guide | What it covers |
+| Guide | Start here when you want to… |
 |---|---|
-| [API documentation](https://docs.rs/rusttorch) | Public Rust types and functions |
-| [Compatibility ledger](compat/pytorch_api.toml) | Canonical machine-readable scopes and evidence |
-| [Compatibility coverage](docs/api-coverage.md) | Generated status view of PyTorch API areas |
-| [`rusttorch-core` compatibility](crates/rusttorch-core/COMPATIBILITY.md) | Generated core-package compatibility scope |
-| [`rusttorch-data` compatibility](crates/rusttorch-data/COMPATIBILITY.md) | Generated data-package compatibility scope |
-| [Architecture](docs/architecture.md) | Eager frontend and LibTorch boundary |
-| [`rusttorch-data` loader guide](crates/rusttorch-data/README.md) | Borrowed, threaded, sharded-stream, resource, and checkpoint modes |
-| [Platform support](docs/platform-support.md) | Runtime, devices, and system/Python setup |
-| [Backend evidence](docs/backend-parity.md) | Hardware-specific validation and parity scope |
-| [Graph system](docs/graph-system.md) | Optional graph construction, validation, and execution |
-| [Model interoperability](docs/model-interoperability.md) | SafeTensors exchange with PyTorch |
-| [Porting policy](docs/porting-policy.md) | Source attribution and compatibility rules |
-| [Release provenance](docs/releasing.md) | Exact package subjects and verification procedure |
-| [Governance](GOVERNANCE.md) | Roles, decisions, security, and release authority |
-| [Support](SUPPORT.md) | Usage questions and issue routing |
-| [Security](SECURITY.md) | Supported versions and private vulnerability reporting |
+| [Rust API reference](https://docs.rs/rusttorch) | Find types, methods, defaults, and Rust examples |
+| [Models and training](docs/training.md) | Build a custom model and control its training loop |
+| [Data pipelines](crates/rusttorch-data/README.md) | Load, transform, batch, and resume training data |
+| [Graph guide](docs/graph-system.md) | Inspect named inputs, branches, and execution order |
+| [Model interoperability](docs/model-interoperability.md) | Exchange weights with another model implementation |
+| [Platform setup](docs/platform-support.md) | Configure the native runtime for your machine |
+| [Architecture](docs/architecture.md) | Understand ownership and execution boundaries |
+| [Roadmap](docs/roadmap.md) | See implementation priorities and remaining capabilities |
+| [Compatibility evidence](docs/api-coverage.md) | Check exact tested scopes and source references |
 
-## Limitations
-
-RustTorch currently has no convolutional, recurrent, or transformer module
-surface; distributed training; quantization; replacement autograd;
-`torch.compile`; or custom-kernel framework. SafeTensors is the supported
-model-state format. Python pickle models, TorchScript, `torch.export`, and
-cross-language optimizer checkpoint resume are not exposed by the current API.
-Map datasets and explicitly sharded stream factories support bounded Rust
-worker threads, cooperative per-batch timeouts and cancellation, loader-owned
-persistent worker pools, and ordered or completion-order delivery. Stream
-records merge globally before batching, so `drop_last` removes at most one
-global tail. Rust cannot force-cancel a blocking foreign or native call, so
-drop waits for non-cooperative work to return. Exact loader checkpoint/resume
-supports owned ordered map loaders and explicitly checkpointable sharded
-streams. Exact worker replay requires nonpersistent workers, no custom worker
-initializer, no timeout, and no byte budget. Streams retain paired source and
-transform states and validate all shards before applying a resume. Distributed
-sampling is available without distributed training orchestration.
+PyTorch is the behavioral reference for compatibility tests and weight exchange.
+It appears in provenance and interoperability guides for that reason. The
+long-term goal is to provide its framework functionality through RustTorch
+APIs; [current coverage](docs/api-coverage.md) is narrower. Python runtime
+features need explicit Rust equivalents, and planned functionality is not a
+support claim.
 
 ## Contributing
 
-Contributions are welcome. Start with the
-[contribution guide](CONTRIBUTING.md), keep claims within tested scope, and add
-the narrowest evidence that proves a change. Report vulnerabilities through
-the project's [security policy](SECURITY.md), never a public issue.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing an API change. It covers
+issue-first discussion, focused tests, examples, compatibility evidence, source
+attribution, and DCO sign-off. The [maintainer guide](docs/maintainer-guide.md)
+describes review and release checks.
+
+[Code of conduct](CODE_OF_CONDUCT.md) · [Governance](GOVERNANCE.md) ·
+[Support](SUPPORT.md) · [Security](SECURITY.md)
 
 ## License
 
-Original RustTorch code is available under either the [MIT License](LICENSE-MIT)
-or the [Apache License 2.0](LICENSE-APACHE), at your option. PyTorch, LibTorch,
-`tch`, and other dependencies retain their own licenses and attribution; see
-[third-party notices](THIRD_PARTY_NOTICES.md).
-
-RustTorch is not affiliated with or endorsed by the PyTorch Foundation.
+RustTorch is available under the [MIT License](LICENSE-MIT) or
+[Apache License 2.0](LICENSE-APACHE), at your option. Dependencies and upstream
+behavioral references retain their own terms; see
+[third-party notices](THIRD_PARTY_NOTICES.md). RustTorch is independent of the
+PyTorch Foundation.

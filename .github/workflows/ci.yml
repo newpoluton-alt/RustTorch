@@ -117,12 +117,17 @@ jobs:
         run: |
           cargo check -p rusttorch-data --all-targets --locked --no-default-features
           cargo check -p rusttorch-data --all-targets --locked --no-default-features --features doc-only
+          cargo check -p rusttorch-data --all-targets --locked --no-default-features --features download-libtorch
+          cargo check -p rusttorch-data --all-targets --locked --all-features
 
       - name: Lint workspace
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Test workspace
         run: cargo test --workspace --all-targets --locked
+
+      - name: Test documentation examples
+        run: cargo test --workspace --doc --locked
 
       - name: Enforce Python parity
         run: scripts/run-python-parity.sh
@@ -315,10 +320,12 @@ jobs:
           $torchLib | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - name: Test loader runtime and conditional CUDA pinning
-        run: >-
-          cargo test -p rusttorch-data --locked
-          --test datasets --test loader_builder --test map_workers
-          --test stream_workers --test pin_memory
+        run: cargo test -p rusttorch-data --tests --locked
+
+      - name: Run loader examples
+        run: |
+          cargo run -p rusttorch-data --example loader --locked
+          cargo run -p rusttorch-data --example checkpoint --locked
 
   loader-stress:
     name: Data loader stress

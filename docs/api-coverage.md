@@ -223,7 +223,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **Implementation:** RustTorch frontend backed by LibTorch
 - **Scope:** Biased and bias-free forward behavior, parameter shapes and names, gradients, deterministic values, and the tested short constructor.
 - **Pinned source:** [`torch/nn/modules/linear.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/linear.py)
-- **Evidence:** [`tests/eager.rs::linear_bias_and_no_bias_have_expected_shapes_and_values`](../tests/eager.rs), [`tests/eager.rs::gradients_flow_through_linear`](../tests/eager.rs), [`tests/eager.rs::short_linear_constructor_uses_bias`](../tests/eager.rs)
+- **Evidence:** [`tests/eager.rs::linear_bias_and_no_bias_have_expected_shapes_and_values`](../tests/eager.rs), [`tests/eager.rs::gradients_flow_through_linear`](../tests/eager.rs), [`tests/eager.rs::short_linear_constructor_uses_bias`](../tests/eager.rs), [`tests/nn_layers.rs::invalid_parameter_dtype_returns_errors_without_poisoning_the_store`](../tests/nn_layers.rs), [`tests/nn_layers.rs::undefined_tensors_are_rejected_without_metadata_panics`](../tests/nn_layers.rs)
 - **Notes:** Rust configuration replaces Python keyword arguments; kernels delegate to LibTorch.
 
 ### `nn.mse_loss`
@@ -378,6 +378,16 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **Evidence:** [`tests/graph.rs::builder_rejects_a_value_from_another_graph`](../tests/graph.rs), [`tests/graph.rs::builder_rejects_duplicate_node_names`](../tests/graph.rs), [`tests/graph.rs::graph_without_an_output_is_rejected`](../tests/graph.rs)
 - **Notes:** This is neither FX serialization nor full FX node and transformation parity.
 
+### `nn.convolution`
+
+- **PyTorch:** `torch.nn.Conv1d`, `torch.nn.Conv2d`, `torch.nn.Conv3d`, `torch.nn.functional.conv2d`
+- **RustTorch:** `rusttorch::nn::ConvConfig`, `rusttorch::nn::Conv1d`, `rusttorch::nn::Conv2d`, `rusttorch::nn::Conv3d`, `rusttorch::nn::functional::conv1d`, `rusttorch::nn::functional::conv2d`, `rusttorch::nn::functional::conv3d`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Scope:** Fallible one-, two-, and three-dimensional convolution with batched or unbatched inputs, per-axis kernel/stride/zero-padding/dilation, channel groups, optional bias, fan-in uniform initialization, stable parameter names, and Sequential composition.
+- **Pinned source:** [`torch/nn/modules/conv.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/conv.py)
+- **Evidence:** [`tests/nn_layers.rs::grouped_convolution_respects_stride_padding_dilation_and_gradients`](../tests/nn_layers.rs), [`tests/nn_layers.rs::image_and_volume_convolutions_accept_unbatched_inputs`](../tests/nn_layers.rs), [`tests/nn_layers.rs::convolution_initialization_uses_fan_in_and_rejects_invalid_configuration`](../tests/nn_layers.rs), [`tests/nn_layers.rs::sequential_builds_image_and_token_models_with_registered_parameters`](../tests/nn_layers.rs), [`tests/python_parity.rs::bidirectional_python_parity`](../tests/python_parity.rs), [`tests/nn_layers.rs::invalid_parameter_dtype_returns_errors_without_poisoning_the_store`](../tests/nn_layers.rs), [`tests/nn_layers.rs::undefined_tensors_are_rejected_without_metadata_panics`](../tests/nn_layers.rs)
+- **Notes:** Transposed convolution, string padding and nonzero padding modes remain unimplemented. Numerical evidence is CPU only; other devices are not newly claimed.
+
 ### `nn.dropout`
 
 - **PyTorch:** `torch.nn.Dropout`, `torch.nn.functional.dropout`
@@ -387,6 +397,16 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **Pinned source:** [`torch/nn/modules/dropout.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/dropout.py)
 - **Evidence:** [`tests/eager.rs::dropout_boundary_probabilities_and_eval_gradients_are_correct`](../tests/eager.rs)
 - **Notes:** The full stochastic distribution, all shapes and dtypes, and backend parity are not claimed.
+
+### `nn.embedding`
+
+- **PyTorch:** `torch.nn.Embedding`, `torch.nn.functional.embedding`
+- **RustTorch:** `rusttorch::nn::Embedding`, `rusttorch::nn::EmbeddingConfig`, `rusttorch::nn::functional::embedding`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Scope:** Trainable embedding lookup with normal initialization, checked integer indices, optional normalized negative padding index with a zero-initialized padding row, padding gradient exclusion, frequency-scaled dense gradients or sparse gradients, stable parameters, and Sequential composition.
+- **Pinned source:** [`torch/nn/modules/sparse.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/sparse.py)
+- **Evidence:** [`tests/nn_layers.rs::embedding_padding_frequency_scaling_sparse_gradients_and_indices_are_checked`](../tests/nn_layers.rs), [`tests/nn_layers.rs::sequential_builds_image_and_token_models_with_registered_parameters`](../tests/nn_layers.rs), [`tests/python_parity.rs::bidirectional_python_parity`](../tests/python_parity.rs), [`tests/nn_layers.rs::invalid_parameter_dtype_returns_errors_without_poisoning_the_store`](../tests/nn_layers.rs), [`tests/nn_layers.rs::undefined_tensors_are_rejected_without_metadata_panics`](../tests/nn_layers.rs)
+- **Notes:** max\_norm, norm\_type and EmbeddingBag remain unimplemented. Sparse plus frequency-scaled gradients is rejected before use. CPU initialization, forward and gradient parity runs through scripts/run-python-parity.sh.
 
 ### `nn.gelu`
 
@@ -401,12 +421,22 @@ Each entry is independently scoped. Supported applies only to its written scope;
 ### `nn.module`
 
 - **PyTorch:** `torch.nn.Module`
-- **RustTorch:** `rusttorch::nn::Module`
+- **RustTorch:** `rusttorch::nn::Module`, `rusttorch::nn::VarStore`, `rusttorch::nn::ParameterPath`
 - **Implementation:** Implemented by RustTorch
-- **Scope:** Send-safe fallible forward and forward\_t dispatch, with tested train/eval state on Sequential and GraphModule.
+- **Scope:** Send-safe fallible forward and forward\_t dispatch, tested train/eval state on Sequential and GraphModule, and direct parameter store/path reexports for custom model composition.
 - **Pinned source:** [`torch/nn/modules/module.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/module.py)
-- **Evidence:** [`tests/eager.rs::sequential_uses_numeric_parameter_names_and_tracks_mode`](../tests/eager.rs), [`tests/graph.rs::dropout_follows_train_and_eval_mode_without_rng_assumptions`](../tests/graph.rs)
+- **Evidence:** [`tests/eager.rs::sequential_uses_numeric_parameter_names_and_tracks_mode`](../tests/eager.rs), [`tests/graph.rs::dropout_follows_train_and_eval_mode_without_rng_assumptions`](../tests/graph.rs), [`tests/nn_layers.rs::grouped_convolution_respects_stride_padding_dilation_and_gradients`](../tests/nn_layers.rs)
 - **Notes:** Python attributes, hooks, buffers, traversal, mutation, and class reconstruction are not present.
+
+### `nn.normalization.layer_norm`
+
+- **PyTorch:** `torch.nn.LayerNorm`, `torch.nn.functional.layer_norm`
+- **RustTorch:** `rusttorch::nn::LayerNorm`, `rusttorch::nn::LayerNormConfig`, `rusttorch::nn::functional::layer_norm`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Scope:** Normalization over configured trailing dimensions with validated epsilon, optional learnable affine scale and bias, ones/zeros initialization, registered state, gradients, and Sequential composition.
+- **Pinned source:** [`torch/nn/modules/normalization.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/normalization.py)
+- **Evidence:** [`tests/nn_layers.rs::layer_norm_normalizes_trailing_features_and_optional_affine_parameters`](../tests/nn_layers.rs), [`tests/nn_layers.rs::sequential_builds_image_and_token_models_with_registered_parameters`](../tests/nn_layers.rs), [`tests/python_parity.rs::bidirectional_python_parity`](../tests/python_parity.rs), [`tests/nn_layers.rs::invalid_parameter_dtype_returns_errors_without_poisoning_the_store`](../tests/nn_layers.rs), [`tests/nn_layers.rs::undefined_tensors_are_rejected_without_metadata_panics`](../tests/nn_layers.rs)
+- **Notes:** CPU evidence covers the tested shapes and affine variants. Zero-sized normalized dimensions are rejected; the full dtype/backend matrix is not claimed.
 
 ### `nn.sequential`
 
@@ -418,6 +448,16 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **Evidence:** [`tests/eager.rs::sequential_uses_numeric_parameter_names_and_tracks_mode`](../tests/eager.rs), [`tests/backend_parity.rs::accelerator_safetensors_and_cpu_movement_preserve_model_state`](../tests/backend_parity.rs)
 - **Notes:** Accelerator branches skip when unavailable; arbitrary dynamic module insertion is not supported.
 
+### `nn.utils.clip_grad`
+
+- **PyTorch:** `torch.nn.utils.clip_grad_norm_`, `torch.nn.utils.clip_grad_value_`
+- **RustTorch:** `rusttorch::optim::Optimizer::clip_grad_norm`, `rusttorch::optim::Optimizer::clip_grad_value`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Scope:** Validated finite nonnegative gradient limits, combined L2 norm clipping and element-wise value clipping for defined dense gradients, no-op with no gradients, and fallible native operations.
+- **Pinned source:** [`torch/nn/utils/clip_grad.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/utils/clip_grad.py)
+- **Evidence:** [`tests/optimizers.rs::gradient_clipping_controls_the_update`](../tests/optimizers.rs), [`tests/optimizers.rs::optimizer_configuration_rejects_nonfinite_and_negative_values`](../tests/optimizers.rs)
+- **Notes:** Clipping is exposed on Optimizer rather than as a free tensor-list function. Other norm orders, foreach selection, error\_if\_nonfinite and sparse-gradient support are not claimed.
+
 ### `optim.adam`
 
 - **PyTorch:** `torch.optim.Adam`
@@ -427,6 +467,36 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **Pinned source:** [`torch/optim/adam.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/optim/adam.py)
 - **Evidence:** [`tests/eager.rs::sgd_and_adam_each_update_a_parameter_once`](../tests/eager.rs), [`tests/eager.rs::invalid_layer_dropout_and_optimizer_configs_are_rejected`](../tests/eager.rs), [`tests/python_parity.rs::bidirectional_python_parity`](../tests/python_parity.rs)
 - **Notes:** The Python parity test is ignored by ordinary Cargo test and runs only through scripts/run-python-parity.sh; optimizer checkpoints and unexposed options remain unsupported.
+
+### `optim.adamw`
+
+- **PyTorch:** `torch.optim.AdamW`
+- **RustTorch:** `rusttorch::optim::AdamW`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Scope:** Dense AdamW with validated finite learning rate, moment betas, epsilon, decoupled weight decay and AMSGrad, including default weight decay 0.01, retained moments, and parameter updates.
+- **Pinned source:** [`torch/optim/adamw.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/optim/adamw.py)
+- **Evidence:** [`tests/optimizers.rs::adamw_applies_decoupled_decay_and_tracks_moments`](../tests/optimizers.rs), [`tests/optimizers.rs::optimizer_configuration_rejects_nonfinite_and_negative_values`](../tests/optimizers.rs), [`tests/python_parity.rs::bidirectional_python_parity`](../tests/python_parity.rs)
+- **Notes:** Optimizer serialization, parameter-group configuration, maximize, capturable, differentiable, fused, foreach and sparse updates are outside this surface.
+
+### `optim.learning_rate`
+
+- **PyTorch:** `torch.optim.Optimizer.param_groups`
+- **RustTorch:** `rusttorch::optim::Optimizer::set_learning_rate`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Scope:** Validated finite nonnegative learning-rate replacement for all tracked parameter groups while retaining optimizer moments, enabling caller-managed schedules.
+- **Pinned source:** [`torch/optim/optimizer.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/optim/optimizer.py)
+- **Evidence:** [`tests/optimizers.rs::adamw_applies_decoupled_decay_and_tracks_moments`](../tests/optimizers.rs), [`tests/optimizers.rs::optimizer_configuration_rejects_nonfinite_and_negative_values`](../tests/optimizers.rs)
+- **Notes:** This method does not implement scheduler classes, group-specific policies, or scheduler checkpoint state.
+
+### `optim.rmsprop`
+
+- **PyTorch:** `torch.optim.RMSprop`
+- **RustTorch:** `rusttorch::optim::RmsProp`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Scope:** Dense RMSprop with validated finite nonnegative learning rate, alpha, epsilon, coupled weight decay, momentum and optional centered updates; default learning rate 0.01.
+- **Pinned source:** [`torch/optim/rmsprop.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/optim/rmsprop.py)
+- **Evidence:** [`tests/optimizers.rs::rmsprop_uses_squared_gradient_average`](../tests/optimizers.rs), [`tests/optimizers.rs::optimizer_configuration_rejects_nonfinite_and_negative_values`](../tests/optimizers.rs), [`tests/python_parity.rs::bidirectional_python_parity`](../tests/python_parity.rs)
+- **Notes:** Optimizer serialization, parameter-group configuration, maximize, capturable, differentiable, foreach and sparse updates are outside this surface. Finite nonnegative alpha follows the pinned constructor; useful training generally requires alpha below one.
 
 ### `optim.sgd`
 
@@ -610,25 +680,15 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **Evidence:** —
 - **Notes:** Backend and dtype-dependent kernels require separate compatibility evidence.
 
-### `nn.convolution`
-
-- **PyTorch:** `torch.nn.Conv1d`, `torch.nn.Conv2d`, `torch.nn.Conv3d`, `torch.nn.functional.conv2d`
-- **RustTorch:** —
-- **Implementation:** Not implemented
-- **Scope:** Convolution modules and functional variants are not exposed through RustTorch.
-- **Pinned source:** [`torch/nn/modules/conv.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/conv.py)
-- **Evidence:** —
-- **Notes:** Future coverage will name dimensions, padding, groups, dtypes, and backends.
-
 ### `nn.normalization`
 
-- **PyTorch:** `torch.nn.BatchNorm1d`, `torch.nn.LayerNorm`, `torch.nn.GroupNorm`
+- **PyTorch:** `torch.nn.BatchNorm1d`, `torch.nn.BatchNorm2d`, `torch.nn.BatchNorm3d`, `torch.nn.GroupNorm`, `torch.nn.InstanceNorm1d`, `torch.nn.InstanceNorm2d`, `torch.nn.InstanceNorm3d`
 - **RustTorch:** —
 - **Implementation:** Not implemented
-- **Scope:** Normalization modules, functional forms, running statistics, and distributed variants are not exposed.
+- **Scope:** Batch, group and instance normalization, running statistics, and distributed normalization variants are not exposed.
 - **Pinned source:** [`torch/nn/modules/batchnorm.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/batchnorm.py)
 - **Evidence:** —
-- **Notes:** Future rows will separate batch, layer, group, and instance normalization.
+- **Notes:** LayerNorm is tracked separately as nn.normalization.layer\_norm; its implementation does not establish coverage for other normalization families.
 
 ### `nn.recurrent`
 

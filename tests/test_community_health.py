@@ -787,7 +787,9 @@ class CommunityHealthTests(unittest.TestCase):
             self.assertIn(operating_system, platform_job)
         self.assertIn(".venv/Scripts/python.exe", platform_job)
         self.assertIn("DYLD_LIBRARY_PATH", platform_job)
-        self.assertIn("--test pin_memory", platform_job)
+        self.assertIn("cargo test -p rusttorch-data --tests --locked", platform_job)
+        for example in ("loader", "checkpoint"):
+            self.assertIn(f"cargo run -p rusttorch-data --example {example} --locked", platform_job)
         stress_job = text.split("  loader-stress:\n", 1)[1].split(
             "\n  required:", 1
         )[0]
@@ -801,6 +803,7 @@ class CommunityHealthTests(unittest.TestCase):
         self.assertIn("uv sync --frozen --no-cache", quality)
         self.assertIn("LD_LIBRARY_PATH", quality)
         self.assertIn("scripts/run-python-parity.sh", quality)
+        self.assertIn("cargo test --workspace --doc --locked", quality)
         self.assertIn("python -m unittest discover", quality)
         self.assertIn("cargo doc -p rusttorch --no-deps", quality)
         self.assertIn("cargo doc -p rusttorch-cli --no-deps", quality)

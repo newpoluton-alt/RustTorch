@@ -2,7 +2,7 @@
 
 CPU is the reference backend. The same eager model and explicit graph
 definitions run without structural changes on CPU, CUDA:0, and MPS when each
-backend is genuinely available.
+backend is available in the linked runtime.
 
 Deterministic tests assign weights and inputs directly. They compare:
 
@@ -27,6 +27,13 @@ and Python availability alone is not Rust backend evidence. Final reports must
 name the exact host, linked versions, executed checks, and backend-specific
 differences.
 
-On the current macOS 26.5.2 arm64 development host, the Rust CPU and MPS checks
-above passed with PyTorch/LibTorch 2.13.0. CUDA was unavailable and was skipped;
-no CUDA pass is claimed.
+An earlier macOS 26.5.2 arm64 development run passed the Rust CPU and MPS
+checks above with LibTorch 2.13.0; CUDA was skipped.
+
+The 2026-09-12 run on macOS 26.6.2 arm64 with LibTorch 2.13.0 passed CPU
+workspace tests and cross-language convolution, layer-normalization, embedding,
+AdamW, and RMSprop comparisons. Running the existing Rust backend tests with
+host hardware access also passed all four CPU/MPS test cases: eager execution,
+residual graphs, Adam/SGD updates, and weight transfer. CUDA was unavailable and
+skipped. These MPS results do not establish accelerator parity for the newly
+added layer and optimizer families.

@@ -1,12 +1,15 @@
 # rusttorch-core
 
-Shared runtime, device, tensor, and error contracts for RustTorch.
+Tensor computation, automatic differentiation, device selection, and shared
+error types for RustTorch. Use this small package when you need tensor math
+without the model-building or data-loading facade; use `rusttorch` when you
+also need layers and optimizers.
 
 ## Installation
 
 ```toml
 [dependencies]
-rusttorch-core = { version = "0.1", features = ["download-libtorch"] }
+rusttorch-core = { git = "https://github.com/newpoluton-alt/RustTorch", features = ["download-libtorch"] }
 ```
 
 ## Features
@@ -29,8 +32,16 @@ the selected runtime's shared libraries when the executable runs.
 use rusttorch_core::{Device, Kind, Result, Tensor};
 
 fn main() -> Result<()> {
-    let zeros = Tensor::f_zeros([2], (Kind::Float, Device::Cpu))?;
-    assert_eq!(zeros.size(), [2]);
+    let input = Tensor::from_slice(&[2_f32, 3.0]).set_requires_grad(true);
+    let loss = input.f_square()?.f_mean(Kind::Float)?;
+    loss.f_backward()?;
+    assert_eq!(Vec::<f32>::try_from(input.grad())?, vec![2.0, 3.0]);
+    assert_eq!(input.device(), Device::Cpu);
     Ok(())
 }
 ```
+
+Use `resolve_device(DeviceSpec::Auto)` to choose an available accelerator or
+CPU, and create or move tensors onto that device. Use `no_grad` for inference
+or parameter assignment. The [API guide](https://docs.rs/rusttorch-core) has
+examples of matrix multiplication, backend selection, and gradients.

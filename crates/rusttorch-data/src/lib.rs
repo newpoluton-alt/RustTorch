@@ -1,7 +1,108 @@
-//! Typed datasets, samplers, batching, and loading for RustTorch.
+//! Prepare training and inference data with typed datasets and iterable batches.
+//!
+//! A [`Dataset`] supplies owned samples by index. A [sampler](Sampler) chooses
+//! their order, a [collator](Collate) combines them, and [`DataLoader`] produces
+//! batches on demand. Samples can be tensors, Rust records, or nested structures;
+//! dataset and pipeline failures are returned to the caller.
+//!
+//! The same API is available through [`rusttorch::data`](https://docs.rs/rusttorch/latest/rusttorch/data/).
+//!
+//! # Choose a loading pattern
+//!
+//! | Input or requirement | API |
+//! | --- | --- |
+//! | Features and labels already stored in tensors | [`TensorDataset`] |
+//! | Files or records addressable by index | Implement [`Dataset`] |
+//! | An existing fallible iterator | [`batches`], [`batches_with_collate`] |
+//! | Repeated epochs over indexed samples | [`DataLoader::builder`] |
+//! | Deterministic randomized sample order | [`RandomSampler`] |
+//! | Custom batch padding, packing, or conversion | [`FnCollate`] |
+//! | Explicitly partitioned worker streams | [`StreamDataLoaderBuilder`] |
+//! | Resume at a recorded iteration boundary | [`DataLoaderBuilder::resume_from`] |
+//!
+//! # Batch paired tensors
+//!
+//! Store features and labels with the same first dimension. The default
+//! collator stacks corresponding sample fields: a dataset containing `[6, 3]`
+//! features and `[6]` labels yields `[2, 3]` features and `[2]` labels when the
+//! batch size is two.
+//!
+//! ```
+//! use rusttorch_core::{Device, Kind, Tensor};
+//! use rusttorch_data::{DataLoader, TensorDataset};
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let features = Tensor::f_zeros([6, 3], (Kind::Float, Device::Cpu))?;
+//! let labels = Tensor::f_from_slice(&[0_i64, 1, 0, 1, 0, 1])?;
+//! let dataset = TensorDataset::new(vec![features, labels])?;
+//! let mut loader = DataLoader::builder(dataset)
+//!     .batch_size(2)
+//!     .shuffle(42)?
+//!     .build()?;
+//!
+//! for batch in loader.iter() {
+//!     let batch = batch?;
+//!     assert_eq!(batch[0].size(), [2, 3]);
+//!     assert_eq!(batch[1].size(), [2]);
+//!     // Pass batch[0] to a model and batch[1] to its classification loss.
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! The loader owns the dataset; call `iter()` again for another pass. Use
+//! [`DataLoaderBuilder::drop_last`] when the model requires fixed-size batches.
+//! Tensor samples share storage with their dataset; avoid modifying views when
+//! the original values are needed for later epochs.
+//!
+//! # Load your own records
+//!
+//! Implement [`Dataset`] to read a sample from a file, decode an image, or fetch
+//! a record from an indexed source. The associated error type preserves loading
+//! failures. Use [`VecCollate`] to keep records as Rust values:
+//!
+//! ```
+//! use std::convert::Infallible;
+//! use rusttorch_data::{DataLoader, Dataset, VecCollate};
+//!
+//! struct TextRows(Vec<String>);
+//!
+//! impl Dataset for TextRows {
+//!     type Sample = String;
+//!     type Error = Infallible;
+//!
+//!     fn len(&self) -> usize { self.0.len() }
+//!     fn get(&self, index: usize) -> Result<String, Infallible> {
+//!         Ok(self.0[index].clone())
+//!     }
+//! }
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let dataset = TextRows(vec!["first".into(), "second".into(), "third".into()]);
+//! let mut loader = DataLoader::builder(dataset)
+//!     .batch_size(2)
+//!     .collate(VecCollate)
+//!     .build()?;
+//! let batches = loader.iter().collect::<Result<Vec<_>, _>>()?;
+//! assert_eq!(batches, [vec!["first", "second"], vec!["third"]]);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Workers and resumable loading
+//!
+//! Start with serial loading, then use [`DataLoaderBuilder::workers`] to
+//! overlap sample preparation when your dataset satisfies the worker ownership
+//! requirements. [`WorkerContext`] exposes cancellation, deadlines, and worker
+//! identity to context-aware data sources.
+//!
+//! Exact resumption requires replay-safe data and checkpointable pipeline
+//! components. [`ReplaySafeMap`], [`TensorDataset::into_replay_safe`], and
+//! [`LoaderState`] describe those contracts. Model-weight files and loader
+//! checkpoints serve different purposes; save each state your training job
+//! needs to resume.
 
 #![deny(missing_docs)]
-#![doc = include_str!("../COMPATIBILITY.md")]
 
 use std::{convert::Infallible, marker::PhantomData};
 

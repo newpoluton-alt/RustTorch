@@ -1,59 +1,168 @@
-# Model interoperability
+# Save, load, and exchange model weights
 
-SafeTensors is the RustTorch 0.1 device-neutral contract for model state. A weight
-file does not define an arbitrary architecture: the Rust and Python models must
-be equivalent, or a supported Graph IR must represent the architecture.
+Use SafeTensors to keep trained RustTorch parameters between runs, deploy a model
+on another device, or exchange weights with another machine-learning application.
+The file stores named tensors. Keep the model architecture and preprocessing
+configuration alongside it so an inference application can rebuild the model.
 
-## PyTorch to RustTorch
+## Save a model and restore it in Rust
 
-```python
-from safetensors.torch import save_file
-save_file(model.state_dict(), "weights.safetensors")
+Build the same architecture before loading its weights. This example saves a
+two-layer classifier, restores it into a new model, and checks that both produce
+the same scores. In a training application, call `save_weights` after updating
+the model with an optimizer.
+
+```rust
+use rusttorch::{DeviceSpec, Kind, Result, Tensor, nn::Sequential, no_grad};
+
+fn classifier() -> Result<Sequential> {
+    Sequential::builder()
+        .linear(4, 8)
+        .relu()
+        .linear(8, 3)
+        .build(DeviceSpec::Cpu)
+}
+
+fn main() -> Result<()> {
+    let mut original = classifier()?;
+    original.eval();
+    original.save_weights("classifier.safetensors")?;
+
+    let mut restored = classifier()?;
+    let report = restored.load_weights("classifier.safetensors")?;
+    restored.eval();
+    assert!(report.missing.is_empty());
+    assert!(report.unexpected.is_empty());
+
+    let features = Tensor::f_ones([2, 4], (Kind::Float, restored.device()))?;
+    let expected = no_grad(|| original.forward(&features))?;
+    let actual = no_grad(|| restored.forward(&features))?;
+    assert!(actual.f_allclose(&expected, 1e-6, 1e-6, false)?);
+    Ok(())
+}
 ```
 
-Build the equivalent RustTorch model, then call `load_weights`. Strict loading
-is the default. Missing, unexpected, duplicate-mapped, shape-incompatible, and
-unsafe dtype-incompatible entries produce structured failures.
+`eval()` selects evaluation behavior for layers such as dropout. Use `no_grad`
+as well to avoid recording gradients while predicting. The weight file does
+not save either execution mode, optimizer moments, random-number state, or the
+data-loader position. It is suitable for restoring predictions; a complete
+training resume needs those additional states.
 
-## RustTorch to PyTorch
+`GraphModule` provides the same `save_weights` and `load_weights` methods. Rebuild
+the graph with the same parameter-bearing node names before loading it.
 
-Call `save_weights`, construct the equivalent Python model, and load with:
+## Move weights between devices
 
-```python
-from safetensors.torch import load_file
-model.load_state_dict(load_file("weights.safetensors"), strict=True)
+Saving copies each named tensor to contiguous CPU storage. Loading copies values
+into the destination model's existing tensors, so the destination device is
+chosen when building the model. To deploy on a GPU, build with
+`DeviceSpec::Cuda(0)` or `DeviceSpec::Mps`, then load the same file. An explicit
+unavailable device returns an error; `DeviceSpec::Auto` allows CPU fallback.
+
+Input tensors must also be on the model's device. Move them with
+`input.f_to_device(model.device())?` before calling `forward`.
+
+## Match parameter names explicitly
+
+Sequential layers use their position as the parameter prefix. The classifier
+above has `0.weight`, `0.bias`, `2.weight`, and `2.bias`; the ReLU at position one
+has no parameters. Graph layers instead use their node names, for example
+`encoder.weight`.
+
+When an imported file uses different names, supply an explicit mapping. This
+function loads a file whose `encoder.*` tensors belong to the first linear layer
+and whose `head.*` tensors belong to the second:
+
+```rust
+use std::path::Path;
+use rusttorch::{DeviceSpec, Result, nn::Sequential};
+use rusttorch::interop::{LoadOptions, StateDictMapping};
+
+fn load_classifier(path: &Path) -> Result<Sequential> {
+    let mut model = Sequential::builder()
+        .linear(4, 8)
+        .relu()
+        .linear(8, 3)
+        .build(DeviceSpec::Cpu)?;
+    let mapping = StateDictMapping::new()
+        .map_prefix("encoder.", "0.")
+        .map_prefix("head.", "2.");
+
+    let preview = model.load_weights_with_mapping(
+        path,
+        &mapping,
+        LoadOptions::strict().dry_run(true),
+    )?;
+    println!("Validated {} tensors", preview.loaded.len());
+
+    model.load_weights_with_mapping(path, &mapping, LoadOptions::strict())?;
+    model.eval();
+    Ok(model)
+}
 ```
 
-The parity tools use deterministic assigned weights and inputs and compare both
-directions. Where practical they also compare losses and gradients.
+`map(source, destination)` renames one exact key. Exact mappings take precedence
+over prefixes; otherwise the longest matching prefix wins. Unmapped keys retain
+their names. A dry run validates and reports a load without modifying weights.
 
-Current verified result: Python→Rust strict load matches Linear forward,
-input/parameter gradients, cross-entropy, MSE, one SGD step, one Adam step, and
-residual forward/input/parameter gradients on CPU. Rust→Python strict load and
-forward also match. Rust-to-Rust SafeTensors transfer between CPU and MPS
-passes on the current host. Cross-language MPS and CUDA interchange have not
-been executed; CUDA was unavailable.
+## Diagnose a rejected load
 
-## State rules
+| Result | Meaning and next step |
+| --- | --- |
+| Missing or unexpected keys | Check the architecture and names; add explicit mappings where appropriate. |
+| Shape mismatch | Rebuild with matching layer dimensions; loading does not transpose or reshape tensors. |
+| Dtype mismatch | Match the model and file dtypes; loading does not cast values. |
+| Duplicate mapped destination | Correct mappings so each destination receives at most one source tensor. |
+| Unsupported file extension | Provide a file ending in `.safetensors`. |
 
-- RustTorch 0.1 modules expose parameter state through `tch::nn::VarStore`;
-  dedicated persistent-buffer registration is not implemented.
-- Names follow PyTorch conventions where practical; differences require an
-  explicit mapping.
-- Loading targets the model's current CPU, CUDA, or MPS device.
-- No fuzzy matching, silent transpose, reshape, or dtype coercion is allowed.
-- SafeTensors stores values by name, not Rust alias relationships.
-  Tied-parameter alias preservation is not implemented or tested in 0.1.
+Strict loading checks every expected and supplied key. For intentional partial
+loading, use `LoadOptions::non_strict()` and inspect the report's `loaded`,
+`missing`, `unexpected`, and `remapped` fields. Matching tensors must still have
+the correct shape and dtype. Key, shape, dtype, and mapping validation happen
+before model tensors are changed.
 
-## Other formats
+The model state consists of variables registered in its `VarStore`. SafeTensors
+stores values by name; loading does not reconstruct shared-storage relationships
+between tied parameters.
 
-Pickle-based `.pt`/`.bin` state dictionaries are untrusted and are not accepted
-by the RustTorch 0.1 API. Arbitrary `torch.save(model)` objects require Python
-classes and code and are not portable. RustTorch does not expose TorchScript or
-PT2 loading in 0.1; callers needing opaque TorchScript inference can use
-`tch::CModule` directly.
+## Exchange weights with PyTorch
 
-A future RustTorch package may contain `manifest.json`, `graph.json`,
-`weights.safetensors`, and `metadata.json`. Its SafeTensors file stays directly
-extractable for Python. The package format and stable graph serialization are
-not implemented in 0.1.
+PyTorch is relevant here when another application produced the weights or will
+consume them. RustTorch inference itself does not need Python. Both applications
+must agree on the architecture, layer options, parameter names, dtypes, and input
+preprocessing; a matching weight file alone does not establish those choices.
+
+For the classifier above, the equivalent Python architecture is:
+
+```python
+import torch
+from safetensors.torch import load_file, save_file
+
+model = torch.nn.Sequential(
+    torch.nn.Linear(4, 8),
+    torch.nn.ReLU(),
+    torch.nn.Linear(8, 3),
+)
+
+# Import a file saved by RustTorch.
+model.load_state_dict(load_file("classifier.safetensors"), strict=True)
+model.eval()
+
+# Export independent, contiguous CPU tensors for RustTorch to load.
+state = {
+    name: tensor.detach().cpu().contiguous().clone()
+    for name, tensor in model.state_dict().items()
+}
+save_file(state, "exported-classifier.safetensors")
+```
+
+Install the Python `safetensors` package to use these import/export helpers.
+For custom module names, apply `StateDictMapping` in Rust or explicitly rename
+the exported keys.
+
+Python pickle-based `.pt` and `.bin` files, whole Python model objects,
+TorchScript files, and PT2 archives cannot be loaded through `load_weights`.
+The [interoperability API](https://docs.rs/rusttorch/latest/rusttorch/interop/)
+documents the accepted format and error types. Refer to the
+[compatibility reference](api-coverage.md) for the scope of cross-language
+behavior checks.

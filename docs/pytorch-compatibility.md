@@ -18,10 +18,11 @@ machine-readable inventory. It pins PyTorch tag `v2.13.0` at commit `cf30153`
 and `tch` 0.26.0, then records each capability's stable ID, PyTorch and
 RustTorch symbols, implementation boundary, exact scope, upstream source,
 evidence, and notes. [`api-coverage.md`](api-coverage.md) is generated from
-that ledger and included on the facade crate's rustdoc landing page. Filtered
+that ledger for compatibility review. Filtered
 [`rusttorch-core`](../crates/rusttorch-core/COMPATIBILITY.md) and
 [`rusttorch-data`](../crates/rusttorch-data/COMPATIBILITY.md) pages are
-generated from the same ledger and included by those direct packages.
+generated from the same ledger. Crate landing pages teach RustTorch usage with
+Rust examples and link to this evidence separately.
 
 The statuses mean:
 
@@ -58,9 +59,10 @@ The canonical deterministic CPU model is verified against Python PyTorch
 2.13.0 for strict bidirectional SafeTensors loading, forward values, input and
 parameter gradients, cross-entropy, MSE, one Adam/SGD step, and residual
 forward/backward. This establishes cross-language parity only on CPU.
-Separately, Rust CPU-to-MPS backend tests passed on the current macOS arm64
+Separately, Rust CPU-to-MPS backend tests passed on an earlier macOS arm64
 development host for forward/backward, gradients, one Adam/SGD step, movement,
-and SafeTensors transfer. CUDA was unavailable and was skipped, not passed.
+and SafeTensors transfer. CUDA was unavailable and was skipped, not passed. The latest run and the
+new model/optimizer CPU scopes are recorded in [backend evidence](backend-parity.md).
 
 ## Interchange levels
 

@@ -98,8 +98,16 @@ fn mps_is_available() -> bool {
 ///
 /// `context` identifies the operation or tensor in any resulting error. Returns
 /// [`RustTorchError::DeviceMismatch`] when the tensor's actual device differs
-/// from `expected`.
+/// from `expected`, or [`RustTorchError::InvalidDimensions`] when the tensor is
+/// undefined.
 pub fn ensure_device(context: impl Into<String>, tensor: &Tensor, expected: Device) -> Result<()> {
+    if !tensor.defined() {
+        return Err(RustTorchError::InvalidDimensions {
+            context: context.into(),
+            expected: "a defined tensor".to_owned(),
+            actual: "undefined tensor".to_owned(),
+        });
+    }
     let actual = tensor.device();
     if actual == expected {
         Ok(())

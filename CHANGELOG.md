@@ -5,6 +5,20 @@ or graph-format stability.
 
 ## Unreleased
 
+- Add fallible 1D/2D/3D convolution, layer normalization, and embedding layers
+  with validated configuration, named parameters, and CPU forward/gradient tests.
+- Expose the existing parameter store and parameter paths through `rusttorch::nn`
+  for custom models that import only RustTorch APIs.
+- Return typed errors for undefined model inputs and non-differentiable
+  parameter dtypes instead of panicking or poisoning the parameter store.
+- Add AdamW and RMSprop builders, learning-rate adjustment, and fallible gradient
+  clipping, with multi-step optimizer parity coverage.
+- Replace docs.rs implementation inventories with RustTorch tutorials and use
+  cases; add a models/training guide and an explicit framework coverage roadmap.
+- Complete loader examples for distributed epochs and exact prefetched resume,
+  correct checkpoint/lifecycle documentation, and report repeatable benchmark
+  samples with warmups and variance. Expand CI to execute doctests and loader
+  integration tests and examples across platform lanes.
 - Add default acquisition of the pinned official LibTorch runtime through
   `torch-sys` and keep docs.rs builds network-free.
 - Add the `rusttorch setup` project bootstrap with automatic, CPU, and CUDA

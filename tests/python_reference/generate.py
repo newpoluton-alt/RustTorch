@@ -25,13 +25,69 @@ def stepped(optimizer: str) -> dict[str, object]:
         implementation = torch.optim.SGD(model.parameters(), lr=0.05)
     elif optimizer == "adam":
         implementation = torch.optim.Adam(model.parameters(), lr=0.01)
+    elif optimizer == "adamw":
+        implementation = torch.optim.AdamW(model.parameters(), lr=0.01, weight_decay=0.1, amsgrad=True)
+    elif optimizer == "rmsprop":
+        implementation = torch.optim.RMSprop(model.parameters(), lr=0.01, alpha=0.9, weight_decay=0.1, momentum=0.5, centered=True)
     else:
         raise ValueError(f"unknown optimizer: {optimizer}")
-    loss = torch.nn.functional.cross_entropy(model(reference_input()), torch.tensor([2, 0]))
-    implementation.zero_grad()
-    loss.backward()
-    implementation.step()
+    for _ in range(3 if optimizer in ("adamw", "rmsprop") else 1):
+        loss = torch.nn.functional.cross_entropy(model(reference_input()), torch.tensor([2, 0]))
+        implementation.zero_grad()
+        loss.backward()
+        implementation.step()
     return {"loss": loss.item(), "state": state_data(model)}
+
+
+
+def layer_result(model: torch.nn.Module, value: torch.Tensor) -> dict[str, object]:
+    output = model(value)
+    output.square().mean().backward()
+    result = {
+        "forward": tensor_data(output),
+        "state": state_data(model),
+        "parameter_grads": {
+            name: tensor_data(parameter.grad.to_dense() if parameter.grad.is_sparse else parameter.grad)
+            for name, parameter in model.named_parameters()
+        },
+    }
+    if value.requires_grad:
+        result["input_grad"] = tensor_data(value.grad)
+    return result
+
+
+def layer_examples() -> dict[str, object]:
+    result = {}
+    for dimensions, shape, layer_type in (
+        (1, (2, 2, 7), torch.nn.Conv1d),
+        (2, (2, 2, 5, 6), torch.nn.Conv2d),
+        (3, (1, 2, 4, 4, 4), torch.nn.Conv3d),
+    ):
+        torch.manual_seed(900 + dimensions)
+        model = layer_type(2, 4, (2,) * dimensions, stride=2, padding=1, dilation=2, groups=2)
+        initial = state_data(model)
+        with torch.no_grad():
+            model.weight.copy_(torch.arange(model.weight.numel()).reshape_as(model.weight) / 10 - 0.2)
+            model.bias.copy_(torch.arange(4) / 10)
+        value = (torch.arange(torch.tensor(shape).prod().item()).float().reshape(shape) / 20 - 0.5).requires_grad_()
+        result[f"conv{dimensions}d"] = {"initial": initial, **layer_result(model, value)}
+
+    model = torch.nn.LayerNorm((2, 3), eps=1e-4, bias=False)
+    initial = state_data(model)
+    with torch.no_grad():
+        model.weight.copy_((torch.arange(6).float() / 10 + 0.5).reshape(2, 3))
+    value = (torch.arange(12).float().reshape(2, 2, 3) / 5 - 0.8).requires_grad_()
+    result["layer_norm"] = {"initial": initial, **layer_result(model, value)}
+
+    for sparse in (False, True):
+        torch.manual_seed(902)
+        model = torch.nn.Embedding(5, 3, padding_idx=-1, scale_grad_by_freq=not sparse, sparse=sparse)
+        initial = state_data(model)
+        with torch.no_grad():
+            model.weight.copy_((torch.arange(15).float() / 10).reshape(5, 3))
+        value = torch.tensor([[0, 1, 1], [4, 2, 4]])
+        result["embedding_sparse" if sparse else "embedding"] = {"initial": initial, **layer_result(model, value)}
+    return result
 
 
 def generate(output_dir: Path) -> None:
@@ -80,6 +136,9 @@ def generate(output_dir: Path) -> None:
         "losses": {"cross_entropy": cross_entropy.item(), "mse": mse.item()},
         "sgd": stepped("sgd"),
         "adam": stepped("adam"),
+        "adamw": stepped("adamw"),
+        "rmsprop": stepped("rmsprop"),
+        "layers": layer_examples(),
         "residual": {
             "forward": tensor_data(residual_output),
             "loss": residual_loss.item(),

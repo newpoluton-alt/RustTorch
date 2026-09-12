@@ -3,9 +3,10 @@
 MPS is the Metal Performance Shaders backend supplied by PyTorch/LibTorch on
 compatible Apple systems. RustTorch adds no custom Metal kernels.
 
-The development host is macOS 26.5.2 arm64. Its Python torch 2.13.0 reports MPS
-built and available. Independent Rust tests successfully create and operate on
-MPS tensors through the linked LibTorch.
+Use MPS to run a model on the GPU of a supported Apple system. Create the model
+with `DeviceSpec::Mps`, then construct or move input tensors onto
+`model.device()`. Use `DeviceSpec::Auto` when CPU fallback is appropriate for
+your application.
 
 Capability detection prefers a safe availability API from the pinned `tch`.
 Where no direct helper exists, RustTorch performs and caches one tiny fallible
@@ -22,10 +23,14 @@ Linear, ReLU, GELU, residual Add, cross-entropy, MSE, Adam, SGD, SafeTensors,
 CPU↔MPS movement, mismatch errors, and output/gradient device. Deterministic
 weights and inputs are compared with CPU using documented tolerances.
 
-On the development host, forward/backward, gradients, one Adam and SGD step,
-SafeTensors CPU↔MPS transfer, and model movement pass. CUDA is unavailable and
-is reported as skipped. MPS hardware tests are serialized because concurrent
-LibTorch MPS test execution was unstable on this host.
+An earlier macOS 26.5.2 arm64 development run passed forward/backward,
+gradients, one Adam and SGD step,
+SafeTensors CPU↔MPS transfer, and model movement. CUDA was skipped. MPS
+hardware tests are serialized because concurrent LibTorch MPS test execution
+was unstable on that host. The 2026-09-12 macOS 26.6.2 validation run passed
+the four existing Rust CPU/MPS backend test cases with host hardware access.
+New layer and optimizer families have CPU evidence only; see
+[backend evidence](backend-parity.md).
 
 Activate and inspect the local setup with:
 

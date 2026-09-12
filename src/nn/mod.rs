@@ -1,10 +1,53 @@
-//! Eager neural-network modules.
+//! Trainable layers and model composition for tensors.
+//!
+//! Build image feature extractors with [`ConvConfig`], token models with
+//! [`EmbeddingConfig`] and [`LayerNormConfig`], and feed-forward networks with
+//! [`Sequential`]. A [`VarStore`] holds parameters for custom models; [`Module`]
+//! lets their fallible forward passes share the same interface.
+//!
+//! ```
+//! use rusttorch::{DeviceSpec, Kind, Tensor, nn::{ConvConfig, Sequential}};
+//! let model = Sequential::builder()
+//!     .conv2d(ConvConfig::new(3, 8, [3, 3]).padding([1, 1]))
+//!     .relu()
+//!     .flatten(1, -1)
+//!     .linear(8 * 8 * 8, 10)
+//!     .build(DeviceSpec::Cpu)?;
+//! let images = Tensor::zeros([2, 3, 8, 8], (Kind::Float, model.device()));
+//! assert_eq!(model.forward(&images)?.size(), [2, 10]);
+//! # Ok::<(), rusttorch::RustTorchError>(())
+//! ```
 
 pub mod functional;
+mod layers;
+
+pub use layers::{
+    Conv, Conv1d, Conv2d, Conv3d, ConvConfig, Embedding, EmbeddingConfig, LayerNorm,
+    LayerNormConfig,
+};
+
+/// The parameter store shared by a model's layers and optimizer.
+///
+/// ```
+/// let store = rusttorch::nn::VarStore::new(rusttorch::Device::Cpu);
+/// let layer = rusttorch::nn::LinearConfig::new(4, 2).build(&store.root())?;
+/// # Ok::<(), rusttorch::RustTorchError>(())
+/// ```
+pub use tch::nn::VarStore;
+
+/// A named location in a [`VarStore`] used to register layer parameters.
+///
+/// ```
+/// let store = rusttorch::nn::VarStore::new(rusttorch::Device::Cpu);
+/// let path: rusttorch::nn::ParameterPath<'_> = store.root() / "encoder";
+/// let layer = rusttorch::nn::LinearConfig::new(4, 2).build(&path)?;
+/// # Ok::<(), rusttorch::RustTorchError>(())
+/// ```
+pub use tch::nn::Path as ParameterPath;
 
 use std::{fmt, path::Path};
 
-use tch::{Device, Tensor, nn::VarStore, no_grad};
+use tch::{Device, Tensor, no_grad};
 
 use crate::{
     DeviceSpec, Result, RustTorchError,
@@ -15,7 +58,24 @@ use crate::{
     },
 };
 
-/// A fallible eager module. `forward_t` defaults to mode-independent execution.
+/// A tensor transformation with a fallible forward pass.
+///
+/// Implement this trait to compose custom layers, residual branches, or shared
+/// parameters. Override [`Module::forward_t`] when behavior depends on training
+/// mode. Otherwise it calls [`Module::forward`] and ignores the mode flag.
+///
+/// ```
+/// use rusttorch::{Result, Tensor, nn::Module};
+/// struct ResidualRelu;
+/// impl Module for ResidualRelu {
+///     fn forward(&self, input: &Tensor) -> Result<Tensor> {
+///         Ok(input.f_relu()?.f_add(input)?)
+///     }
+/// }
+/// let output = ResidualRelu.forward(&Tensor::from_slice(&[-1_f32, 2.]))?;
+/// assert_eq!(Vec::<f32>::try_from(&output)?, [-1., 4.]);
+/// # Ok::<(), rusttorch::RustTorchError>(())
+/// ```
 pub trait Module: Send {
     /// Computes the module output using its default execution mode.
     fn forward(&self, input: &Tensor) -> Result<Tensor>;
@@ -28,7 +88,20 @@ pub trait Module: Send {
     }
 }
 
-/// Configuration for a PyTorch-compatible fully connected layer.
+/// Configuration for a fully connected layer.
+///
+/// A linear layer converts each input feature vector into an output feature
+/// vector, preserving all leading dimensions. Use it as a regression head,
+/// classifier, or hidden projection. Bias is enabled by default.
+///
+/// ```
+/// use rusttorch::{Device, Kind, Tensor, nn::{LinearConfig, VarStore}};
+/// let store = VarStore::new(Device::Cpu);
+/// let head = LinearConfig::new(8, 3).build(&(store.root() / "head"))?;
+/// let features = Tensor::ones([4, 8], (Kind::Float, Device::Cpu));
+/// assert_eq!(head.forward(&features)?.size(), [4, 3]);
+/// # Ok::<(), rusttorch::RustTorchError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LinearConfig {
     in_features: i64,
@@ -54,7 +127,11 @@ impl LinearConfig {
     }
 
     /// Registers the layer parameters under `path` and creates the layer.
-    pub fn build(self, path: &tch::nn::Path<'_>) -> Result<Linear> {
+    ///
+    /// Returns an error for negative feature counts or a parameter-store dtype
+    /// that cannot track gradients (integer, boolean, or quantized types).
+    pub fn build(self, path: &ParameterPath<'_>) -> Result<Linear> {
+        layers::validate_parameter_kind(path)?;
         if self.in_features < 0 {
             return Err(RustTorchError::InvalidConfiguration {
                 field: "in_features",
@@ -88,7 +165,11 @@ impl LinearConfig {
     }
 }
 
-/// A fully connected transformation using LibTorch's linear operator.
+/// A trainable affine transformation of the last input dimension.
+///
+/// Construct with [`linear`] or [`LinearConfig`]. Its parameters are registered
+/// as `weight` and optional `bias` beneath the chosen [`ParameterPath`].
+/// [`LinearConfig`]'s example shows a classification head.
 #[derive(Debug)]
 pub struct Linear {
     inner: tch::nn::Linear,
@@ -118,7 +199,7 @@ impl Module for Linear {
 }
 
 /// Creates a biased linear layer and registers it under `path`.
-pub fn linear(path: &tch::nn::Path<'_>, in_features: i64, out_features: i64) -> Result<Linear> {
+pub fn linear(path: &ParameterPath<'_>, in_features: i64, out_features: i64) -> Result<Linear> {
     LinearConfig::new(in_features, out_features).build(path)
 }
 
@@ -183,7 +264,20 @@ impl Module for Gelu {
     }
 }
 
-/// A dropout module that is active only during training execution.
+/// Randomly masks activations during training to regularize a model.
+///
+/// Standalone [`Module::forward`] uses evaluation behavior. Call
+/// [`Module::forward_t`] with `true` to apply dropout, or put this layer in a
+/// [`Sequential`] model whose training flag controls execution.
+///
+/// ```
+/// use rusttorch::{Tensor, nn::{Dropout, Module}};
+/// let dropout = Dropout::new(1.0)?;
+/// let input = Tensor::from_slice(&[1_f32, 2.]);
+/// assert_eq!(Vec::<f32>::try_from(&dropout.forward_t(&input, true)?)?, [0., 0.]);
+/// assert_eq!(Vec::<f32>::try_from(&dropout.forward(&input)?)?, [1., 2.]);
+/// # Ok::<(), rusttorch::RustTorchError>(())
+/// ```
 #[derive(Debug)]
 pub struct Dropout {
     probability: f64,
@@ -234,6 +328,11 @@ impl Module for Flatten {
 }
 
 enum LayerSpec {
+    Conv1d(ConvConfig<1>),
+    Conv2d(ConvConfig<2>),
+    Conv3d(ConvConfig<3>),
+    LayerNorm(LayerNormConfig),
+    Embedding(EmbeddingConfig),
     Linear(LinearConfig),
     Identity,
     ReLU,
@@ -252,6 +351,66 @@ impl SequentialBuilder {
     /// Creates an empty sequential model builder.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Appends a sequence convolution; validates the configuration when building.
+    ///
+    /// ```
+    /// use rusttorch::nn::{Sequential, ConvConfig};
+    /// let builder = Sequential::builder().conv1d(ConvConfig::new(1, 4, [3]));
+    /// ```
+    #[must_use]
+    pub fn conv1d(mut self, config: ConvConfig<1>) -> Self {
+        self.layers.push(LayerSpec::Conv1d(config));
+        self
+    }
+
+    /// Appends an image convolution; validates the configuration when building.
+    ///
+    /// ```
+    /// use rusttorch::nn::{Sequential, ConvConfig};
+    /// let builder = Sequential::builder().conv2d(ConvConfig::new(3, 8, [3, 3]));
+    /// ```
+    #[must_use]
+    pub fn conv2d(mut self, config: ConvConfig<2>) -> Self {
+        self.layers.push(LayerSpec::Conv2d(config));
+        self
+    }
+
+    /// Appends a volume convolution; validates the configuration when building.
+    ///
+    /// ```
+    /// use rusttorch::nn::{Sequential, ConvConfig};
+    /// let builder = Sequential::builder().conv3d(ConvConfig::new(1, 4, [3, 3, 3]));
+    /// ```
+    #[must_use]
+    pub fn conv3d(mut self, config: ConvConfig<3>) -> Self {
+        self.layers.push(LayerSpec::Conv3d(config));
+        self
+    }
+
+    /// Appends normalization over trailing feature dimensions; validates the configuration when building.
+    ///
+    /// ```
+    /// use rusttorch::nn::{Sequential, LayerNormConfig};
+    /// let builder = Sequential::builder().layer_norm(LayerNormConfig::new([8]));
+    /// ```
+    #[must_use]
+    pub fn layer_norm(mut self, config: LayerNormConfig) -> Self {
+        self.layers.push(LayerSpec::LayerNorm(config));
+        self
+    }
+
+    /// Appends a token lookup table; validates the configuration when building.
+    ///
+    /// ```
+    /// use rusttorch::nn::{Sequential, EmbeddingConfig};
+    /// let builder = Sequential::builder().embedding(EmbeddingConfig::new(100, 8));
+    /// ```
+    #[must_use]
+    pub fn embedding(mut self, config: EmbeddingConfig) -> Self {
+        self.layers.push(LayerSpec::Embedding(config));
+        self
     }
 
     #[must_use]
@@ -323,6 +482,11 @@ impl SequentialBuilder {
         for (index, layer) in self.layers.into_iter().enumerate() {
             let path = var_store.root() / index.to_string();
             let layer: Box<dyn Module> = match layer {
+                LayerSpec::Conv1d(config) => Box::new(config.build(&path)?),
+                LayerSpec::Conv2d(config) => Box::new(config.build(&path)?),
+                LayerSpec::Conv3d(config) => Box::new(config.build(&path)?),
+                LayerSpec::LayerNorm(config) => Box::new(config.build(&path)?),
+                LayerSpec::Embedding(config) => Box::new(config.build(&path)?),
                 LayerSpec::Linear(config) => Box::new(config.build(&path)?),
                 LayerSpec::Identity => Box::new(Identity),
                 LayerSpec::ReLU => Box::new(ReLU),
@@ -342,7 +506,25 @@ impl SequentialBuilder {
     }
 }
 
-/// An owned eager sequence with stable PyTorch-style numeric parameter paths.
+/// A sequence of layers with an owned parameter store.
+///
+/// Create a model with [`Sequential::builder`], pass its [`Self::var_store`] to
+/// an optimizer, and use [`Self::save_weights`] to persist trained parameters.
+/// Layers register parameters under their numeric position (for example,
+/// `0.weight` and `2.bias`). New models start in training mode; call
+/// [`Self::eval`] for inference. Evaluation changes dropout behavior but does
+/// not disable gradient tracking; use [`crate::no_grad`] when needed.
+///
+/// ```
+/// use rusttorch::{DeviceSpec, Kind, Tensor, nn::Sequential};
+/// let mut model = Sequential::builder().linear(4, 8).relu().dropout(0.2)
+///     .linear(8, 2).build(DeviceSpec::Cpu)?;
+/// model.eval();
+/// let features = Tensor::zeros([3, 4], (Kind::Float, model.device()));
+/// let scores = rusttorch::no_grad(|| model.forward(&features))?;
+/// assert_eq!(scores.size(), [3, 2]);
+/// # Ok::<(), rusttorch::RustTorchError>(())
+/// ```
 pub struct Sequential {
     var_store: VarStore,
     layers: Vec<Box<dyn Module>>,
