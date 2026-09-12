@@ -1,6 +1,6 @@
 # PyTorch compatibility
 
-RustTorch 0.1.0 targets:
+RustTorch targets:
 
 - `tch` 0.26.0
 - PyTorch/LibTorch 2.13.0
@@ -92,9 +92,9 @@ and documented tolerances rather than assuming identical RNG streams.
   no public checkpoint API, so loader checkpoint rows are RustTorch extensions.
 - `eval()` changes module behavior but does not disable autograd.
 - Explicit unavailable devices error instead of silently falling back.
-- SafeTensors is the only model-state format accepted by RustTorch 0.1;
+- SafeTensors is the only model-state format accepted by RustTorch;
   pickle-based `.pt`/`.bin` files are not accepted.
-- TorchScript is not exposed by RustTorch 0.1. Callers can use `tch::CModule`
+- TorchScript is not exposed by RustTorch. Callers can use `tch::CModule`
   directly for opaque legacy inference, outside the RustTorch compatibility
   surface.
 - `.pt2` import/export is not implemented or claimed until separately tested.

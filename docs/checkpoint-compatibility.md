@@ -21,7 +21,7 @@ not automatically a PyTorch checkpoint.
 
 ## Cross-language full resume
 
-Cross-language optimizer resume is not implemented in RustTorch 0.1. Adam and
+Cross-language optimizer resume is not implemented in RustTorch. Adam and
 SGD state can include per-parameter tensors, counters, parameter groups, and
 runtime-specific metadata. A future implementation would require an explicit
 mapping and parity tests; RustTorch currently makes no continuation promise for

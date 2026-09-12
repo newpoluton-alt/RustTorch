@@ -15,7 +15,7 @@ large allocation, or Python runtime invocation.
 
 `DeviceSpec::Mps` is strict: unavailable MPS and unsupported operations are
 errors, not silent CPU fallback. Model parameters, inputs, outputs, and
-gradients remain on MPS unless movement is explicit. RustTorch 0.1 has no
+gradients remain on MPS unless movement is explicit. RustTorch has no
 dedicated persistent-buffer API.
 
 Conditional tests cover tensor creation, eager and graph forward/backward,

@@ -12,13 +12,12 @@ Use this package directly when you only need the data layer.
 
 ```toml
 [dependencies]
-rusttorch-data = { git = "https://github.com/newpoluton-alt/RustTorch", features = ["download-libtorch"] }
-rusttorch-core = { git = "https://github.com/newpoluton-alt/RustTorch" }
+rusttorch-data = { version = "0.2", features = ["download-libtorch"] }
+rusttorch-core = "0.2"
 ```
 
 `rusttorch-core` supplies `Tensor`, `Kind` and `Device` for tensor pipelines.
-The workspace packages currently install from Git; keep both dependencies on
-the same repository revision when pinning them.
+Use the same release series for both packages.
 
 ## Features
 

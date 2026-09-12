@@ -27,14 +27,13 @@ application. The API is evolving in the 0.x series. The
 
 ## Installation
 
-Install from the current repository while the workspace packages are prepared
-for publication. Rust 1.88 or newer is required.
+Install the 0.2 release from crates.io. Rust 1.88 or newer is required:
 
 ```sh
-cargo install --git https://github.com/newpoluton-alt/RustTorch rusttorch-cli
+cargo install rusttorch-cli --version 0.2.0
 cargo new rusttorch-demo
 cd rusttorch-demo
-cargo add rusttorch --git https://github.com/newpoluton-alt/RustTorch
+cargo add rusttorch@0.2
 rusttorch setup --backend auto
 ```
 
@@ -43,6 +42,16 @@ setup can download a large LibTorch archive. Use `--backend cpu` to select CPU
 or `--backend cuda-12.6` for the managed CUDA distribution on a supported host.
 See [platform setup](docs/platform-support.md) for prerequisites and runtime
 library paths.
+
+This source guide includes model and optimizer APIs added after 0.2.0. To run
+its examples before the next release, use a checkout containing these changes
+and point your application at it:
+
+```sh
+cargo add rusttorch --path /absolute/path/to/RustTorch
+```
+
+For the released 0.2 API, use the [published documentation](https://docs.rs/rusttorch/0.2.0).
 
 ## Example: train a regressor
 
@@ -143,6 +152,11 @@ checkpoint/resume combinations.
 `download-libtorch` is enabled by default and acquires the compatible native
 runtime. For documentation builds without a native runtime, disable defaults
 and enable `doc-only`. **`doc-only` cannot run a model.**
+
+```toml
+[dependencies]
+rusttorch = { version = "0.2", default-features = false, features = ["doc-only"] }
+```
 
 ## Native runtime
 
