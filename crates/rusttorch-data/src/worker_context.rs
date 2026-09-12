@@ -251,8 +251,16 @@ pub struct LoaderCancelled;
 
 /// Stable information visible while a loader worker callback is active.
 ///
-/// Unlike PyTorch's process workers, RustTorch map workers share a typed
-/// dataset and therefore do not expose an erased dataset through this value.
+/// Use `id` and `num_workers` to divide source records, and `seed` to initialize
+/// worker-local randomness. The dataset remains owned by the typed loader.
+///
+/// ```
+/// use rusttorch_data::WorkerInfo;
+/// let info = WorkerInfo::new(1, 3, 42, 0)?;
+/// let records: Vec<_> = (info.id..10).step_by(info.num_workers).collect();
+/// assert_eq!(records, [1, 4, 7]);
+/// # Ok::<(), rusttorch_core::RustTorchError>(())
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WorkerInfo {
     /// Zero-based worker identifier.

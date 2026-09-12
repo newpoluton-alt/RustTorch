@@ -5,6 +5,25 @@ or graph-format stability.
 
 ## Unreleased
 
+## 0.3.0 - 2026-09-12
+
+- Add tensor workflows for indexing, alias-aware reshaping, standardization,
+  least squares, spectral filtering, sparse matrices and inference quantization;
+  document native linear algebra, special functions and layout boundaries.
+- Add scalar functional gradients, fixed-seed vector products, Jacobians,
+  Hessians and algebraic surrogate gradients. Add Normal, Bernoulli and
+  Categorical sampling, scores and entropy with CPU numerical parity.
+- Publish full training, sequence, tensor and differentiation tutorials as
+  navigable Rustdoc pages. Expand DataLoader, builder, stream and checkpoint
+  documentation with complete task examples and inline facade documentation.
+- Fix the Windows stream test's false end-of-stream assertion under a 1 ns
+  deadline; preserve the queued-record behavior and deterministic terminal tests.
+- Add a pinned semantic API/schema census, explicit per-symbol dispositions,
+  offline validation and reproducible maintainer refresh tooling.
+- Record branch naming rules: `b/` features, `f/` fixes and descriptive prefixes
+  for other contributions; do not create branches with `codex/`.
+
+
 - Add BatchNorm/InstanceNorm1d/2d/3d, GroupNorm, transposed convolution,
   max/average/adaptive pools, seven activation layers, and generic registered
   `SequentialBuilder::layer` composition. Persist normalization buffers.

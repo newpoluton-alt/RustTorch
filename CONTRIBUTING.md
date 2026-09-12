@@ -22,7 +22,9 @@ or exceed the current compatibility milestone.
 
 ## Development workflow
 
-1. Fork the repository and create a focused branch from current `main`.
+1. Fork the repository and create a focused branch from current `main`: `b/`
+   for features, `f/` for fixes, or a descriptive prefix such as `docs/`. Never
+   create a branch beginning with `codex/`; see [AGENTS.md](AGENTS.md).
 2. Make the smallest complete change and add the narrowest test that fails
    without it.
 3. Update public documentation, the changelog, and compatibility records when
@@ -60,9 +62,10 @@ the locked Python and parity environment only on Ubuntu x86_64. Resolving a
 wheel is not backend test evidence. The lock has no PyTorch wheel for
 Intel macOS or Windows ARM64.
 
-Before either package is published, a release tag `vX.Y.Z` must match the
-versions in `Cargo.toml` and `crates/rusttorch-cli/Cargo.toml`, and that version
-must have a release entry in `CHANGELOG.md`.
+Before publishing, all four workspace crates must share a stable version with
+one release entry in `CHANGELOG.md`. Follow [the release sequence](docs/releasing.md):
+validate a reviewed commit on `main`, publish core, data, CLI and facade, then
+create the matching immutable tag after all four registry versions are public.
 
 The parity gate exercises PyTorch-visible defaults, initialization, gradients,
 optimizers, state naming, and serialization. Run `scripts/check-backends.sh`
@@ -79,6 +82,11 @@ verify the public view; do not edit generated coverage by hand:
 python3 scripts/check-compatibility.py --write
 python3 scripts/check-compatibility.py --check
 ```
+
+The [census maintenance guide](docs/api-census.md) explains pinned-source refresh.
+Ordinary contributions run `scripts/sync-pytorch-inventory.py --check` offline;
+a full source/documentation refresh is required when changing the reference pin.
+Every new inventory identity needs exactly one explicit disposition.
 
 Changes to public behavior must:
 

@@ -1,76 +1,15 @@
-//! Explicitly sharded positive-worker stream loading.
+//! Load lazy, independently owned stream shards with worker threads.
 //!
-//! Each worker owns the iterator returned by [`WorkerSourceFactory::create`];
-//! no shared iterator lock is involved. Ordered sources assign one contiguous
-//! global [`SequenceId`] range starting at zero. Unordered sources may omit
-//! sequence IDs, but every [`LogicalSampleId`] must remain stable and unique
-//! within the caller's generation so task randomness has a scheduling-neutral
-//! identity. Records are merged before coordinator batching, so `drop_last`
-//! drops at most one global tail rather than one tail per shard.
-//!
-//! Ordered reassembly retains at most `workers * prefetch_factor` records. If
-//! that entire validated window contains higher IDs while the next ID is
-//! absent, no worker credit remains with which a shard could advance, so the
-//! iterator reports a protocol error instead of waiting for an unreachable end
-//! marker. A source that emits a lower ID after more than this global window of
-//! higher IDs must increase the factor or shard the lower ID onto a worker that
-//! keeps an independent credit available. A worker already producing the
-//! missing low ID holds its credit outside reassembly and is allowed to finish.
-//! The ordered window is one loader-owned flat slot vector reserved and
-//! aggregate-checked before source callbacks, then reused across generations.
-//! Lookup is linear in the deliberately bounded window; increase the factor
-//! only when wider source disorder justifies its memory and scan cost.
-//!
-//! With `prefetch_bytes` enabled, workers measure final post-transform records
-//! and carry cancellation-safe byte permits through the result queue and this
-//! reassembly window. Each ordered shard must then emit strictly increasing
-//! sequence IDs. One bounded front-waiter slot per shard distinguishes a slow
-//! expected record from a globally missing ID without weakening the byte cap.
-//! The coordinator's active item-bounded collation batch is outside the byte
-//! budget. Recursive pinning happens only after successful collation.
-//!
-//! ```
-//! use std::convert::Infallible;
-//! use rusttorch_data::{
-//!     LogicalSampleId, SequenceId, StreamDataLoaderBuilder, VecCollate,
-//!     WorkerContext, WorkerRecord, WorkerSourceFactory,
-//! };
-//!
-//! struct ModuloShards(usize);
-//!
-//! impl WorkerSourceFactory for ModuloShards {
-//!     type Sample = usize;
-//!     type Error = Infallible;
-//!     type Source = std::vec::IntoIter<Result<WorkerRecord<usize>, Infallible>>;
-//!
-//!     fn create(&self, worker: WorkerContext) -> Result<Self::Source, Self::Error> {
-//!         Ok((worker.info.id..self.0)
-//!             .step_by(worker.info.num_workers)
-//!             .map(|value| Ok(WorkerRecord {
-//!                 sequence: Some(SequenceId::new(value as u64)),
-//!                 logical_id: LogicalSampleId::new(value as u64),
-//!                 sample: value,
-//!             }))
-//!             .collect::<Vec<_>>()
-//!             .into_iter())
-//!     }
-//!
-//!     fn exact_len(&self) -> Option<usize> { Some(self.0) }
-//! }
-//!
-//! let mut loader = StreamDataLoaderBuilder::new(ModuloShards(5))
-//!     .workers(2)
-//!     .batch_size(2)
-//!     .collate(VecCollate)
-//!     .build()?;
-//! let batches = loader.iter().collect::<Result<Vec<_>, _>>().unwrap();
-//! assert_eq!(batches, vec![vec![0, 1], vec![2, 3], vec![4]]);
-//! # Ok::<(), rusttorch_core::RustTorchError>(())
-//! ```
-//!
-//! Cancellation and deadlines are cooperative. Iterator and owner drop join
-//! their workers, and therefore wait for a source blocked in non-cooperative
-//! native code until that call returns.
+//! [`StreamDataLoaderBuilder`] has a complete sharding example and explains
+//! ordering, batching, prefetch and cleanup. [`ExactStreamDataLoader`] adds
+//! resumable cursors for replay-safe sources. Use [`crate::batches`] for an
+//! ordinary iterator that needs no worker ownership or checkpointing.
+
+// The ordered window is a loader-owned flat slot vector reserved and aggregate-
+// checked before source callbacks, then reused across generations. Lookup is
+// linear in this deliberately bounded window; wider source disorder increases
+// both its memory and scan cost. Byte-bounded streams additionally use one
+// front-waiter slot per shard to distinguish a slow next record from a missing ID.
 
 use std::{
     convert::Infallible,
@@ -100,11 +39,16 @@ use crate::{
 pub use exact::{ExactStreamDataLoader, ExactStreamLoaderIter};
 
 /// A record's position in one ordered global stream generation.
+///
+/// Assign positions `0, 1, 2, ...` across all shards together. The loader uses
+/// them to restore global order and rejects duplicate or missing positions.
+/// Keep sample identity separate in [`LogicalSampleId`] when the same sample
+/// can appear at a different position in another epoch.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SequenceId(u64);
 
 impl SequenceId {
-    /// Creates an identifier from its checked integer representation.
+    /// Wraps a global position; ordering and completeness are checked while loading.
     pub const fn new(value: u64) -> Self {
         Self(value)
     }
@@ -123,12 +67,16 @@ impl SequenceId {
     }
 }
 
-/// Stable identity used for task randomness and future stream checkpoints.
+/// Stable sample identity used by task randomness and stream checkpoints.
+///
+/// Unlike [`SequenceId`], this identifies the underlying sample rather than its
+/// delivery position. Keep it stable for the same sample when worker scheduling
+/// changes. [`StreamDataLoaderBuilder`] shows a source where both IDs coincide.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct LogicalSampleId(u64);
 
 impl LogicalSampleId {
-    /// Creates an identifier from its checked integer representation.
+    /// Wraps a caller-assigned stable sample identity.
     pub const fn new(value: u64) -> Self {
         Self(value)
     }
@@ -147,7 +95,11 @@ impl LogicalSampleId {
     }
 }
 
-/// One typed record produced by an explicitly sharded worker source.
+/// An owned sample plus its ordering and reproducibility identifiers.
+///
+/// Ordered loaders require a `sequence`; completion-order loaders may use
+/// `None`. All records require a stable `logical_id` for sample-local randomness.
+/// See [`StreamDataLoaderBuilder`] for a complete lazy source implementation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkerRecord<T> {
     /// Position in the global ordered generation, when supplied.
@@ -158,7 +110,18 @@ pub struct WorkerRecord<T> {
     pub sample: T,
 }
 
-/// Creates one independently owned stream shard per worker and generation.
+/// Open an independent input shard for each worker and each iteration.
+///
+/// Implement this for sharded files, partitioned database scans or other sources
+/// that can be opened separately. Use `context.info.id` and
+/// `context.info.num_workers` to select disjoint records; the loader does not
+/// partition an arbitrary source automatically. Returning the same full stream
+/// from every worker duplicates its records.
+///
+/// [`StreamDataLoaderBuilder`] provides a complete lazy modulo-shard example.
+/// Retain `WorkerContext` when a decoder needs cancellation/deadline information.
+/// Report the total record count across all shards through [`Self::exact_len`]
+/// only when it is exact; return `None` for an unknown-length source.
 pub trait WorkerSourceFactory: Send + Sync + 'static {
     /// Sample produced by every shard.
     type Sample: Send + 'static;
@@ -1531,7 +1494,83 @@ impl Default for StreamConfiguration {
     }
 }
 
-/// Builder for an explicitly sharded positive-worker stream loader.
+/// Merge lazy worker-owned streams into batches for training or inference.
+///
+/// Use this when records are read sequentially from independent shards rather
+/// than fetched by index. Each [`WorkerSourceFactory`] call returns one owned
+/// iterator. Workers read and transform records; the calling thread merges and
+/// collates them. For a single existing iterator, [`crate::batches`] is simpler.
+///
+/// # Read disjoint shards without collecting them first
+///
+/// This factory assigns every `workers`-th record to one worker. Together, the
+/// shards provide contiguous global sequence IDs, so the loader restores input
+/// order even if a later record finishes first. Five records produce two full
+/// batches and one final short batch across the entire source.
+///
+/// ```
+/// use std::{convert::Infallible, iter::StepBy, ops::Range};
+/// use rusttorch_data::{
+///     LogicalSampleId, SequenceId, StreamDataLoaderBuilder, VecCollate,
+///     WorkerContext, WorkerRecord, WorkerSourceFactory,
+/// };
+/// struct Rows(usize);
+/// struct Shard(StepBy<Range<usize>>);
+/// impl Iterator for Shard {
+///     type Item = Result<WorkerRecord<usize>, Infallible>;
+///     fn next(&mut self) -> Option<Self::Item> {
+///         self.0.next().map(|row| Ok(WorkerRecord {
+///             sequence: Some(SequenceId::new(row as u64)),
+///             logical_id: LogicalSampleId::new(row as u64),
+///             sample: row,
+///         }))
+///     }
+/// }
+/// impl WorkerSourceFactory for Rows {
+///     type Sample = usize;
+///     type Error = Infallible;
+///     type Source = Shard;
+///     fn create(&self, worker: WorkerContext) -> Result<Shard, Infallible> {
+///         Ok(Shard((worker.info.id..self.0).step_by(worker.info.num_workers)))
+///     }
+///     fn exact_len(&self) -> Option<usize> { Some(self.0) }
+/// }
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let mut loader = StreamDataLoaderBuilder::new(Rows(5))
+///         .workers(2).prefetch_factor(2).batch_size(2)
+///         .collate(VecCollate).build()?;
+///     let batches = loader.iter().collect::<Result<Vec<_>, _>>()?;
+///     assert_eq!(batches, [vec![0, 1], vec![2, 3], vec![4]]);
+///     Ok(())
+/// }
+/// ```
+///
+/// # Select ordering and resource bounds
+///
+/// - Defaults: one worker, ordered delivery, batch size one, keeping the final
+///   tail, and prefetch factor two. Unlike map loaders, workers must be positive.
+/// - [`Self::drop_last`] applies after all shards are merged: uneven shards do
+///   not each lose a separate tail.
+/// - [`Self::prefetch_factor`] limits outstanding **records** per worker. Ordered
+///   IDs must start at zero without gaps or duplicates. If higher IDs fill the
+///   whole window before the next ID can be reached, iteration returns a protocol
+///   error; adjust sharding or the factor to keep that next record reachable.
+/// - [`Self::ordered(false)`](Self::ordered) permits completion-order delivery
+///   and omitted sequence IDs; logical sample IDs remain required.
+/// - [`Self::prefetch_bytes`] additionally limits transformed payload bytes.
+///   Ordered shards must then increase strictly in sequence order. The active
+///   collation batch and allocations inside your callbacks are outside this cap.
+///
+/// `iter()` opens fresh shards for another pass. [`StreamDataLoader::set_epoch`]
+/// changes sample-transform randomness for the next pass. Persistent workers
+/// reuse threads and transforms, while each pass still opens a fresh source.
+/// Dropping an iterator cancels its work and waits for it to stop; dropping the
+/// owner joins persistent threads too. Blocking sources must cooperate with
+/// cancellation if prompt shutdown matters.
+///
+/// For restartable streams, implement [`crate::CheckpointableSource`] and
+/// [`crate::CheckpointSourceFactory`], then use [`Self::checkpointable`].
+/// [`ExactStreamDataLoader`] contains a complete JSON checkpoint/restore example.
 pub struct StreamDataLoaderBuilder<
     S,
     C = DefaultCollator,
@@ -1934,7 +1973,17 @@ impl<S, C, F, I, Q> StreamDataLoaderBuilder<S, C, F, I, MemoryEnabled, PinEnable
     }
 }
 
-/// Owned, re-iterable explicitly sharded stream loader.
+/// Reusable owner of a sharded input pipeline.
+///
+/// Create it with [`StreamDataLoaderBuilder`], whose example reads lazy disjoint
+/// shards into global batches. Call [`Self::iter`] for each pass and
+/// [`Self::set_epoch`] before the next epoch when transforms use task randomness.
+/// [`Self::len`] is the global batch count when the factory knows its exact length.
+///
+/// Each pass creates new source iterators. Persistent mode keeps worker threads
+/// and transforms across passes; dropping this owner shuts them down and joins
+/// them. Use [`ExactStreamDataLoader`] when you need to retain a source cursor
+/// across application restarts.
 #[allow(private_bounds)]
 pub struct StreamDataLoader<
     S,
@@ -2218,7 +2267,12 @@ where
     }
 }
 
-/// One borrowing iterator generation from a [`StreamDataLoader`].
+/// One pass over a [`StreamDataLoader`], yielding globally collated batches.
+///
+/// Read each `Result` before updating the model so a source, transform or
+/// collation failure is handled at a visible batch boundary. Dropping this
+/// iterator cancels outstanding reads and waits for active work. It does not
+/// provide checkpointing; [`ExactStreamLoaderIter`] is the resumable variant.
 #[allow(private_bounds)]
 pub struct StreamLoaderIter<'a, S, C, F, I, M = MemoryDisabled, N = PinDisabled>
 where

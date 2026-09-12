@@ -62,7 +62,7 @@ CPU builds must keep `TORCH_CUDA_VERSION` unset. Setup rejects a present
 raw Cargo `--target-dir` and environment overrides can bypass the isolation.
 
 For Python, system, or offline LibTorch, use
-`rusttorch = { version = "0.2.0", default-features = false }` and set either
+`rusttorch = { version = "0.3.0", default-features = false }` and set either
 `LIBTORCH_USE_PYTORCH=1` or `LIBTORCH=/absolute/path/to/libtorch` while
 building. Cargo `--offline` works once the dependency and compatible LibTorch
 installation are local. The platform dynamic loader must still find the

@@ -59,7 +59,20 @@ pub use device::{DeviceCapabilities, DeviceSpec, available_devices, resolve_devi
 pub use error::{Result, RustTorchError};
 pub use tch::{Device, Kind, Reduction, Tensor, no_grad, no_grad_guard};
 
-/// Seeds LibTorch's random number generator.
+/// Seeds LibTorch's shared random generator before drawing tensors.
+///
+/// Use this to reproduce the order of draws on one runtime/device. Other threads
+/// share the generator, and matching seeds do not guarantee identical streams on
+/// different backends. Dataset samplers have their own explicit seed controls.
+///
+/// ```
+/// use rusttorch_core::{Device, Kind, Tensor, manual_seed};
+/// manual_seed(42);
+/// let first = Tensor::randn([3], (Kind::Float, Device::Cpu));
+/// manual_seed(42);
+/// let repeated = Tensor::randn([3], (Kind::Float, Device::Cpu));
+/// assert!(first.equal(&repeated));
+/// ```
 pub fn manual_seed(seed: i64) {
     tch::manual_seed(seed);
 }

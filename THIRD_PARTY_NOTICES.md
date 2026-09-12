@@ -133,6 +133,20 @@ Python fixtures independently generate values, gradients, initialization and
 multi-step training references. Existing `serde`/`serde_json` dependencies provide
 versioned state encoding; `float_roundtrip` preserves configuration on JSON restore.
 
+The tensor/differentiation extension follows the same full commit
+`cf30153c4c131c8164ee7798e5022d810682e2cb`: `torch/autograd/functional.py`,
+`torch/autograd/__init__.py`, `torch/distributions/{normal,bernoulli,categorical,utils}.py`,
+`torch/_tensor.py`, and ATen operators described by
+`aten/src/ATen/native/native_functions.yaml`. Rust wrappers and recipes are
+original compositions over safe `tch` calls. Numerical reference fixtures in
+`tests/python_reference/{tensor_workflows,differentiation}.py` call the pinned
+public APIs; they do not copy implementation code.
+
+The committed census derives object identities, signatures and source locations
+from the pinned documentation's resolved Sphinx domain and canonical schemas
+from pinned torchgen. Its manifest records the exact source/runtime identity.
+No upstream documentation prose, native libraries or source checkout is vendored.
+
 ## Runtime acquisition and external components
 
 With RustTorch's default download feature, `torch-sys` downloads official
@@ -302,6 +316,17 @@ rows; duplicate crate versions are preserved.
 | `zstd` | `0.11.2+zstd.1.5.2` | `MIT` |
 | `zstd-safe` | `5.0.2+zstd.1.5.2` | `MIT/Apache-2.0` |
 | `zstd-sys` | `2.0.16+zstd.1.5.7` | `MIT/Apache-2.0` |
+
+## Documentation inventory tooling
+
+Maintainer-only exact pins: Sphinx 9.1.0 (BSD-2-Clause), MyST-Parser 5.1.0
+(MIT), PyYAML 6.0.3 (MIT), and MyST-NB 1.4.0 (BSD-3-Clause). `uv.lock`
+records their complete transitive resolution and artifact hashes. These tools
+are needed to resolve documentation directives and canonical YAML schemas;
+standard-library text matching cannot recover those semantic objects. They are
+not Rust/runtime dependencies and are excluded from crate distributions.
+Refresh runs in an isolated temporary configuration with notebook execution
+disabled; dependency review and locked artifact checks apply to updates.
 
 ## Python parity tooling
 

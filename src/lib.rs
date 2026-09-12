@@ -11,7 +11,9 @@
 //!
 //! | Task | Start here |
 //! | --- | --- |
-//! | Transform numerical data or compute gradients | [`Tensor`], [`Kind`], [`no_grad`] |
+//! | Index, reshape, normalize or analyze numerical data | [`tensor`], [`tutorials::tensors`] |
+//! | Compute sensitivities or higher-order derivatives | [`autograd`], [`tutorials::differentiation`] |
+//! | Sample noise, latent variables or class labels | [`distributions`] |
 //! | Build a model from layers | [`nn::Sequential`], [`nn::Module`] |
 //! | Extract image features | [`nn::Conv2d`], [`nn::BatchNorm2d`], [`nn::AdaptiveAvgPool2d`] |
 //! | Model sequences or token relationships | [`nn::Lstm`], [`nn::MultiheadAttention`], [`nn::TransformerConfig`] |
@@ -20,6 +22,10 @@
 //! | Resume training or schedule updates | [`optim::OptimizerState`], [`optim::StepLr`], [`amp::GradScaler`] |
 //! | Save or restore model parameters | [`nn::Sequential::save_weights`], [`interop`] |
 //! | Inspect an explicit computation graph | [`graph`] |
+//!
+//! Complete recipes are collected in [`tutorials`], including image classifiers,
+//! sequence models, numerical analysis and probability models. Each recipe
+//! explains the expected shapes and when to use the API.
 //!
 //! # Work with tensors
 //!
@@ -127,23 +133,35 @@
 #![deny(missing_docs)]
 
 pub mod amp;
+pub mod autograd;
 pub mod data;
 pub mod device;
+pub mod distributions;
 pub mod error;
 pub mod graph;
 pub mod interop;
 pub mod nn;
 pub mod optim;
+pub mod tensor;
 
 pub use device::{DeviceCapabilities, DeviceSpec, available_devices, resolve_device};
 pub use error::{Result, RustTorchError};
 pub use rusttorch_core::{Device, Kind, Reduction, Tensor, manual_seed, no_grad, no_grad_guard};
+/// Native indexing syntax for tensor slices, such as `tensor.i((.., 0))`.
+pub use tch::IndexOp;
 
-// Keep the GitHub training recipes executable without adding a public API.
-#[cfg(doctest)]
-#[doc = include_str!("../docs/training.md")]
-mod training_guide {}
-
-#[cfg(doctest)]
-#[doc = include_str!("../docs/sequence-models.md")]
-mod sequence_guide {}
+/// End-to-end recipes for building applications with RustTorch.
+///
+/// Each guide contains complete, tested Rust programs. Start with [`tutorials::training`]
+/// for model training, [`tutorials::tensors`] for numerical data, or [`tutorials::differentiation`]
+/// for sensitivity and probability models.
+pub mod tutorials {
+    #[doc = include_str!("../docs/training.md")]
+    pub mod training {}
+    #[doc = include_str!("../docs/sequence-models.md")]
+    pub mod sequences {}
+    #[doc = include_str!("../docs/tensor-workflows.md")]
+    pub mod tensors {}
+    #[doc = include_str!("../docs/differentiation.md")]
+    pub mod differentiation {}
+}

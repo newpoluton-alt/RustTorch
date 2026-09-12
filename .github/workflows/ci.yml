@@ -104,6 +104,9 @@ jobs:
       - name: Run Python policy tests
         run: .venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
 
+      - name: Validate API census offline
+        run: .venv/bin/python scripts/sync-pytorch-inventory.py --check
+
       - name: Validate compatibility ledger
         run: .venv/bin/python scripts/check-compatibility.py --check
 
@@ -324,6 +327,9 @@ jobs:
 
       - name: Test loader runtime and conditional CUDA pinning
         run: cargo test -p rusttorch-data --tests --locked
+
+      - name: Test RustTorch runtime on this platform
+        run: cargo test -p rusttorch --all-targets --locked
 
       - name: Run loader examples
         run: |

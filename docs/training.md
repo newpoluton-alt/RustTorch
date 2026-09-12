@@ -209,8 +209,8 @@ them, build the same architecture and call
 Weight files include registered normalization buffers as well as trainable
 parameters. A weight file does not contain the model's Rust code, optimizer
 state, or input pipeline position. Loader checkpoints are separate typed state; use the
-[data guide](../crates/rusttorch-data/README.md) for supported resume modes and
-the [interoperability guide](model-interoperability.md) for weight naming,
+[data guide](https://github.com/newpoluton-alt/RustTorch/blob/main/crates/rusttorch-data/README.md) for supported resume modes and
+the [interoperability guide](https://github.com/newpoluton-alt/RustTorch/blob/main/docs/model-interoperability.md) for weight naming,
 validation, and exchange.
 
 
@@ -301,7 +301,7 @@ application so floating-point configuration survives parsing exactly:
 serde_json = { version = "1", features = ["float_roundtrip"] }
 ```
 
-The runnable [training checkpoint example](../examples/training_checkpoint.rs)
+The runnable [training checkpoint example](https://github.com/newpoluton-alt/RustTorch/blob/main/examples/training_checkpoint.rs)
 saves a classifier after two epochs, restores all four components, and checks
 that its next update exactly matches uninterrupted training:
 
@@ -317,4 +317,4 @@ checkpoints use a versioned RustTorch format, not Python pickle/state dictionari
 Move the model to its final device before constructing or restoring its optimizer.
 
 For token classification, explicit recurrent state, masking, and sequence-to-
-sequence models, continue with [sequence models](sequence-models.md).
+sequence models, continue with [sequence models](https://github.com/newpoluton-alt/RustTorch/blob/main/docs/sequence-models.md).

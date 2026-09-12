@@ -12,8 +12,8 @@ Use this package directly when you only need the data layer.
 
 ```toml
 [dependencies]
-rusttorch-data = { version = "0.2", features = ["download-libtorch"] }
-rusttorch-core = "0.2"
+rusttorch-data = { version = "0.3", features = ["download-libtorch"] }
+rusttorch-core = "0.3"
 ```
 
 `rusttorch-core` supplies `Tensor`, `Kind` and `Device` for tensor pipelines.
@@ -91,6 +91,35 @@ The borrowed `DataLoader::new` returns an iterator directly: iterate over it
 without `build()` or `iter()`. It keeps your dataset available to inspect after
 loading and runs each fetch on the calling thread, which is useful for debugging.
 
+A complete borrowed pass keeps the dataset available afterward. It does not
+stack samples automatically, so the output here is `Vec<i64>`:
+
+```rust
+use rusttorch_data::{DataLoader, Dataset};
+use std::convert::Infallible;
+struct Rows([i64; 3]);
+impl Dataset for Rows {
+    type Sample = i64;
+    type Error = Infallible;
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn get(&self, i: usize) -> Result<i64, Infallible> {
+        Ok(self.0[i])
+    }
+}
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let dataset = Rows([5, 8, 13]);
+    let loader = DataLoader::new(&dataset, 0..dataset.len(), 2, false)?;
+    assert_eq!(
+        loader.collect::<Result<Vec<_>, _>>()?,
+        [vec![5, 8], vec![13]]
+    );
+    assert_eq!(dataset.get(0)?, 5); // The dataset is still available.
+    Ok(())
+}
+```
+
 For a custom `Dataset`, implement `len()` and `get(index)`. Samples and errors
 keep their concrete Rust types. `get_batch(indices)` is optional: override it
 when one database query or decode operation can fetch an entire index batch.
@@ -112,6 +141,153 @@ Set `.rank(rank)` on the loader as well as selecting the sampler's rank.
 The sampler partitions input indices; gradient synchronization belongs to
 training. Sampler `drop_last` controls division across ranks; loader
 `drop_last` separately controls the final local batch.
+
+## Train with typed feature/label batches
+
+When building a complete application, use the facade dependency instead of
+importing the data and core crates separately:
+
+```toml
+[dependencies]
+rusttorch = { version = "0.3", features = ["download-libtorch"] }
+```
+
+The default collator turns `(Tensor, i64)` samples into `(Tensor, Tensor)`
+batches. Feature rows are stacked, and labels become an `Int64` tensor suitable
+for classification loss. The dataset below stores ordinary Rust values and
+creates each tensor when fetched, so workers can share it safely.
+
+```rust
+use rusttorch::{
+    DeviceSpec, Tensor,
+    data::{DataLoader, Dataset},
+    nn::{Sequential, functional},
+    optim::Adam,
+};
+use std::convert::Infallible;
+
+struct Examples(Vec<([f32; 2], i64)>);
+impl Dataset for Examples {
+    type Sample = (Tensor, i64);
+    type Error = Infallible;
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn get(&self, index: usize) -> Result<Self::Sample, Infallible> {
+        let (features, label) = &self.0[index];
+        Ok((Tensor::from_slice(features), *label))
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let examples = Examples(vec![
+        ([-1., 0.], 0),
+        ([1., 0.], 1),
+        ([-2., 1.], 0),
+        ([2., 1.], 1),
+    ]);
+    let mut loader = DataLoader::builder(examples)
+        .batch_size(2)
+        .shuffle(42)?
+        .workers(2)
+        .prefetch_factor(2)
+        .build()?;
+    let model = Sequential::builder().linear(2, 2).build(DeviceSpec::Cpu)?;
+    let mut optimizer = Adam::builder()
+        .learning_rate(0.01)
+        .build(model.var_store())?;
+
+    for epoch in 0..3 {
+        loader.set_epoch(epoch);
+        for batch in loader.iter() {
+            let (features, labels) = batch?;
+            assert_eq!(features.size(), [2, 2]);
+            assert_eq!(labels.size(), [2]);
+            let logits = model.forward_t(&features, true)?;
+            let loss = functional::cross_entropy(&logits, &labels)?;
+            optimizer.backward_step(&loss)?;
+        }
+    }
+    Ok(())
+}
+```
+
+Calling `iter()` again repeats the selected epoch. Call `set_epoch(epoch)` to
+select that epoch's deterministic shuffle before its first batch. `.shuffle(42)`
+sets the sampler seed; `.seed(...)` separately controls task/worker randomness.
+The example keeps the model and inputs on CPU. When training on an accelerator,
+move both feature and target tensors to the model's device before the loss.
+
+## Pad sequences or return individual samples
+
+Custom collation runs after per-sample transforms. Use it to pad variable-length
+sequences and retain the lengths needed by the model. The following program
+returns token IDs shaped `[batch, longest_sequence]` and an `Int64` length vector.
+Zero is the chosen padding token; use a different value if your vocabulary
+assigns zero to an ordinary token.
+
+```rust
+use rusttorch_core::Tensor;
+use rusttorch_data::{DataLoader, Dataset, FnCollate};
+use std::convert::Infallible;
+struct Sentences(Vec<Vec<i64>>);
+impl Dataset for Sentences {
+    type Sample = Vec<i64>;
+    type Error = Infallible;
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn get(&self, index: usize) -> Result<Self::Sample, Infallible> {
+        Ok(self.0[index].clone())
+    }
+}
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let padding = FnCollate::new(|rows: Vec<Vec<i64>>| {
+        let width = rows.iter().map(Vec::len).max().unwrap_or(0);
+        let lengths: Vec<_> = rows.iter().map(|row| row.len() as i64).collect();
+        let count = rows.len();
+        let mut values = Vec::new();
+        for mut row in rows {
+            row.resize(width, 0);
+            values.extend(row);
+        }
+        Ok::<_, rusttorch_core::RustTorchError>((
+            Tensor::f_from_slice(&values)?.f_reshape([count as i64, width as i64])?,
+            Tensor::f_from_slice(&lengths)?,
+        ))
+    });
+    let mut loader = DataLoader::builder(Sentences(vec![vec![1, 2], vec![3, 4, 5]]))
+        .batch_size(2)
+        .collate(padding)
+        .build()?;
+    let (tokens, lengths) = loader.iter().next().unwrap()?;
+    assert_eq!(
+        Vec::<Vec<i64>>::try_from(&tokens)?,
+        [vec![1, 2, 0], vec![3, 4, 5]]
+    );
+    assert_eq!(Vec::<i64>::try_from(&lengths)?, [2, 3]);
+    Ok(())
+}
+```
+
+For inference on one record at a time, or when each record is already a batch,
+use `without_batching()`. It converts samples without inserting a batch axis;
+do not combine it with `batch_size` or `drop_last`.
+
+```rust
+use rusttorch_core::Tensor;
+use rusttorch_data::{DataLoader, TensorDataset};
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let features = Tensor::from_slice(&[1_f32, 2., 3., 4.]).reshape([2, 2]);
+    let mut loader = DataLoader::builder(TensorDataset::new(vec![features])?)
+        .without_batching()
+        .build()?;
+    for sample in loader.iter() {
+        assert_eq!(sample?[0].size(), [2]);
+    }
+    Ok(())
+}
+```
 
 ## Prefetch, transform, and transfer
 
@@ -164,6 +340,65 @@ next iterator; dropping the loader shuts down and joins the pool. Rust cannot
 interrupt a blocking decoder or foreign call that ignores cancellation, so
 cleanup waits for that call to return.
 
+## Read lazy stream shards
+
+A worker source factory opens disjoint records for each worker. The loader does
+not partition your data automatically: returning the full input from every
+worker duplicates records. Use the worker ID and worker count to select a shard.
+This program keeps only a lazy range cursor per shard and merges five records
+into `[0, 1]`, `[2, 3]`, and one global tail `[4]`.
+
+```rust
+use rusttorch_data::{
+    LogicalSampleId, SequenceId, StreamDataLoaderBuilder, VecCollate, WorkerContext, WorkerRecord,
+    WorkerSourceFactory,
+};
+use std::{convert::Infallible, iter::StepBy, ops::Range};
+struct Rows(usize);
+struct Shard(StepBy<Range<usize>>);
+impl Iterator for Shard {
+    type Item = Result<WorkerRecord<usize>, Infallible>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(|row| {
+            Ok(WorkerRecord {
+                sequence: Some(SequenceId::new(row as u64)),
+                logical_id: LogicalSampleId::new(row as u64),
+                sample: row,
+            })
+        })
+    }
+}
+impl WorkerSourceFactory for Rows {
+    type Sample = usize;
+    type Error = Infallible;
+    type Source = Shard;
+    fn create(&self, worker: WorkerContext) -> Result<Shard, Infallible> {
+        Ok(Shard(
+            (worker.info.id..self.0).step_by(worker.info.num_workers),
+        ))
+    }
+    fn exact_len(&self) -> Option<usize> {
+        Some(self.0)
+    }
+}
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut loader = StreamDataLoaderBuilder::new(Rows(5))
+        .workers(2)
+        .prefetch_factor(2)
+        .batch_size(2)
+        .collate(VecCollate)
+        .build()?;
+    let batches = loader.iter().collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(batches, [vec![0, 1], vec![2, 3], vec![4]]);
+    Ok(())
+}
+```
+
+For an existing serial iterator, `batches(iterator, size, drop_last)` is the
+smaller entry point. Use worker shards when a source can be opened independently
+and preparation benefits from concurrency. A source without an exact length
+can leave `exact_len()` at its default `None`.
+
 ## Checkpoint and resume a training input pipeline
 
 [`examples/checkpoint.rs`](examples/checkpoint.rs) saves an ordered, prefetched
@@ -174,8 +409,48 @@ that a recreated loader returns exactly the same remaining samples:
 cargo run -p rusttorch-data --example checkpoint --locked
 ```
 
-Applications choose the storage format; add `serde_json` if using that example.
-The library depends only on serde's format-neutral traits in production.
+Applications choose the storage format. The complete example below uses JSON,
+so add `serde_json = "1"` alongside the data dependencies. The library uses
+serde's format-neutral traits in production.
+
+```rust
+use rusttorch_data::{DataLoader, Dataset, ReplaySafeDataset, ReplaySafeMap, VecCollate};
+use std::convert::Infallible;
+struct Rows([i64; 5]);
+impl Dataset for Rows {
+    type Sample = i64;
+    type Error = Infallible;
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn get(&self, index: usize) -> Result<i64, Infallible> {
+        Ok(self.0[index])
+    }
+}
+impl ReplaySafeDataset for Rows {}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let build = || {
+        DataLoader::builder(ReplaySafeMap::new(Rows([2, 3, 5, 7, 11])))
+            .batch_size(2)
+            .workers(2)
+            .prefetch_factor(2)
+            .collate(VecCollate)
+            .dataset_identity("prime-rows-v1".to_owned())
+    };
+    let mut loader = build().build()?;
+    let mut iteration = loader.iter();
+    assert_eq!(iteration.next().unwrap()?, [2, 3]);
+    let saved = serde_json::to_string(&iteration.checkpoint()?)?;
+    let uninterrupted = iteration.collect::<Result<Vec<_>, _>>()?;
+
+    let mut restored = build().resume_from(serde_json::from_str(&saved)?).build()?;
+    let remaining = restored.iter().collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(remaining, [vec![5, 7], vec![11]]);
+    assert_eq!(remaining, uninterrupted);
+    Ok(())
+}
+```
 
 For an immutable map dataset, implement `ReplaySafeDataset`, wrap it in
 `ReplaySafeMap`, and set `.dataset_identity("contents-version".to_owned())`.
@@ -215,10 +490,125 @@ restores it through `CheckpointableSource`. The factory supplies a versioned
 Sources retaining `WorkerContext` must replace it in `set_run_context` before
 resumed reads. See the [source contract](https://docs.rs/rusttorch-data/latest/rusttorch_data/trait.CheckpointableSource.html).
 
+### Complete stream cursor and JSON restore
+
+A stream reader must save every piece of state affecting its next record.
+This example stores each shard's local cursor, validates it without mutation,
+and replaces its cancellation context when reads resume. The factory kind
+versions the cursor format; the content identity versions the actual rows.
+Use the data/core dependencies above plus `serde_json = "1"`.
+
+```rust
+use rusttorch_data::{
+    CheckpointSourceFactory, CheckpointableSource, LogicalSampleId, SequenceId,
+    StreamDataLoaderBuilder, StreamLoaderState, VecCollate, WorkerContext, WorkerRecord,
+    WorkerSourceFactory,
+};
+use std::io;
+
+const ROWS: usize = 11;
+struct Rows;
+struct Shard {
+    cursor: usize,
+    context: WorkerContext,
+}
+impl Shard {
+    fn len(&self) -> usize {
+        ROWS.saturating_sub(self.context.info.id)
+            .div_ceil(self.context.info.num_workers)
+    }
+}
+impl Iterator for Shard {
+    type Item = Result<WorkerRecord<usize>, io::Error>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.context.cancellation.is_cancelled() || self.cursor == self.len() {
+            return None;
+        }
+        let row = self.context.info.id + self.cursor * self.context.info.num_workers;
+        self.cursor += 1;
+        Some(Ok(WorkerRecord {
+            sequence: Some(SequenceId::new(row as u64)),
+            logical_id: LogicalSampleId::new(row as u64),
+            sample: row,
+        }))
+    }
+}
+impl WorkerSourceFactory for Rows {
+    type Sample = usize;
+    type Error = io::Error;
+    type Source = Shard;
+    fn create(&self, context: WorkerContext) -> Result<Shard, io::Error> {
+        Ok(Shard { cursor: 0, context })
+    }
+    fn exact_len(&self) -> Option<usize> {
+        Some(ROWS)
+    }
+}
+impl CheckpointSourceFactory for Rows {
+    const CHECKPOINT_KIND: &'static str = "example.modulo-rows.v1";
+}
+impl CheckpointableSource for Shard {
+    type Sample = usize;
+    type Error = io::Error;
+    type State = usize;
+    fn snapshot(&self) -> usize {
+        self.cursor
+    }
+    fn validate_snapshot(&self, cursor: &usize) -> Result<(), io::Error> {
+        if *cursor > self.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid shard cursor",
+            ));
+        }
+        Ok(())
+    }
+    fn restore_validated(&mut self, cursor: &usize) {
+        self.cursor = *cursor;
+    }
+    fn set_run_context(&mut self, context: WorkerContext) {
+        self.context = context;
+    }
+    fn error_sequence(&self, _: &io::Error) -> SequenceId {
+        unreachable!("this in-memory source never returns a read error")
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let build = || {
+        StreamDataLoaderBuilder::new(Rows)
+            .workers(3)
+            .prefetch_factor(2)
+            .batch_size(4)
+            .collate(VecCollate)
+    };
+    let mut loader = build().checkpointable("rows-0-through-10.v1").build()?;
+    let mut iteration = loader.iter();
+    assert_eq!(iteration.next().unwrap()?, [0, 1, 2, 3]);
+    let saved = serde_json::to_string(&iteration.checkpoint()?)?;
+    let uninterrupted = iteration.collect::<Result<Vec<_>, _>>()?;
+
+    let state: StreamLoaderState<usize> = serde_json::from_str(&saved)?;
+    let mut restored = build().resume("rows-0-through-10.v1", state).build()?;
+    let remaining = restored.iter().collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(remaining, [vec![4, 5, 6, 7], vec![8, 9, 10]]);
+    assert_eq!(remaining, uninterrupted);
+    Ok(())
+}
+```
+
+A real file decoder may also need a byte offset, decoder buffer state and
+version information. It must report a stable sequence position for read
+failures through `error_sequence`. The example only produces successful reads;
+its `io::Error` type is used to reject invalid cursor state.
+
 Checkpoints save component state, not decoded samples. Prefetched work is
 rolled back to the next consumer-visible boundary and replayed; the original
-iterator can continue after checkpointing. Do not checkpoint after an
-iteration error, end-of-input or a hidden dropped tail. Resume checks the
+iterator can continue after checkpointing. Map checkpoints require an initial
+or successful batch boundary before any iteration error or observed exhaustion.
+Exact streams can also replay a source/transform error from their last successful
+boundary; collation/pinning errors, observed exhaustion and hidden dropped tails
+cannot be checkpointed. Resume checks the
 schema, identity and configuration before restoring component state. Propagate
 storage and validation errors rather than silently restarting at the beginning.
 For crash recovery, the application owns atomic storage and retention.

@@ -6,11 +6,23 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ## Supported
 
+### `autograd.surrogate`
+
+- **PyTorch:** `torch.Tensor.detach`
+- **RustTorch:** `rusttorch::autograd::with_surrogate_gradient`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 0 identities ([exact mapping](../../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Algebraic custom-gradient composition for same-shape/dtype/device dense real tensors: exact detached forward value plus surrogate minus detached surrogate. The surrogate must be finite; its autograd graph supplies derivatives.
+- **Pinned source:** [`torch/_tensor.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/_tensor.py)
+- **Evidence:** [`tests/autograd.rs::surrogate_derivatives_preserve_forward_values_and_validate_boundaries`](../../tests/autograd.rs)
+- **Notes:** This is a Rust composition recipe over ordinary tensor operations, not Python autograd.Function registration, saved-tensor hooks, or native custom backward callbacks.
+
 ### `core.device`
 
 - **PyTorch:** `torch.device`, `torch.cuda.is_available`, `torch.backends.mps.is_available`
 - **RustTorch:** `rusttorch_core::Device`, `rusttorch_core::DeviceSpec`, `rusttorch_core::DeviceCapabilities`, `rusttorch_core::available_devices`, `rusttorch_core::resolve_device`, `rusttorch::Device`, `rusttorch::DeviceSpec`, `rusttorch::DeviceCapabilities`, `rusttorch::available_devices`, `rusttorch::resolve_device`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 3 identities ([exact mapping](../../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** CPU resolution, runtime-reported CUDA and MPS capability mapping, explicit unavailable-device errors, and CUDA-then-MPS-then-CPU automatic selection.
 - **Pinned source:** [`torch/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/__init__.py)
 - **Evidence:** [`tests/device.rs::cpu_resolves_explicitly`](../../tests/device.rs), [`tests/device.rs::reported_capabilities_match_resolved_devices`](../../tests/device.rs), [`tests/device.rs::unavailable_or_out_of_range_cuda_is_an_error`](../../tests/device.rs), [`tests/device.rs::explicit_mps_is_resolved_or_rejected_without_fallback`](../../tests/device.rs)
@@ -18,11 +30,23 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ## Partial
 
+### `autograd.functional`
+
+- **PyTorch:** `torch.autograd.grad`, `torch.autograd.functional.vjp`, `torch.autograd.functional.jvp`, `torch.autograd.functional.jacobian`, `torch.autograd.functional.hessian`
+- **RustTorch:** `rusttorch::autograd::GradOptions`, `rusttorch::autograd::grad`, `rusttorch::autograd::vjp`, `rusttorch::autograd::jvp`, `rusttorch::autograd::jacobian`, `rusttorch::autograd::hessian`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 5 identities ([exact mapping](../../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Dense real single-input functional derivatives: scalar gradients without leaf-buffer accumulation; fixed-cotangent VJP; reverse-over-reverse JVP; Jacobians shaped output-shape plus input-shape; scalar Hessians and optional higher-order graphs. Constant/unused functional inputs produce zero derivatives, while direct grad rejects disconnected inputs.
+- **Pinned source:** [`torch/autograd/functional.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/autograd/functional.py)
+- **Evidence:** [`tests/autograd.rs::gradients_preserve_leaf_buffers_and_support_higher_orders`](../../tests/autograd.rs), [`tests/autograd.rs::vector_products_and_jacobian_hessian_match_analytic_derivatives`](../../tests/autograd.rs), [`tests/autograd.rs::constant_unused_empty_and_multidimensional_derivatives_are_defined`](../../tests/autograd.rs), [`tests/autograd.rs::functional_derivatives_match_pinned_python`](../../tests/autograd.rs)
+- **Notes:** CPU Double numerical parity uses scripts/run-python-parity.sh. No native dual tensors, vectorized transforms, complex differentiation, batched gradients, or arbitrary custom Function hooks. Jacobians use one backward pass per output element; JVP requires native double-backward support. Tangent/cotangent seeds are detached. Native operation errors propagate.
+
 ### `autograd.reverse_mode`
 
-- **PyTorch:** `torch.Tensor.backward`, `torch.no_grad`, `torch.Tensor.detach`
+- **PyTorch:** `torch.Tensor.backward`, `torch.no_grad`, `torch.Tensor.detach`, `torch.autograd.grad_mode.no_grad`
 - **RustTorch:** `rusttorch_core::Tensor`, `rusttorch_core::no_grad`, `rusttorch_core::no_grad_guard`, `rusttorch::Tensor`, `rusttorch::no_grad`, `rusttorch::no_grad_guard`
 - **Implementation:** Delegated to LibTorch
+- **Pinned inventory:** 4 identities ([exact mapping](../../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Reverse-mode gradients through the tested eager and graph operations, plus tested no-grad and detach behavior.
 - **Pinned source:** [`torch/autograd/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/autograd/__init__.py)
 - **Evidence:** [`tests/eager.rs::gradients_accumulate_across_eager_residual_branches`](../../tests/eager.rs), [`tests/eager.rs::no_grad_and_detach_stop_gradient_recording`](../../tests/eager.rs)
@@ -30,9 +54,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `core.random`
 
-- **PyTorch:** `torch.manual_seed`
+- **PyTorch:** `torch.manual_seed`, `torch.random.manual_seed`
 - **RustTorch:** `rusttorch_core::manual_seed`, `rusttorch::manual_seed`
 - **Implementation:** Delegated to LibTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** LibTorch seed delegation with CPU parity evidence for the tested convolution, embedding, transposed-convolution, recurrent, standalone attention and transformer-layer initializations; shared Linear initialization is exercised by those standalone sequence fixtures.
 - **Pinned source:** [`torch/random.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/random.py)
 - **Evidence:** [`tests/python_parity.rs::bidirectional_python_parity`](../../tests/python_parity.rs), [`tests/nn_spatial.rs::spatial_layers_match_pinned_python_outputs_gradients_and_buffers`](../../tests/nn_spatial.rs), [`tests/nn_sequence.rs::sequence_python_parity`](../../tests/nn_sequence.rs)
@@ -43,10 +68,55 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.Tensor`, `torch.dtype`, `torch.nn.functional reduction`
 - **RustTorch:** `rusttorch_core::Tensor`, `rusttorch_core::Kind`, `rusttorch_core::Reduction`, `rusttorch::Tensor`, `rusttorch::Kind`, `rusttorch::Reduction`
 - **Implementation:** Delegated to LibTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Root type reexports plus the tensor construction, dtype, device, and eager operations exercised by current RustTorch tests.
 - **Pinned source:** [`torch/_tensor.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/_tensor.py)
 - **Evidence:** [`tests/eager.rs::tensor_core_types_are_reexported`](../../tests/eager.rs)
-- **Notes:** rusttorch-core owns the direct reexports and the rusttorch facade preserves them. Reexporting tch::Tensor is not evidence that every torch.Tensor method matches PyTorch.
+- **Notes:** rusttorch-core owns the direct reexports and rusttorch preserves them. Reexporting tch::Tensor does not establish every method as compatible. Checked indexing, storage/view semantics, conversion/reductions and quantized primitives have separate scoped rows; advanced numerical families have their own rows.
+
+### `core.tensor.conversion_reductions`
+
+- **PyTorch:** `torch.Tensor.to`, `torch.mean`, `torch.std`, `torch.clamp`
+- **RustTorch:** `rusttorch::tensor::standardize`, `rusttorch::Tensor::f_to_kind`, `rusttorch::Tensor::f_to_device`, `rusttorch::Tensor::f_mean`, `rusttorch::Tensor::f_std_dim`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 4 identities ([exact mapping](../../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** CPU-tested explicit integer-to-float conversion and population-standard-deviation feature normalization along a validated positive/negative axis: (x-mean)/max(std,epsilon), retained reduction dimensions, epsilon that remains finite and positive in the input dtype, constant features producing zero, empty reduction rejection and float32/float64 inputs.
+- **Pinned source:** [`aten/src/ATen/native/native_functions.yaml`](https://github.com/pytorch/pytorch/blob/cf30153/aten/src/ATen/native/native_functions.yaml)
+- **Evidence:** [`tests/tensor_workflows.rs::views_copies_broadcasts_and_standardization`](../../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::empty_nested_and_copy_gradient_boundaries`](../../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::malformed_inputs_return_errors_without_mutation`](../../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::tensor_workflows_python_parity`](../../tests/tensor_workflows.rs)
+- **Notes:** The native same-device CPU conversion is exercised in the executable tutorial; this is not accelerator transfer evidence or every reduction, accumulation dtype, correction, NaN policy or conversion mode. Population variance uses correction=0. Integer conversion cannot preserve floating gradients.
+
+### `core.tensor.indexing`
+
+- **PyTorch:** `torch.index_select`, `torch.gather`, `torch.index_add`, `torch.where`
+- **RustTorch:** `rusttorch::tensor::select_rows`, `rusttorch::tensor::gather_rows`, `rusttorch::tensor::scatter_add_rows`, `rusttorch::tensor::replace_masked`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 4 identities ([exact mapping](../../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** CPU-tested out-of-place row selection, one class per matrix row, additive aggregation of repeated row IDs, and exact-shape Boolean masked replacement. IDs are int64, nonnegative, in bounds and on the input device; helper-specific shapes and kinds are validated. Native selected-input gradients accumulate across repeated indices; empty row selections and empty aggregation are tested.
+- **Pinned source:** [`aten/src/ATen/native/native_functions.yaml`](https://github.com/pytorch/pytorch/blob/cf30153/aten/src/ATen/native/native_functions.yaml)
+- **Evidence:** [`tests/tensor_workflows.rs::indexing_updates_preserve_inputs_and_accumulate_gradients`](../../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::malformed_inputs_return_errors_without_mutation`](../../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::empty_nested_and_copy_gradient_boundaries`](../../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::tensor_workflows_python_parity`](../../tests/tensor_workflows.rs)
+- **Notes:** Task-oriented helpers use native index\_select/gather/index\_add/where. This is not every indexing mode, Python negative indexing, assignment syntax or advanced-index broadcasting. Native f\_\* methods remain available; accelerator reductions retain native nondeterminism. Python parity runs through scripts/run-python-parity.sh.
+
+### `core.tensor.quantization`
+
+- **PyTorch:** `torch.quantize_per_tensor`, `torch.Tensor.dequantize`, `torch.Tensor.int_repr`
+- **RustTorch:** `rusttorch::tensor::quantize_per_tensor`, `rusttorch::Tensor::f_dequantize`, `rusttorch::Tensor::f_int_repr`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 3 identities ([exact mapping](../../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** CPU per-tensor affine quantization of finite detached float32 input to QInt8 or QUInt8 with scale that remains finite and positive after float32 conversion and a representable zero point. Signed 8-bit values, tie rounding, saturation, integer representation and dequantization are numerically tested.
+- **Pinned source:** [`aten/src/ATen/native/native_functions.yaml`](https://github.com/pytorch/pytorch/blob/cf30153/aten/src/ATen/native/native_functions.yaml)
+- **Evidence:** [`tests/tensor_workflows.rs::sparse_coo_csr_and_quantized_boundaries`](../../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::malformed_inputs_return_errors_without_mutation`](../../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::tensor_workflows_python_parity`](../../tests/tensor_workflows.rs)
+- **Notes:** Pinned PyTorch 2.13 deprecates these legacy quantized tensor constructors. Requires-grad inputs are rejected instead of silently disconnecting gradients. QUInt8 parameter validation is tested; no full unsigned numerical fixture, model conversion, observers, calibration algorithms, quantized operators or quantization-aware training is claimed. torch.ao.quantization remains planned separately.
+
+### `core.tensor.views`
+
+- **PyTorch:** `torch.Tensor.view`, `torch.reshape`, `torch.transpose`, `torch.Tensor.expand`, `torch.view_copy`
+- **RustTorch:** `rusttorch::tensor::flatten_features`, `rusttorch::Tensor::f_view`, `rusttorch::Tensor::f_reshape`, `rusttorch::Tensor::f_transpose`, `rusttorch::Tensor::f_expand`, `rusttorch::Tensor::f_view_copy`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 5 identities ([exact mapping](../../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** CPU-tested batch-feature flattening with explicit shared-view or always-independent-copy storage, noncontiguous view rejection/copy success, empty batches, copy gradients, transpose layout and zero-stride broadcasting. Native reshape may alias or copy; helper copy=true always allocates.
+- **Pinned source:** [`aten/src/ATen/native/native_functions.yaml`](https://github.com/pytorch/pytorch/blob/cf30153/aten/src/ATen/native/native_functions.yaml)
+- **Evidence:** [`tests/tensor_workflows.rs::views_copies_broadcasts_and_standardization`](../../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::empty_nested_and_copy_gradient_boundaries`](../../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::tensor_workflows_python_parity`](../../tests/tensor_workflows.rs)
+- **Notes:** The helper requires at least a batch and feature axis; feature-count overflow and undefined/unsupported nested metadata return errors. Mutation through a view changes its source; expanded repeated storage should not be mutated. Arbitrary memory formats and overlapping-stride construction are not covered.
 
 ## Planned
 
@@ -55,6 +125,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.autograd.forward_ad`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 1 identities ([exact mapping](../../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Forward-mode automatic differentiation and dual tensors are not exposed.
 - **Pinned source:** [`torch/autograd/forward_ad.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/autograd/forward_ad.py)
 - **Evidence:** —

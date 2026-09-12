@@ -6,11 +6,23 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ## Supported
 
+### `autograd.surrogate`
+
+- **PyTorch:** `torch.Tensor.detach`
+- **RustTorch:** `rusttorch::autograd::with_surrogate_gradient`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Algebraic custom-gradient composition for same-shape/dtype/device dense real tensors: exact detached forward value plus surrogate minus detached surrogate. The surrogate must be finite; its autograd graph supplies derivatives.
+- **Pinned source:** [`torch/_tensor.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/_tensor.py)
+- **Evidence:** [`tests/autograd.rs::surrogate_derivatives_preserve_forward_values_and_validate_boundaries`](../tests/autograd.rs)
+- **Notes:** This is a Rust composition recipe over ordinary tensor operations, not Python autograd.Function registration, saved-tensor hooks, or native custom backward callbacks.
+
 ### `core.device`
 
 - **PyTorch:** `torch.device`, `torch.cuda.is_available`, `torch.backends.mps.is_available`
 - **RustTorch:** `rusttorch_core::Device`, `rusttorch_core::DeviceSpec`, `rusttorch_core::DeviceCapabilities`, `rusttorch_core::available_devices`, `rusttorch_core::resolve_device`, `rusttorch::Device`, `rusttorch::DeviceSpec`, `rusttorch::DeviceCapabilities`, `rusttorch::available_devices`, `rusttorch::resolve_device`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 3 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** CPU resolution, runtime-reported CUDA and MPS capability mapping, explicit unavailable-device errors, and CUDA-then-MPS-then-CPU automatic selection.
 - **Pinned source:** [`torch/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/__init__.py)
 - **Evidence:** [`tests/device.rs::cpu_resolves_explicitly`](../tests/device.rs), [`tests/device.rs::reported_capabilities_match_resolved_devices`](../tests/device.rs), [`tests/device.rs::unavailable_or_out_of_range_cuda_is_an_error`](../tests/device.rs), [`tests/device.rs::explicit_mps_is_resolved_or_rejected_without_fallback`](../tests/device.rs)
@@ -21,6 +33,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.utils.data.Dataset.__getitems__`, `torch.utils.data._utils.fetch._MapDatasetFetcher`
 - **RustTorch:** `rusttorch_data::Dataset::get_batch`, `rusttorch_data::Dataset::get_batch_with_context`, `rusttorch::data::Dataset::get_batch`, `rusttorch::data::Dataset::get_batch_with_context`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Source-compatible batched map-dataset fetch with an ordered per-index default, one Dataset::get\_batch call per DataLoader index batch, and an overridable context-aware hook for cooperative worker cancellation and deadlines; incorrect result cardinality is rejected before collation.
 - **Pinned source:** [`torch/utils/data/_utils/fetch.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/_utils/fetch.py)
 - **Evidence:** [`crates/rusttorch-data/tests/datasets.rs::loader_uses_one_batched_fetch_per_index_batch`](../crates/rusttorch-data/tests/datasets.rs), [`crates/rusttorch-data/tests/datasets.rs::loader_preserves_errors_from_a_short_dropped_tail`](../crates/rusttorch-data/tests/datasets.rs), [`crates/rusttorch-data/tests/datasets.rs::loader_rejects_wrong_batched_fetch_cardinality_before_collation`](../crates/rusttorch-data/tests/datasets.rs), [`crates/rusttorch-data/tests/loader_builder.rs::wrong_batch_cardinality_is_typed_and_precedes_collation`](../crates/rusttorch-data/tests/loader_builder.rs), [`crates/rusttorch-data/tests/worker_lifecycle.rs::early_drop_wakes_context_aware_fetch_and_joins`](../crates/rusttorch-data/tests/worker_lifecycle.rs), [`crates/rusttorch-data/tests/worker_lifecycle.rs::timeout_is_per_next_yielded_once_and_cancels_late_results`](../crates/rusttorch-data/tests/worker_lifecycle.rs)
@@ -28,9 +41,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `data.batches`
 
-- **PyTorch:** `torch.utils.data.IterableDataset`, `torch.utils.data.DataLoader`
+- **PyTorch:** `torch.utils.data.IterableDataset`, `torch.utils.data.DataLoader`, `torch.utils.data.dataset.IterableDataset`
 - **RustTorch:** `rusttorch_data::batches`, `rusttorch_data::batches_with_collate`, `rusttorch::data::batches`, `rusttorch::data::batches_with_collate`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Single-threaded batching of ordinary fallible Rust iterators, with explicit nonzero batch size, drop-last behavior, identity Vec collation or fallible custom collation, and one-error-then-exhaust semantics.
 - **Pinned source:** [`torch/utils/data/_utils/fetch.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/_utils/fetch.py)
 - **Evidence:** [`tests/data.rs::stream_batches_keep_a_short_tail`](../tests/data.rs), [`tests/data.rs::stream_batches_drop_a_short_tail`](../tests/data.rs), [`tests/data.rs::stream_batches_reject_zero_batch_size_with_a_structured_error`](../tests/data.rs), [`tests/data.rs::stream_batches_apply_fallible_collation`](../tests/data.rs), [`tests/data.rs::stream_batches_report_a_partial_drop_last_failure_once_then_exhaust`](../tests/data.rs), [`tests/data.rs::stream_batches_report_a_collation_failure_once_then_exhaust`](../tests/data.rs)
@@ -38,9 +52,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `data.chain_dataset`
 
-- **PyTorch:** `torch.utils.data.ChainDataset`
+- **PyTorch:** `torch.utils.data.ChainDataset`, `torch.utils.data.dataset.ChainDataset`
 - **RustTorch:** `rusttorch_data::chain_datasets`, `rusttorch::data::chain_datasets`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Lazy sequential chaining for datasets or other Rust iterables through the standard IntoIterator flatten adapter, without custom buffering.
 - **Pinned source:** [`torch/utils/data/dataset.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataset.py)
 - **Evidence:** [`crates/rusttorch-data/tests/datasets.rs::chain_datasets_is_the_standard_flattened_iterator`](../crates/rusttorch-data/tests/datasets.rs)
@@ -48,9 +63,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `data.concat_dataset`
 
-- **PyTorch:** `torch.utils.data.ConcatDataset`
+- **PyTorch:** `torch.utils.data.ConcatDataset`, `torch.utils.data.dataset.ConcatDataset`
 - **RustTorch:** `rusttorch_data::ConcatDataset`, `rusttorch::data::ConcatDataset`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Nonempty concatenation of same-typed map datasets with checked cumulative sizes and binary-search global index routing.
 - **Pinned source:** [`torch/utils/data/dataset.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataset.py)
 - **Evidence:** [`crates/rusttorch-data/tests/datasets.rs::concat_dataset_uses_global_indices_and_rejects_empty_input`](../crates/rusttorch-data/tests/datasets.rs)
@@ -58,9 +74,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `data.dataset`
 
-- **PyTorch:** `torch.utils.data.Dataset`
+- **PyTorch:** `torch.utils.data.Dataset`, `torch.utils.data.dataset.Dataset`
 - **RustTorch:** `rusttorch_data::Dataset`, `rusttorch_data::DatasetSamples`, `rusttorch::data::Dataset`, `rusttorch::data::DatasetSamples`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Finite map-style datasets with owned samples, fallible indexed access, length and empty queries, and a lazy borrowing iterator over samples in index order.
 - **Pinned source:** [`torch/utils/data/dataset.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataset.py)
 - **Evidence:** [`tests/data.rs::dataset_default_is_empty_follows_len`](../tests/data.rs), [`tests/data.rs::dataset_samples_borrow_and_fetch_lazily_in_order`](../tests/data.rs)
@@ -68,9 +85,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `data.loader`
 
-- **PyTorch:** `torch.utils.data.DataLoader`
+- **PyTorch:** `torch.utils.data.DataLoader`, `torch.utils.data.dataloader.DataLoader`
 - **RustTorch:** `rusttorch_data::DataLoader`, `rusttorch_data::DataLoaderBuilder`, `rusttorch_data::OwnedDataLoader`, `rusttorch_data::LoaderIter`, `rusttorch_data::WorkerLoaderIter`, `rusttorch_data::SerialExecution`, `rusttorch_data::WorkerExecution`, `rusttorch_data::AutoBatch`, `rusttorch_data::ExplicitBatches`, `rusttorch_data::NoBatch`, `rusttorch_data::LoaderError`, `rusttorch_data::PipelineError`, `rusttorch::data::DataLoader`, `rusttorch::data::DataLoaderBuilder`, `rusttorch::data::OwnedDataLoader`, `rusttorch::data::LoaderIter`, `rusttorch::data::WorkerLoaderIter`, `rusttorch::data::SerialExecution`, `rusttorch::data::WorkerExecution`, `rusttorch::data::AutoBatch`, `rusttorch::data::ExplicitBatches`, `rusttorch::data::NoBatch`, `rusttorch::data::LoaderError`, `rusttorch::data::PipelineError`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Preserved borrowed single-pass loading plus owned, fresh epoch-aware serial or bounded map-worker iteration with default or explicit typed collation, optional no-batch conversion, sampler or batch-source plans, optional exact length, checked batch cardinality, typed five-stage one-error-then-exhaust failures, deterministic transforms, ordered or completion-order delivery, cooperative per-next timeout, optional loader-owned persistent worker pools, and order-independent PyTorch argument exclusions.
 - **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
 - **Evidence:** [`tests/data.rs::loader_keeps_a_short_tail`](../tests/data.rs), [`tests/data.rs::loader_drops_a_short_tail`](../tests/data.rs), [`tests/data.rs::loader_rejects_zero_batch_size_with_a_structured_error`](../tests/data.rs), [`tests/data.rs::loader_applies_fallible_collation`](../tests/data.rs), [`tests/data.rs::loader_moves_non_clone_samples_into_batches`](../tests/data.rs), [`tests/data.rs::loader_discards_a_partial_batch_on_dataset_failure_then_exhausts`](../tests/data.rs), [`tests/data.rs::loader_yields_a_collation_failure_once_then_exhausts`](../tests/data.rs), [`tests/data.rs::facade_exposes_the_owned_loader_builder`](../tests/data.rs), [`tests/data.rs::facade_reexports_task_transform_and_worker_context_contracts`](../tests/data.rs), [`crates/rusttorch-data/tests/current_api.rs::owned_loader_generic_defaults_remain_source_compatible`](../crates/rusttorch-data/tests/current_api.rs), [`crates/rusttorch-data/tests/loader_builder.rs::defaults_batch_scalars_and_fresh_iterations_restart`](../crates/rusttorch-data/tests/loader_builder.rs), [`crates/rusttorch-data/tests/loader_builder.rs::batching_controls_custom_sources_and_collators`](../crates/rusttorch-data/tests/loader_builder.rs), [`crates/rusttorch-data/tests/loader_builder.rs::no_batching_uses_default_and_custom_conversion`](../crates/rusttorch-data/tests/loader_builder.rs), [`crates/rusttorch-data/tests/loader_builder.rs::optional_lengths_never_gate_iteration`](../crates/rusttorch-data/tests/loader_builder.rs), [`crates/rusttorch-data/tests/loader_builder.rs::set_epoch_forwards_through_every_plan`](../crates/rusttorch-data/tests/loader_builder.rs), [`crates/rusttorch-data/tests/loader_builder.rs::pipeline_failures_remain_typed_and_terminate_iteration`](../crates/rusttorch-data/tests/loader_builder.rs), [`crates/rusttorch-data/tests/loader_builder.rs::conflicts_are_order_independent`](../crates/rusttorch-data/tests/loader_builder.rs), [`crates/rusttorch-data/tests/loader_builder.rs::batch_sampler_conflicts_do_not_require_discarded_operational_bounds`](../crates/rusttorch-data/tests/loader_builder.rs), [`crates/rusttorch-data/tests/loader_builder.rs::unallocatable_batch_size_is_a_typed_build_error_without_panicking`](../crates/rusttorch-data/tests/loader_builder.rs), [`crates/rusttorch-data/tests/transform.rs::every_serial_stage_keeps_its_concrete_error_and_metadata`](../crates/rusttorch-data/tests/transform.rs), [`crates/rusttorch-data/tests/transform.rs::every_pipeline_variant_preserves_the_standard_error_source_chain`](../crates/rusttorch-data/tests/transform.rs)
@@ -81,6 +99,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `No PyTorch symbol (RustTorch stream checkpoint extension)`
 - **RustTorch:** `rusttorch_data::CheckpointableSource`, `rusttorch_data::CheckpointSourceFactory`, `rusttorch_data::StreamLoaderState`, `rusttorch_data::StreamLaneState`, `rusttorch_data::StreamCheckpointConfiguration`, `rusttorch_data::StreamCheckpointBuildError`, `rusttorch_data::StreamDataLoaderBuilder::checkpointable`, `rusttorch_data::StreamDataLoaderBuilder::resume`, `rusttorch_data::ExactStreamDataLoader`, `rusttorch_data::ExactStreamLoaderIter::checkpoint`, `rusttorch::data::StreamLoaderState`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** RustTorch-native exact next-visible-batch replay for explicitly checkpointable sharded stream factories. Ordered shards emit strictly increasing global sequence IDs. A barrier cancels active reads, restores paired pre-attempt source/transform snapshots, drains unpublished records, and advances transport generation while retaining logical factory identity. Resume validates the envelope and all suspended source/transform/coordinator components before applying state. Original continuation, serde round trips, unequal/empty shards, global tail policy, terminal sources, and replay of advanced source/transform failures are covered.
 - **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
 - **Evidence:** [`crates/rusttorch-data/tests/checkpoint_stream.rs::checkpoints_replay_every_boundary_and_original_continuation`](../crates/rusttorch-data/tests/checkpoint_stream.rs), [`crates/rusttorch-data/tests/checkpoint_stream.rs::resume_validation_is_atomic_and_static_rejection_precedes_callbacks`](../crates/rusttorch-data/tests/checkpoint_stream.rs), [`crates/rusttorch-data/tests/checkpoint_stream.rs::retained_source_gets_fresh_context_and_cancels_at_each_barrier_and_drop`](../crates/rusttorch-data/tests/checkpoint_stream.rs), [`crates/rusttorch-data/tests/checkpoint_stream.rs::active_transform_rolls_back_to_paired_pre_source_boundary`](../crates/rusttorch-data/tests/checkpoint_stream.rs), [`crates/rusttorch-data/tests/checkpoint_stream.rs::source_error_rolls_back_pre_attempt_and_preserves_error_chain`](../crates/rusttorch-data/tests/checkpoint_stream.rs), [`crates/rusttorch-data/tests/checkpoint_stream.rs::transform_failure_restores_paired_state_and_nonfused_end_replays`](../crates/rusttorch-data/tests/checkpoint_stream.rs), [`crates/rusttorch-data/tests/checkpoint_stream.rs::malformed_protocol_errors_once_and_ordinary_modes_stay_available`](../crates/rusttorch-data/tests/checkpoint_stream.rs), [`crates/rusttorch-data/tests/checkpoint_stream.rs::init_errors_and_panics_preserve_context_and_join`](../crates/rusttorch-data/tests/checkpoint_stream.rs), [`crates/rusttorch-data/tests/checkpoint_stream.rs::inline_snapshot_shapes_participate_in_aggregate_retention_limit`](../crates/rusttorch-data/tests/checkpoint_stream.rs), [`crates/rusttorch-data/tests/checkpoint_stream.rs::terminal_shards_do_not_hide_a_full_active_lane_with_a_gap`](../crates/rusttorch-data/tests/checkpoint_stream.rs), [`crates/rusttorch-data/tests/checkpoint_stream.rs::global_duplicate_and_state_configuration_drift_are_rejected`](../crates/rusttorch-data/tests/checkpoint_stream.rs), [`crates/rusttorch-data/tests/checkpoint_stream.rs::capacity_overflow_and_unsupported_settings_reject_before_workers`](../crates/rusttorch-data/tests/checkpoint_stream.rs), [`crates/rusttorch-data/tests/checkpoint_stream.rs::faster_later_failures_wait_for_lower_records_and_replay_in_order`](../crates/rusttorch-data/tests/checkpoint_stream.rs), [`crates/rusttorch-data/tests/checkpoint_stream.rs::source_failure_positions_obey_monotonic_and_bounded_gap_checks`](../crates/rusttorch-data/tests/checkpoint_stream.rs)
@@ -91,6 +110,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.utils.data.random_split`
 - **RustTorch:** `rusttorch_data::SplitLength`, `rusttorch_data::random_split`, `rusttorch::data::SplitLength`, `rusttorch::data::random_split`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Seeded non-overlapping splits from exact usize counts or finite fractions summing to one, with fractional floors and round-robin remainder distribution.
 - **Pinned source:** [`torch/utils/data/dataset.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataset.py)
 - **Evidence:** [`crates/rusttorch-data/tests/datasets.rs::random_split_requires_integer_lengths_to_sum_to_dataset_length`](../crates/rusttorch-data/tests/datasets.rs), [`crates/rusttorch-data/tests/datasets.rs::random_split_floors_fractions_and_distributes_remainder_round_robin`](../crates/rusttorch-data/tests/datasets.rs), [`crates/rusttorch-data/tests/datasets.rs::random_split_rejects_fraction_floors_larger_than_the_dataset`](../crates/rusttorch-data/tests/datasets.rs), [`crates/rusttorch-data/tests/datasets.rs::random_split_is_deterministic_and_allows_zero_length_parts`](../crates/rusttorch-data/tests/datasets.rs)
@@ -98,9 +118,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `data.sampler`
 
-- **PyTorch:** `torch.utils.data.Sampler`, `torch.utils.data.BatchSampler`, `torch.utils.data.SequentialSampler`, `torch.utils.data.RandomSampler`, `torch.utils.data.SubsetRandomSampler`, `torch.utils.data.WeightedRandomSampler`
+- **PyTorch:** `torch.utils.data.Sampler`, `torch.utils.data.BatchSampler`, `torch.utils.data.SequentialSampler`, `torch.utils.data.RandomSampler`, `torch.utils.data.SubsetRandomSampler`, `torch.utils.data.WeightedRandomSampler`, `torch.utils.data.sampler.BatchSampler`, `torch.utils.data.sampler.RandomSampler`, `torch.utils.data.sampler.Sampler`, `torch.utils.data.sampler.SequentialSampler`, `torch.utils.data.sampler.SubsetRandomSampler`, `torch.utils.data.sampler.WeightedRandomSampler`
 - **RustTorch:** `rusttorch_data::Sampler`, `rusttorch_data::BatchSource`, `rusttorch_data::FnSampler`, `rusttorch_data::FnBatchSource`, `rusttorch_data::BatchSampler`, `rusttorch_data::SequentialSampler`, `rusttorch_data::RandomSampler`, `rusttorch_data::SubsetRandomSampler`, `rusttorch_data::WeightedRandomSampler`, `rusttorch::data::Sampler`, `rusttorch::data::BatchSource`, `rusttorch::data::FnSampler`, `rusttorch::data::FnBatchSource`, `rusttorch::data::BatchSampler`, `rusttorch::data::SequentialSampler`, `rusttorch::data::RandomSampler`, `rusttorch::data::SubsetRandomSampler`, `rusttorch::data::WeightedRandomSampler`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 12 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Fresh finite epoch-aware index and index-batch iterator contracts with optional exact lengths; direct fixed-size batching with explicit tail policy; direct sequential, seeded replacement and repeated-permutation random, subset, and weighted sampling; and sized or unsized closure factories. Caller-controlled storage dimensions fail with typed configuration errors rather than capacity-overflow panics. Weighted sampling validates positive sample count, nonempty finite nonnegative weights, positive finite total weight, replacement cardinality, and unique numerically stable positive-first selection with deterministic zero-weight fill without replacement.
 - **Pinned source:** [`torch/utils/data/sampler.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/sampler.py)
 - **Evidence:** [`tests/data.rs::sequential_sampler_yields_every_index_in_order`](../tests/data.rs), [`tests/data.rs::random_sampler_is_seeded_and_yields_a_permutation`](../tests/data.rs), [`tests/data_libtorch.rs::random_sampler_does_not_change_libtorch_global_rng`](../tests/data_libtorch.rs), [`crates/rusttorch-data/tests/samplers.rs::random_sampler_preserves_the_empty_length_error_contract`](../crates/rusttorch-data/tests/samplers.rs), [`crates/rusttorch-data/tests/samplers.rs::random_sampler_with_replacement_is_seeded_and_bounded`](../crates/rusttorch-data/tests/samplers.rs), [`crates/rusttorch-data/tests/samplers.rs::random_sampler_without_replacement_repeats_complete_permutations`](../crates/rusttorch-data/tests/samplers.rs), [`crates/rusttorch-data/tests/samplers.rs::random_sampler_rejects_unrepresentable_storage_without_panicking`](../crates/rusttorch-data/tests/samplers.rs), [`crates/rusttorch-data/tests/samplers.rs::subset_random_sampler_yields_one_seeded_permutation`](../crates/rusttorch-data/tests/samplers.rs), [`crates/rusttorch-data/tests/samplers.rs::weighted_random_sampler_validates_inputs`](../crates/rusttorch-data/tests/samplers.rs), [`crates/rusttorch-data/tests/samplers.rs::weighted_random_sampler_with_replacement_is_deterministic_and_has_cardinality`](../crates/rusttorch-data/tests/samplers.rs), [`crates/rusttorch-data/tests/samplers.rs::weighted_random_sampler_rejects_unrepresentable_storage_without_panicking`](../crates/rusttorch-data/tests/samplers.rs), [`crates/rusttorch-data/tests/samplers.rs::weighted_random_sampler_without_replacement_is_unique_and_fills_zero_weights`](../crates/rusttorch-data/tests/samplers.rs), [`crates/rusttorch-data/tests/samplers.rs::weighted_random_sampler_keeps_equal_subnormal_weights_random`](../crates/rusttorch-data/tests/samplers.rs), [`crates/rusttorch-data/tests/samplers.rs::concrete_samplers_create_fresh_epoch_aware_iterators`](../crates/rusttorch-data/tests/samplers.rs), [`crates/rusttorch-data/tests/samplers.rs::subset_and_weighted_samplers_create_fresh_epoch_iterators`](../crates/rusttorch-data/tests/samplers.rs), [`crates/rusttorch-data/tests/samplers.rs::fn_sampler_factories_are_fresh_and_length_is_optional`](../crates/rusttorch-data/tests/samplers.rs), [`crates/rusttorch-data/tests/samplers.rs::fn_batch_source_factories_are_fresh_and_length_is_optional`](../crates/rusttorch-data/tests/samplers.rs), [`crates/rusttorch-data/tests/batch_sampler.rs::batch_sampler_keeps_or_drops_the_exact_tail`](../crates/rusttorch-data/tests/batch_sampler.rs), [`crates/rusttorch-data/tests/batch_sampler.rs::batch_sampler_accepts_a_one_shot_custom_iterator`](../crates/rusttorch-data/tests/batch_sampler.rs), [`crates/rusttorch-data/tests/batch_sampler.rs::batch_sampler_validates_public_storage_dimensions_without_panicking`](../crates/rusttorch-data/tests/batch_sampler.rs), [`crates/rusttorch-data/tests/batch_sampler.rs::batch_sampler_recreates_sized_sampler_iterations_and_forwards_epoch`](../crates/rusttorch-data/tests/batch_sampler.rs), [`crates/rusttorch-data/tests/batch_sampler.rs::batch_sampler_preserves_an_unsized_sampler_source`](../crates/rusttorch-data/tests/batch_sampler.rs), [`crates/rusttorch-data/tests/batch_sampler.rs::fn_batch_source_recreates_nonuniform_batches_for_each_epoch`](../crates/rusttorch-data/tests/batch_sampler.rs)
@@ -108,9 +129,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `data.sampler.distributed`
 
-- **PyTorch:** `torch.utils.data.DistributedSampler`
+- **PyTorch:** `torch.utils.data.DistributedSampler`, `torch.utils.data.distributed.DistributedSampler`
 - **RustTorch:** `rusttorch_data::DistributedSampler`, `rusttorch::data::DistributedSampler`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 1 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Explicit replica/rank sharding over finite usize index ranges, with equal per-rank lengths, cyclic padding or global-tail truncation, deterministic epoch-aware optional shuffling, fresh reusable iterations, and direct-iterator position reporting. Empty datasets yield no indices on every valid rank, and invalid or unrepresentable dimensions return typed configuration errors.
 - **Pinned source:** [`torch/utils/data/distributed.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/distributed.py)
 - **Evidence:** [`crates/rusttorch-data/tests/distributed_sampler.rs::distributed_sampler_cyclically_pads_equal_rank_lengths`](../crates/rusttorch-data/tests/distributed_sampler.rs), [`crates/rusttorch-data/tests/distributed_sampler.rs::distributed_sampler_truncates_to_disjoint_rank_strides`](../crates/rusttorch-data/tests/distributed_sampler.rs), [`crates/rusttorch-data/tests/distributed_sampler.rs::distributed_sampler_validates_replica_and_rank_configuration`](../crates/rusttorch-data/tests/distributed_sampler.rs), [`crates/rusttorch-data/tests/distributed_sampler.rs::distributed_sampler_rejects_unrepresentable_padding_and_storage_without_panicking`](../crates/rusttorch-data/tests/distributed_sampler.rs), [`crates/rusttorch-data/tests/distributed_sampler.rs::distributed_sampler_is_deterministic_per_epoch_and_creates_fresh_iterations`](../crates/rusttorch-data/tests/distributed_sampler.rs), [`crates/rusttorch-data/tests/distributed_sampler.rs::distributed_sampler_tracks_direct_iteration_position_and_resets_on_epoch`](../crates/rusttorch-data/tests/distributed_sampler.rs), [`crates/rusttorch-data/tests/distributed_sampler.rs::distributed_sampler_accepts_empty_datasets_for_every_valid_rank`](../crates/rusttorch-data/tests/distributed_sampler.rs), [`crates/rusttorch-data/tests/distributed_sampler.rs::distributed_sampler_does_not_change_libtorch_global_rng`](../crates/rusttorch-data/tests/distributed_sampler.rs)
@@ -118,9 +140,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `data.stack_dataset`
 
-- **PyTorch:** `torch.utils.data.StackDataset`
+- **PyTorch:** `torch.utils.data.StackDataset`, `torch.utils.data.dataset.StackDataset`
 - **RustTorch:** `rusttorch_data::StackDataset`, `rusttorch_data::StackTuple`, `rusttorch::data::StackDataset`, `rusttorch::data::StackTuple`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Equal-length typed dataset tuples at arities two through eight, producing aligned sample tuples whose children share one error type.
 - **Pinned source:** [`torch/utils/data/dataset.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataset.py)
 - **Evidence:** [`crates/rusttorch-data/tests/datasets.rs::stack_dataset_checks_lengths_and_returns_tuples`](../crates/rusttorch-data/tests/datasets.rs), [`crates/rusttorch-data/tests/datasets.rs::stack_dataset_supports_tuple_arities_two_through_eight`](../crates/rusttorch-data/tests/datasets.rs)
@@ -128,9 +151,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `data.subset`
 
-- **PyTorch:** `torch.utils.data.Subset`
+- **PyTorch:** `torch.utils.data.Subset`, `torch.utils.data.dataset.Subset`
 - **RustTorch:** `rusttorch_data::Subset`, `rusttorch::data::Subset`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Validated selection of usize source indices with shared ownership available through blanket Dataset delegation for Arc&lt;D&gt;.
 - **Pinned source:** [`torch/utils/data/dataset.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataset.py)
 - **Evidence:** [`crates/rusttorch-data/tests/datasets.rs::subset_validates_source_indices_and_arc_delegates_dataset`](../crates/rusttorch-data/tests/datasets.rs)
@@ -138,9 +162,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `data.tensor_dataset`
 
-- **PyTorch:** `torch.utils.data.TensorDataset`
+- **PyTorch:** `torch.utils.data.TensorDataset`, `torch.utils.data.dataset.TensorDataset`
 - **RustTorch:** `rusttorch_data::TensorDataset`, `rusttorch::data::TensorDataset`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Nonempty tensors with equal first dimensions and ordered Vec&lt;Tensor&gt; row samples whose ordinary indexed views share LibTorch storage with the source tensors.
 - **Pinned source:** [`torch/utils/data/dataset.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataset.py)
 - **Evidence:** [`crates/rusttorch-data/tests/datasets.rs::tensor_dataset_returns_one_row_from_each_tensor`](../crates/rusttorch-data/tests/datasets.rs), [`crates/rusttorch-data/tests/datasets.rs::tensor_dataset_rejects_mismatched_first_dimensions`](../crates/rusttorch-data/tests/datasets.rs), [`crates/rusttorch-data/tests/datasets.rs::tensor_dataset_get_returns_storage_sharing_views`](../crates/rusttorch-data/tests/datasets.rs), [`crates/rusttorch-data/tests/datasets.rs::tensor_dataset_get_batch_returns_storage_sharing_views`](../crates/rusttorch-data/tests/datasets.rs)
@@ -148,9 +173,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `graph.executor`
 
-- **PyTorch:** `torch.fx.Interpreter`
+- **PyTorch:** `torch.fx.Interpreter`, `torch.fx.interpreter.Interpreter`
 - **RustTorch:** `rusttorch::graph::EagerExecutor`, `rusttorch::graph::GraphModule`, `rusttorch::graph::GraphInputs`, `rusttorch::graph::GraphOutputs`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Fallible eager execution of RustTorch typed graphs with named inputs and outputs, mode tracking, autograd, and runtime tensor-spec validation.
 - **Pinned source:** [`torch/fx/interpreter.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/fx/interpreter.py)
 - **Evidence:** [`tests/graph.rs::all_public_graph_operations_execute_with_expected_values`](../tests/graph.rs), [`tests/graph.rs::residual_branch_accumulates_input_and_all_linear_parameter_gradients`](../tests/graph.rs), [`tests/graph.rs::runtime_rejects_dtype_rank_and_known_dimension_mismatches`](../tests/graph.rs), [`tests/graph.rs::dropout_follows_train_and_eval_mode_without_rng_assumptions`](../tests/graph.rs)
@@ -161,6 +187,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.fx.Graph.print_tabular`, `torch.fx.Graph.__str__`
 - **RustTorch:** `rusttorch::graph::Graph::summary`, `rusttorch::graph::Graph::to_dot`, `rusttorch::graph::GraphModule::summary`, `rusttorch::graph::GraphModule::to_dot`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 1 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Deterministic textual summaries and DOT output for RustTorch graphs.
 - **Pinned source:** [`torch/fx/graph.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/fx/graph.py)
 - **Evidence:** [`tests/graph.rs::summary_and_dot_are_deterministic_and_describe_the_graph`](../tests/graph.rs)
@@ -171,6 +198,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `ATen identity, linear, relu, gelu, dropout, flatten, add, sub, mul, cat, mse_loss, and cross_entropy operations`
 - **RustTorch:** `rusttorch::graph::GraphOp`, `rusttorch::graph::GraphBuilder`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Exactly the enumerated graph operations, eager execution, current validation, and tested shape-propagation rules.
 - **Pinned source:** [`torch/nn/functional.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/functional.py)
 - **Evidence:** [`tests/graph.rs::all_public_graph_operations_execute_with_expected_values`](../tests/graph.rs), [`tests/graph.rs::binary_shape_propagation_preserves_dimension_order`](../tests/graph.rs)
@@ -181,6 +209,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.fx.passes`
 - **RustTorch:** `rusttorch::graph::GraphPass`, `rusttorch::graph::Validation`, `rusttorch::graph::DeadNodeElimination`, `rusttorch::graph::ShapePropagation`, `rusttorch::graph::PassReport`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 1 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Validation, dead-node deactivation, and the tested shape-propagation subset for RustTorch graphs.
 - **Pinned source:** [`torch/fx/passes/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/fx/passes/__init__.py)
 - **Evidence:** [`tests/graph.rs::finish_eliminates_dead_nodes_and_propagates_flatten_linear_shapes`](../tests/graph.rs)
@@ -191,6 +220,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.nn.Flatten`, `torch.flatten`
 - **RustTorch:** `rusttorch::nn::Flatten`, `rusttorch::nn::functional::flatten`
 - **Implementation:** Delegated to LibTorch
+- **Pinned inventory:** 1 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Dimension-range flattening with Rust integer dimensions for the tested default and graph negative-end ranges.
 - **Pinned source:** [`torch/nn/modules/flatten.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/flatten.py)
 - **Evidence:** [`tests/eager.rs::identity_relu_gelu_and_flatten_match_expected_behavior`](../tests/eager.rs), [`tests/graph.rs::finish_eliminates_dead_nodes_and_propagates_flatten_linear_shapes`](../tests/graph.rs)
@@ -198,9 +228,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `nn.identity`
 
-- **PyTorch:** `torch.nn.Identity`
+- **PyTorch:** `torch.nn.Identity`, `torch.nn.modules.linear.Identity`
 - **RustTorch:** `rusttorch::nn::Identity`
 - **Implementation:** Delegated to LibTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Identity forward behavior on the tested eager tensor and graph path.
 - **Pinned source:** [`torch/nn/modules/linear.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/linear.py)
 - **Evidence:** [`tests/eager.rs::identity_relu_gelu_and_flatten_match_expected_behavior`](../tests/eager.rs), [`tests/graph.rs::all_public_graph_operations_execute_with_expected_values`](../tests/graph.rs)
@@ -208,9 +239,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `nn.linear`
 
-- **PyTorch:** `torch.nn.Linear`, `torch.nn.functional.linear`
+- **PyTorch:** `torch.nn.Linear`, `torch.nn.functional.linear`, `torch.nn.modules.linear.Linear`
 - **RustTorch:** `rusttorch::nn::Linear`, `rusttorch::nn::LinearConfig`, `rusttorch::nn::linear`, `rusttorch::nn::functional::linear`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 3 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Biased and bias-free forward behavior, parameter shapes/names, gradients, deterministic values, the short constructor, and weight-before-bias initialization uniformly within +/-1/sqrt(in\_features), including zero-input-feature bias initialization.
 - **Pinned source:** [`torch/nn/modules/linear.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/linear.py)
 - **Evidence:** [`tests/eager.rs::linear_bias_and_no_bias_have_expected_shapes_and_values`](../tests/eager.rs), [`tests/eager.rs::gradients_flow_through_linear`](../tests/eager.rs), [`tests/eager.rs::short_linear_constructor_uses_bias`](../tests/eager.rs), [`tests/nn_layers.rs::invalid_parameter_dtype_returns_errors_without_poisoning_the_store`](../tests/nn_layers.rs), [`tests/nn_layers.rs::undefined_tensors_are_rejected_without_metadata_panics`](../tests/nn_layers.rs), [`tests/nn_layers.rs::linear_initialization_uses_fan_in_uniform_before_bias`](../tests/nn_layers.rs), [`tests/nn_sequence.rs::sequence_python_parity`](../tests/nn_sequence.rs)
@@ -218,9 +250,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `nn.relu`
 
-- **PyTorch:** `torch.nn.ReLU`, `torch.nn.functional.relu`
+- **PyTorch:** `torch.nn.ReLU`, `torch.nn.functional.relu`, `torch.nn.modules.activation.ReLU`
 - **RustTorch:** `rusttorch::nn::ReLU`, `rusttorch::nn::functional::relu`
 - **Implementation:** Delegated to LibTorch
+- **Pinned inventory:** 3 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Out-of-place ReLU values on the tested eager and graph paths, including gradients in a composed residual graph.
 - **Pinned source:** [`torch/nn/modules/activation.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/activation.py)
 - **Evidence:** [`tests/eager.rs::identity_relu_gelu_and_flatten_match_expected_behavior`](../tests/eager.rs), [`tests/graph.rs::residual_branch_accumulates_input_and_all_linear_parameter_gradients`](../tests/graph.rs)
@@ -231,6 +264,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `PyTorch binary backend selection`
 - **RustTorch:** `rusttorch setup --backend auto`, `rusttorch setup --backend cpu`, `rusttorch setup --backend cuda-12.6`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Project-local LibTorch selection for automatic, CPU or MPS, and CUDA 12.6 distributions with conflict and driver validation.
 - **Pinned source:** [`torch/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/__init__.py)
 - **Evidence:** [`crates/rusttorch-cli/src/main.rs::backend_parser_accepts_only_the_approved_names`](../crates/rusttorch-cli/src/main.rs), [`crates/rusttorch-cli/src/main.rs::preconfiguration_detects_every_supported_environment_variable`](../crates/rusttorch-cli/src/main.rs), [`crates/rusttorch-cli/src/main.rs::driver_parser_uses_the_first_output_line`](../crates/rusttorch-cli/src/main.rs), [`crates/rusttorch-cli/src/main.rs::auto_reuses_preconfiguration_and_selects_supported_acceleration`](../crates/rusttorch-cli/src/main.rs), [`crates/rusttorch-cli/src/main.rs::explicit_backend_refuses_active_preconfiguration`](../crates/rusttorch-cli/src/main.rs), [`crates/rusttorch-cli/src/main.rs::explicit_cuda_requires_a_supported_platform_and_driver`](../crates/rusttorch-cli/src/main.rs), [`crates/rusttorch-cli/src/main.rs::auto_falls_back_to_cpu_for_incompatible_drivers`](../crates/rusttorch-cli/src/main.rs), [`crates/rusttorch-cli/src/main.rs::configuration_preserves_unrelated_toml_and_writes_cuda_selection`](../crates/rusttorch-cli/src/main.rs), [`crates/rusttorch-cli/src/main.rs::configuration_switches_owned_cuda_selection_to_cpu`](../crates/rusttorch-cli/src/main.rs), [`crates/rusttorch-cli/src/main.rs::managed_setup_rejects_target_overrides_before_configuration_write`](../crates/rusttorch-cli/src/main.rs), [`crates/rusttorch-cli/src/main.rs::cargo_selectors_preserve_auto_and_reject_explicit_before_probe_or_write`](../crates/rusttorch-cli/src/main.rs), [`crates/rusttorch-cli/src/main.rs::cargo_selectors_cover_ancestors_home_legacy_and_every_runtime_variable`](../crates/rusttorch-cli/src/main.rs), [`crates/rusttorch-cli/src/main.rs::cargo_selectors_merge_tables_and_obey_process_force_precedence`](../crates/rusttorch-cli/src/main.rs), [`crates/rusttorch-cli/src/main.rs::cargo_owned_cuda_can_switch_but_cannot_hide_ancestor_runtime`](../crates/rusttorch-cli/src/main.rs), [`crates/rusttorch-cli/src/main.rs::cargo_unresolved_config_fails_closed_without_writes`](../crates/rusttorch-cli/src/main.rs), [`crates/rusttorch-cli/src/main.rs::cargo_build_script_confirms_effective_selector_resolution`](../crates/rusttorch-cli/src/main.rs)
@@ -243,16 +277,29 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.amp.autocast`, `torch.amp.GradScaler`
 - **RustTorch:** `rusttorch::amp::autocast`, `rusttorch::amp::autocast_for`, `rusttorch::amp::GradScaler`, `rusttorch::amp::GradScalerConfig`, `rusttorch::amp::GradScalerState`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** CPU-tested dense gradient scaling, accumulation, optional unscale and clipping, finite-update checks, skipped nonfinite updates, growth/backoff, disabled execution, validated step ordering, and versioned scaler state. The CUDA autocast scope exposes native nesting and unwind restoration with explicit device selection.
 - **Pinned source:** [`torch/amp/autocast_mode.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/amp/autocast_mode.py)
 - **Evidence:** [`tests/amp.rs::scaling_preserves_updates_skips_nonfinite_steps_and_replays_state`](../tests/amp.rs), [`tests/amp.rs::scaler_enforces_step_order_and_validates_before_restore`](../tests/amp.rs), [`tests/amp.rs::scaler_supports_accumulation_clipping_and_disabled_execution`](../tests/amp.rs), [`tests/amp.rs::autocast_preserves_results_and_strict_device_policy`](../tests/amp.rs), [`tests/amp.rs::grad_scaler_matches_python_growth_backoff_and_updates`](../tests/amp.rs), [`tests/amp.rs::cuda_autocast_restores_dtype_after_nesting_and_unwind`](../tests/amp.rs)
 - **Notes:** Numerical scaler evidence is CPU only; torch/amp/grad\_scaler.py supplies the pinned scaling reference. The CUDA test explicitly skips without CUDA and is not a verified CUDA pass here. CPU/BFloat16 and MPS autocast policies, dtype/cache selection, sparse scaling, multi-optimizer cycles, and every upstream scale-extreme behavior are not claimed. Rust scale bounds prevent zero/infinite stored multipliers. Python parity requires scripts/run-python-parity.sh.
 
+### `autograd.functional`
+
+- **PyTorch:** `torch.autograd.grad`, `torch.autograd.functional.vjp`, `torch.autograd.functional.jvp`, `torch.autograd.functional.jacobian`, `torch.autograd.functional.hessian`
+- **RustTorch:** `rusttorch::autograd::GradOptions`, `rusttorch::autograd::grad`, `rusttorch::autograd::vjp`, `rusttorch::autograd::jvp`, `rusttorch::autograd::jacobian`, `rusttorch::autograd::hessian`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 5 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Dense real single-input functional derivatives: scalar gradients without leaf-buffer accumulation; fixed-cotangent VJP; reverse-over-reverse JVP; Jacobians shaped output-shape plus input-shape; scalar Hessians and optional higher-order graphs. Constant/unused functional inputs produce zero derivatives, while direct grad rejects disconnected inputs.
+- **Pinned source:** [`torch/autograd/functional.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/autograd/functional.py)
+- **Evidence:** [`tests/autograd.rs::gradients_preserve_leaf_buffers_and_support_higher_orders`](../tests/autograd.rs), [`tests/autograd.rs::vector_products_and_jacobian_hessian_match_analytic_derivatives`](../tests/autograd.rs), [`tests/autograd.rs::constant_unused_empty_and_multidimensional_derivatives_are_defined`](../tests/autograd.rs), [`tests/autograd.rs::functional_derivatives_match_pinned_python`](../tests/autograd.rs)
+- **Notes:** CPU Double numerical parity uses scripts/run-python-parity.sh. No native dual tensors, vectorized transforms, complex differentiation, batched gradients, or arbitrary custom Function hooks. Jacobians use one backward pass per output element; JVP requires native double-backward support. Tangent/cotangent seeds are detached. Native operation errors propagate.
+
 ### `autograd.reverse_mode`
 
-- **PyTorch:** `torch.Tensor.backward`, `torch.no_grad`, `torch.Tensor.detach`
+- **PyTorch:** `torch.Tensor.backward`, `torch.no_grad`, `torch.Tensor.detach`, `torch.autograd.grad_mode.no_grad`
 - **RustTorch:** `rusttorch_core::Tensor`, `rusttorch_core::no_grad`, `rusttorch_core::no_grad_guard`, `rusttorch::Tensor`, `rusttorch::no_grad`, `rusttorch::no_grad_guard`
 - **Implementation:** Delegated to LibTorch
+- **Pinned inventory:** 4 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Reverse-mode gradients through the tested eager and graph operations, plus tested no-grad and detach behavior.
 - **Pinned source:** [`torch/autograd/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/autograd/__init__.py)
 - **Evidence:** [`tests/eager.rs::gradients_accumulate_across_eager_residual_branches`](../tests/eager.rs), [`tests/eager.rs::no_grad_and_detach_stop_gradient_recording`](../tests/eager.rs)
@@ -260,9 +307,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `core.random`
 
-- **PyTorch:** `torch.manual_seed`
+- **PyTorch:** `torch.manual_seed`, `torch.random.manual_seed`
 - **RustTorch:** `rusttorch_core::manual_seed`, `rusttorch::manual_seed`
 - **Implementation:** Delegated to LibTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** LibTorch seed delegation with CPU parity evidence for the tested convolution, embedding, transposed-convolution, recurrent, standalone attention and transformer-layer initializations; shared Linear initialization is exercised by those standalone sequence fixtures.
 - **Pinned source:** [`torch/random.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/random.py)
 - **Evidence:** [`tests/python_parity.rs::bidirectional_python_parity`](../tests/python_parity.rs), [`tests/nn_spatial.rs::spatial_layers_match_pinned_python_outputs_gradients_and_buffers`](../tests/nn_spatial.rs), [`tests/nn_sequence.rs::sequence_python_parity`](../tests/nn_sequence.rs)
@@ -273,16 +321,62 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.Tensor`, `torch.dtype`, `torch.nn.functional reduction`
 - **RustTorch:** `rusttorch_core::Tensor`, `rusttorch_core::Kind`, `rusttorch_core::Reduction`, `rusttorch::Tensor`, `rusttorch::Kind`, `rusttorch::Reduction`
 - **Implementation:** Delegated to LibTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Root type reexports plus the tensor construction, dtype, device, and eager operations exercised by current RustTorch tests.
 - **Pinned source:** [`torch/_tensor.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/_tensor.py)
 - **Evidence:** [`tests/eager.rs::tensor_core_types_are_reexported`](../tests/eager.rs)
-- **Notes:** rusttorch-core owns the direct reexports and the rusttorch facade preserves them. Reexporting tch::Tensor is not evidence that every torch.Tensor method matches PyTorch.
+- **Notes:** rusttorch-core owns the direct reexports and rusttorch preserves them. Reexporting tch::Tensor does not establish every method as compatible. Checked indexing, storage/view semantics, conversion/reductions and quantized primitives have separate scoped rows; advanced numerical families have their own rows.
+
+### `core.tensor.conversion_reductions`
+
+- **PyTorch:** `torch.Tensor.to`, `torch.mean`, `torch.std`, `torch.clamp`
+- **RustTorch:** `rusttorch::tensor::standardize`, `rusttorch::Tensor::f_to_kind`, `rusttorch::Tensor::f_to_device`, `rusttorch::Tensor::f_mean`, `rusttorch::Tensor::f_std_dim`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 4 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** CPU-tested explicit integer-to-float conversion and population-standard-deviation feature normalization along a validated positive/negative axis: (x-mean)/max(std,epsilon), retained reduction dimensions, epsilon that remains finite and positive in the input dtype, constant features producing zero, empty reduction rejection and float32/float64 inputs.
+- **Pinned source:** [`aten/src/ATen/native/native_functions.yaml`](https://github.com/pytorch/pytorch/blob/cf30153/aten/src/ATen/native/native_functions.yaml)
+- **Evidence:** [`tests/tensor_workflows.rs::views_copies_broadcasts_and_standardization`](../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::empty_nested_and_copy_gradient_boundaries`](../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::malformed_inputs_return_errors_without_mutation`](../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::tensor_workflows_python_parity`](../tests/tensor_workflows.rs)
+- **Notes:** The native same-device CPU conversion is exercised in the executable tutorial; this is not accelerator transfer evidence or every reduction, accumulation dtype, correction, NaN policy or conversion mode. Population variance uses correction=0. Integer conversion cannot preserve floating gradients.
+
+### `core.tensor.indexing`
+
+- **PyTorch:** `torch.index_select`, `torch.gather`, `torch.index_add`, `torch.where`
+- **RustTorch:** `rusttorch::tensor::select_rows`, `rusttorch::tensor::gather_rows`, `rusttorch::tensor::scatter_add_rows`, `rusttorch::tensor::replace_masked`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 4 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** CPU-tested out-of-place row selection, one class per matrix row, additive aggregation of repeated row IDs, and exact-shape Boolean masked replacement. IDs are int64, nonnegative, in bounds and on the input device; helper-specific shapes and kinds are validated. Native selected-input gradients accumulate across repeated indices; empty row selections and empty aggregation are tested.
+- **Pinned source:** [`aten/src/ATen/native/native_functions.yaml`](https://github.com/pytorch/pytorch/blob/cf30153/aten/src/ATen/native/native_functions.yaml)
+- **Evidence:** [`tests/tensor_workflows.rs::indexing_updates_preserve_inputs_and_accumulate_gradients`](../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::malformed_inputs_return_errors_without_mutation`](../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::empty_nested_and_copy_gradient_boundaries`](../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::tensor_workflows_python_parity`](../tests/tensor_workflows.rs)
+- **Notes:** Task-oriented helpers use native index\_select/gather/index\_add/where. This is not every indexing mode, Python negative indexing, assignment syntax or advanced-index broadcasting. Native f\_\* methods remain available; accelerator reductions retain native nondeterminism. Python parity runs through scripts/run-python-parity.sh.
+
+### `core.tensor.quantization`
+
+- **PyTorch:** `torch.quantize_per_tensor`, `torch.Tensor.dequantize`, `torch.Tensor.int_repr`
+- **RustTorch:** `rusttorch::tensor::quantize_per_tensor`, `rusttorch::Tensor::f_dequantize`, `rusttorch::Tensor::f_int_repr`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 3 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** CPU per-tensor affine quantization of finite detached float32 input to QInt8 or QUInt8 with scale that remains finite and positive after float32 conversion and a representable zero point. Signed 8-bit values, tie rounding, saturation, integer representation and dequantization are numerically tested.
+- **Pinned source:** [`aten/src/ATen/native/native_functions.yaml`](https://github.com/pytorch/pytorch/blob/cf30153/aten/src/ATen/native/native_functions.yaml)
+- **Evidence:** [`tests/tensor_workflows.rs::sparse_coo_csr_and_quantized_boundaries`](../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::malformed_inputs_return_errors_without_mutation`](../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::tensor_workflows_python_parity`](../tests/tensor_workflows.rs)
+- **Notes:** Pinned PyTorch 2.13 deprecates these legacy quantized tensor constructors. Requires-grad inputs are rejected instead of silently disconnecting gradients. QUInt8 parameter validation is tested; no full unsigned numerical fixture, model conversion, observers, calibration algorithms, quantized operators or quantization-aware training is claimed. torch.ao.quantization remains planned separately.
+
+### `core.tensor.views`
+
+- **PyTorch:** `torch.Tensor.view`, `torch.reshape`, `torch.transpose`, `torch.Tensor.expand`, `torch.view_copy`
+- **RustTorch:** `rusttorch::tensor::flatten_features`, `rusttorch::Tensor::f_view`, `rusttorch::Tensor::f_reshape`, `rusttorch::Tensor::f_transpose`, `rusttorch::Tensor::f_expand`, `rusttorch::Tensor::f_view_copy`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 5 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** CPU-tested batch-feature flattening with explicit shared-view or always-independent-copy storage, noncontiguous view rejection/copy success, empty batches, copy gradients, transpose layout and zero-stride broadcasting. Native reshape may alias or copy; helper copy=true always allocates.
+- **Pinned source:** [`aten/src/ATen/native/native_functions.yaml`](https://github.com/pytorch/pytorch/blob/cf30153/aten/src/ATen/native/native_functions.yaml)
+- **Evidence:** [`tests/tensor_workflows.rs::views_copies_broadcasts_and_standardization`](../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::empty_nested_and_copy_gradient_boundaries`](../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::tensor_workflows_python_parity`](../tests/tensor_workflows.rs)
+- **Notes:** The helper requires at least a batch and feature axis; feature-count overflow and undefined/unsupported nested metadata return errors. Mutation through a view changes its source; expanded repeated storage should not be mutated. Arbitrary memory formats and overlapping-stride construction are not covered.
 
 ### `data.collation`
 
 - **PyTorch:** `torch.utils.data.default_collate`, `torch.utils.data.default_convert`, `torch.utils.data._utils.collate.collate`
 - **RustTorch:** `rusttorch_data::Collate`, `rusttorch_data::VecCollate`, `rusttorch_data::FnCollate`, `rusttorch_data::DefaultCollator`, `rusttorch_data::DefaultCollate`, `rusttorch_data::DefaultConverter`, `rusttorch_data::DefaultConvert`, `rusttorch_data::Bytes`, `rusttorch_data::CollateError`, `rusttorch::data::Collate`, `rusttorch::data::VecCollate`, `rusttorch::data::FnCollate`, `rusttorch::data::DefaultCollator`, `rusttorch::data::DefaultCollate`, `rusttorch::data::DefaultConverter`, `rusttorch::data::DefaultConvert`, `rusttorch::data::Bytes`, `rusttorch::data::CollateError`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 3 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Typed Rust collation stacks tensors on dimension zero, creates exact-kind tensors from supported Rust scalars, preserves strings and Bytes records, and recursively collates uniform options, equal-length vectors, tuples of arity two through eight, and BTreeMap values with identical keys. Typed no-batching conversion preserves leaves and recursively converts those containers without vector transposition. VecCollate and fallible FnCollate provide explicit escape hatches.
 - **Pinned source:** [`torch/utils/data/_utils/collate.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/_utils/collate.py)
 - **Evidence:** [`crates/rusttorch-data/tests/collate.rs::tensors_stack_on_a_new_leading_dimension`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::numeric_scalars_use_their_exact_libtorch_kinds`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::strings_and_bytes_remain_records`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::tuples_collate_each_field_through_arity_eight`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::equal_vectors_transpose_before_recursive_collation`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::mismatched_vector_lengths_are_typed_errors`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::options_require_uniform_presence_and_recurse`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::maps_require_identical_keys_and_recurse_over_values`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::empty_batches_and_incompatible_tensors_return_errors`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::default_converter_preserves_leaves_and_recurses_without_transposing`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::default_converter_collate_requires_exactly_one_sample`](../crates/rusttorch-data/tests/collate.rs), [`crates/rusttorch-data/tests/collate.rs::custom_and_vector_collators_are_explicit_escape_hatches`](../crates/rusttorch-data/tests/collate.rs), [`tests/data.rs::facade_reexports_typed_collation_contracts`](../tests/data.rs)
@@ -293,6 +387,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.utils.data.DataChunk`, `torch.utils.data.DFIterDataPipe`, `torch.utils.data.IterDataPipe`, `torch.utils.data.MapDataPipe`
 - **RustTorch:** `std::iter::Iterator`, `rusttorch_data::Dataset`, `rusttorch_data::WorkerSourceFactory`, `rusttorch_data::Transform`, `rusttorch::data::Dataset`, `rusttorch::data::WorkerSourceFactory`, `rusttorch::data::Transform`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Ordinary typed Rust iterators replace basic iterable DataPipe traversal, Dataset replaces indexed MapDataPipe access, WorkerSourceFactory creates independent sharded iterators, and Transform composes typed sample operations.
 - **Pinned source:** [`torch/utils/data/datapipes/datapipe.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/datapipes/datapipe.py)
 - **Evidence:** [`crates/rusttorch-data/tests/stream_workers.rs::four_explicit_modulo_shards_produce_each_logical_record_once`](../crates/rusttorch-data/tests/stream_workers.rs), [`tests/data.rs::dataset_samples_borrow_and_fetch_lazily_in_order`](../tests/data.rs)
@@ -303,6 +398,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `No PyTorch symbol (RustTorch checkpoint extension)`
 - **RustTorch:** `rusttorch_data::LOADER_STATE_SCHEMA_VERSION`, `rusttorch_data::LoaderState`, `rusttorch_data::LoaderConfiguration`, `rusttorch_data::CheckpointPinRequest`, `rusttorch_data::CheckpointPinStatus`, `rusttorch_data::CheckpointBuildError`, `rusttorch_data::Checkpointable`, `rusttorch_data::ReplaySafeDataset`, `rusttorch_data::DatasetCheckpoint`, `rusttorch_data::Stateless`, `rusttorch_data::TransactionalCheckpoint`, `rusttorch_data::WorkerCheckpoint`, `rusttorch_data::ReplaySafeMap`, `rusttorch_data::TransactionalMap`, `rusttorch_data::ReplaySafeTensorDataset`, `rusttorch_data::StatelessWorker`, `rusttorch_data::TransactionalWorker`, `rusttorch_data::DataLoaderBuilder::dataset_identity`, `rusttorch_data::DataLoaderBuilder::resume_from`, `rusttorch_data::DataLoaderBuilder::checkpoint_stateless`, `rusttorch_data::DataLoaderBuilder::checkpoint_transactional`, `rusttorch_data::LoaderIter::checkpoint`, `rusttorch_data::WorkerLoaderIter::checkpoint`, `rusttorch_data::WorkerTransformState`, `rusttorch_data::WorkerTransformLanes`, `rusttorch_data::WorkerLaneState`, `rusttorch_data::SequentialSamplerState`, `rusttorch_data::RandomSamplerState`, `rusttorch_data::SubsetRandomSamplerState`, `rusttorch_data::WeightedRandomSamplerState`, `rusttorch_data::DistributedSamplerState`, `rusttorch_data::BatchSamplerState`, `rusttorch::data::LoaderState`, `rusttorch::data::CheckpointBuildError`, `rusttorch::data::ReplaySafeMap`, `rusttorch::data::TransactionalMap`, `rusttorch::data::ReplaySafeTensorDataset`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Versioned serde state and exact next-visible-batch resume for serial map loaders and ordered prefetched map workers. Serial replay supports explicit replay-safe or transactional datasets. Positive workers require ReplaySafeMap (or a copy-safe tensor wrapper satisfying native Send/Sync), MemoryDisabled, NoWorkerInit, nonpersistent workers, and no timeout. Every built-in checkpointable sampler, automatic/explicit/no batching, transactional or explicitly stateless transforms, coordinator state, and pin identity are supported. Worker barriers cancel and account dispatched tasks, restore bounded per-lane pre-task snapshots, discard unpublished samples, rewind the sampler, and replay in deterministic lanes. Resume validates the envelope and all components before any apply and retains suspended worker instances.
 - **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
 - **Evidence:** [`crates/rusttorch-data/tests/checkpoint_map.rs::prefetched_every_boundary_continues_and_resumes`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::prefetched_transactional_lanes_and_zero_workers_restore_every_boundary`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::prefetched_delayed_low_lane_keeps_earliest_unconsumed_snapshot`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::prefetched_hidden_transform_failure_replays_after_lower_batches`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::prefetched_fetch_and_cardinality_errors_recur_at_hidden_batch`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::prefetched_sampler_and_stateless_task_rng_replay`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::prefetched_explicit_and_no_batch_plans_restore`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::prefetched_validation_is_transactional_and_threads_join`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::prefetched_capability_drift_and_factory_sources_are_explicit`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::prefetched_factory_identity_survives_transport_generation_changes`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::json_round_trip_resumes_every_serial_boundary_exactly`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::short_tail_drop_last_and_invalid_boundaries_are_explicit`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::every_concrete_sampler_and_epoch_restores_its_active_cursor`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::explicit_batch_sampler_and_no_batch_converter_resume`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::stateful_transform_and_coordinator_restore_after_last_visible_batch`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::deterministic_transform_failure_recurs_at_the_same_logical_batch`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::transactional_dataset_restores_serial_fetch_state`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::resume_validates_every_component_before_any_apply`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::envelope_and_configuration_drift_reject_before_iteration`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::replay_safe_tensor_dataset_owns_backing_and_each_fetched_row`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::no_batch_state_targets_the_effective_converter`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::resume_build_error_preserves_configuration_and_factory_sources`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::pin_request_and_effective_status_are_checkpoint_identity`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::sampler_and_distributed_semantic_corruption_rejects_without_panicking`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`crates/rusttorch-data/tests/checkpoint_map.rs::malformed_json_is_a_storage_error_not_a_loader_fallback`](../crates/rusttorch-data/tests/checkpoint_map.rs), [`tests/data.rs::facade_reexports_exact_serial_checkpoint_contracts`](../tests/data.rs)
@@ -313,6 +409,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.utils.data.DataLoader(pin_memory=...)`
 - **RustTorch:** `rusttorch_data::PinMemory`, `rusttorch_data::PinMemoryStatus`, `rusttorch_data::PinDisabled`, `rusttorch_data::PinEnabled`, `rusttorch_data::Auto`, `rusttorch_data::Explicit`, `rusttorch_data::DataLoaderBuilder::pin_memory`, `rusttorch_data::DataLoaderBuilder::pin_memory_for`, `rusttorch_data::OwnedDataLoader::pin_memory_enabled`, `rusttorch_data::OwnedDataLoader::pin_memory_status`, `rusttorch_data::StreamDataLoaderBuilder::pin_memory`, `rusttorch_data::StreamDataLoaderBuilder::pin_memory_for`, `rusttorch_data::StreamDataLoader::pin_memory_enabled`, `rusttorch_data::StreamDataLoader::pin_memory_status`, `rusttorch::data::PinMemory`, `rusttorch::data::PinMemoryStatus`, `rusttorch::data::DataLoaderBuilder::pin_memory`, `rusttorch::data::DataLoaderBuilder::pin_memory_for`, `rusttorch::data::OwnedDataLoader::pin_memory_status`, `rusttorch::data::StreamDataLoaderBuilder::pin_memory`, `rusttorch::data::StreamDataLoaderBuilder::pin_memory_for`, `rusttorch::data::StreamDataLoader::pin_memory_status`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Type-state-enabled recursive post-collation pinning for map and explicitly sharded stream loaders across Tensor, Vec, Option, tuples of arity two through eight, and BTreeMap values, with identity scalar/string/Bytes leaves, exact batch types, typed source-preserving failures, automatic CUDA-device-zero selection, and explicit available-CUDA validation before callbacks.
 - **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
 - **Evidence:** [`crates/rusttorch-data/tests/pin_memory.rs::recursive_pin_memory_preserves_identity_leaves_keys_and_shape_without_clone`](../crates/rusttorch-data/tests/pin_memory.rs), [`crates/rusttorch-data/tests/pin_memory.rs::tensor_and_nested_cuda_pinning_is_checked_when_cuda_exists`](../crates/rusttorch-data/tests/pin_memory.rs), [`crates/rusttorch-data/tests/pin_memory.rs::automatic_pin_status_is_effective_and_preserves_the_exact_batch_type`](../crates/rusttorch-data/tests/pin_memory.rs), [`crates/rusttorch-data/tests/pin_memory.rs::disabled_custom_batch_has_no_pin_memory_bound`](../crates/rusttorch-data/tests/pin_memory.rs), [`crates/rusttorch-data/tests/pin_memory.rs::explicit_unsupported_devices_reject_before_factory_callbacks`](../crates/rusttorch-data/tests/pin_memory.rs), [`crates/rusttorch-data/tests/pin_memory.rs::pinning_runs_after_collation_in_both_setter_orders_when_cuda_exists`](../crates/rusttorch-data/tests/pin_memory.rs), [`crates/rusttorch-data/tests/pin_memory.rs::pin_failure_is_typed_once_when_cuda_exists`](../crates/rusttorch-data/tests/pin_memory.rs), [`crates/rusttorch-data/tests/pin_memory.rs::stream_auto_pin_status_and_batch_type_are_preserved`](../crates/rusttorch-data/tests/pin_memory.rs), [`tests/data.rs::facade_reexports_memory_and_pinning_contracts`](../tests/data.rs)
@@ -323,6 +420,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.utils.data.DataLoader(prefetch_factor=...)`
 - **RustTorch:** `rusttorch_data::MemoryFootprint`, `rusttorch_data::MemoryDisabled`, `rusttorch_data::MemoryEnabled`, `rusttorch_data::DataLoaderBuilder::prefetch_factor`, `rusttorch_data::DataLoaderBuilder::prefetch_bytes`, `rusttorch_data::OwnedDataLoader::effective_prefetch_factor`, `rusttorch_data::OwnedDataLoader::effective_prefetch_bytes`, `rusttorch_data::StreamDataLoaderBuilder::prefetch_factor`, `rusttorch_data::StreamDataLoaderBuilder::prefetch_bytes`, `rusttorch_data::StreamDataLoader::effective_prefetch_factor`, `rusttorch_data::StreamDataLoader::effective_prefetch_bytes`, `rusttorch::data::MemoryFootprint`, `rusttorch::data::DataLoaderBuilder::prefetch_factor`, `rusttorch::data::DataLoaderBuilder::prefetch_bytes`, `rusttorch::data::OwnedDataLoader::effective_prefetch_bytes`, `rusttorch::data::StreamDataLoaderBuilder::prefetch_bytes`, `rusttorch::data::StreamDataLoader::effective_prefetch_bytes`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Positive map workers use checked bounded task/control/result storage and a global item-credit limit of workers multiplied by prefetch\_factor. Optional nonzero prefetch\_bytes adds a strict generation-scoped post-transform logical-payload budget to map batches and stream records through result queues and ordered reassembly, with cancellation-safe RAII permits, exact oversize metadata, sequence-aware ordered admission, bounded stream front waiters, and one-error-then-exhaust behavior.
 - **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
 - **Evidence:** [`crates/rusttorch-data/tests/loader_builder.rs::scalar_configuration_is_validated_and_prefetch_is_normalized`](../crates/rusttorch-data/tests/loader_builder.rs), [`crates/rusttorch-data/tests/map_workers.rs::global_outstanding_work_uses_default_and_explicit_checked_credits`](../crates/rusttorch-data/tests/map_workers.rs), [`crates/rusttorch-data/tests/map_workers.rs::build_rejects_before_sampler_or_batch_source_epoch_callbacks`](../crates/rusttorch-data/tests/map_workers.rs), [`crates/rusttorch-data/tests/memory_budget.rs::footprints_are_recursive_capacity_aware_and_saturating`](../crates/rusttorch-data/tests/memory_budget.rs), [`crates/rusttorch-data/tests/memory_budget.rs::byte_accounting_uses_the_final_transform_type_in_either_setter_order`](../crates/rusttorch-data/tests/memory_budget.rs), [`crates/rusttorch-data/tests/memory_budget.rs::disabled_custom_types_remain_item_bounded_without_new_trait_bounds`](../crates/rusttorch-data/tests/memory_budget.rs), [`crates/rusttorch-data/tests/memory_budget.rs::map_zero_workers_reject_byte_prefetch_before_iteration_callbacks`](../crates/rusttorch-data/tests/memory_budget.rs), [`crates/rusttorch-data/tests/memory_budget.rs::oversized_transformed_map_batch_has_exact_metadata_once`](../crates/rusttorch-data/tests/memory_budget.rs), [`crates/rusttorch-data/tests/memory_budget.rs::ordered_map_byte_admission_blocks_high_until_delayed_low_is_consumable`](../crates/rusttorch-data/tests/memory_budget.rs), [`crates/rusttorch-data/tests/memory_budget.rs::unordered_unsequenced_oversize_preserves_exact_stream_metadata_once`](../crates/rusttorch-data/tests/memory_budget.rs), [`crates/rusttorch-data/tests/memory_budget.rs::ordered_oversize_preserves_stream_identity_without_guessing_a_batch`](../crates/rusttorch-data/tests/memory_budget.rs), [`crates/rusttorch-data/tests/memory_budget.rs::ordered_byte_stream_rejects_missing_and_nonmonotonic_same_shard_sequences`](../crates/rusttorch-data/tests/memory_budget.rs), [`crates/rusttorch-data/tests/memory_budget.rs::ordered_byte_admission_allows_delayed_low_progress_and_persistent_reuse`](../crates/rusttorch-data/tests/memory_budget.rs), [`crates/rusttorch-data/tests/memory_budget.rs::early_drop_cancels_a_blocked_permit_and_persistent_restart_has_no_leak`](../crates/rusttorch-data/tests/memory_budget.rs), [`crates/rusttorch-data/tests/memory_budget.rs::timeout_cancels_ordered_budget_waiters_before_persistent_restart`](../crates/rusttorch-data/tests/memory_budget.rs), [`crates/rusttorch-data/tests/worker_lifecycle.rs::full_result_queue_and_idle_task_waits_wake_on_drop`](../crates/rusttorch-data/tests/worker_lifecycle.rs)
@@ -333,6 +431,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.utils.data.Dataset transform conventions`, `torch.utils.data.DataLoader(generator=...)`
 - **RustTorch:** `rusttorch_data::TaskContext`, `rusttorch_data::CancellationToken`, `rusttorch_data::Deadline`, `rusttorch_data::WaitOutcome`, `rusttorch_data::LoaderCancelled`, `rusttorch_data::Transform`, `rusttorch_data::FnTransform`, `rusttorch_data::TransformFactory`, `rusttorch_data::FnTransformFactory`, `rusttorch_data::IdentityTransformFactory`, `rusttorch_data::DataLoaderBuilder::transform`, `rusttorch_data::DataLoaderBuilder::transform_factory`, `rusttorch_data::DataLoaderBuilder::seed`, `rusttorch_data::DataLoaderBuilder::epoch`, `rusttorch_data::DataLoaderBuilder::rank`, `rusttorch_data::TASK_RNG_DERIVATION_VERSION`, `rusttorch::data::TaskContext`, `rusttorch::data::CancellationToken`, `rusttorch::data::Deadline`, `rusttorch::data::WaitOutcome`, `rusttorch::data::LoaderCancelled`, `rusttorch::data::Transform`, `rusttorch::data::FnTransform`, `rusttorch::data::TransformFactory`, `rusttorch::data::FnTransformFactory`, `rusttorch::data::IdentityTransformFactory`, `rusttorch::data::DataLoaderBuilder::transform`, `rusttorch::data::DataLoaderBuilder::transform_factory`, `rusttorch::data::DataLoaderBuilder::seed`, `rusttorch::data::DataLoaderBuilder::epoch`, `rusttorch::data::DataLoaderBuilder::rank`, `rusttorch::data::TASK_RNG_DERIVATION_VERSION`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Owned loading constructs one typed transform per serial iterator or per worker, reuses it for that lifecycle, supplies monotonic logical occurrence IDs plus cooperative cancellation and deadline state, and preserves dataset, transform, collation, transform-construction, and worker-initialization error types through PipelineError. Version-1 task seeds deterministically mix loader seed, epoch, rank, logical sample, and stage into task-local ChaCha12 state without worker assignment.
 - **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
 - **Evidence:** [`crates/rusttorch-data/tests/transform.rs::task_rng_is_versioned_schedule_independent_and_has_a_locked_seed`](../crates/rusttorch-data/tests/transform.rs), [`crates/rusttorch-data/tests/transform.rs::task_rng_does_not_change_libtorch_global_rng`](../crates/rusttorch-data/tests/transform.rs), [`crates/rusttorch-data/tests/transform.rs::fn_transform_preserves_output_and_error_types`](../crates/rusttorch-data/tests/transform.rs), [`crates/rusttorch-data/tests/transform.rs::serial_factory_creates_one_transform_per_iterator_and_context_ids_restart`](../crates/rusttorch-data/tests/transform.rs), [`crates/rusttorch-data/tests/transform.rs::transform_builder_clones_fresh_state_for_each_iterator`](../crates/rusttorch-data/tests/transform.rs), [`crates/rusttorch-data/tests/transform.rs::every_serial_stage_keeps_its_concrete_error_and_metadata`](../crates/rusttorch-data/tests/transform.rs), [`crates/rusttorch-data/tests/transform.rs::pipeline_error_generic_positions_are_distinct`](../crates/rusttorch-data/tests/transform.rs), [`crates/rusttorch-data/tests/worker_lifecycle.rs::context_aware_transform_wakes_on_drop_and_deadline`](../crates/rusttorch-data/tests/worker_lifecycle.rs), [`tests/data.rs::facade_reexports_task_transform_and_worker_context_contracts`](../tests/data.rs)
@@ -343,6 +442,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.utils.data.DataLoader(num_workers=...)`, `torch.utils.data.get_worker_info`
 - **RustTorch:** `rusttorch_data::DataLoaderBuilder::workers`, `rusttorch_data::DataLoaderBuilder::persistent_workers`, `rusttorch_data::DataLoaderBuilder::timeout`, `rusttorch_data::DataLoaderBuilder::worker_init`, `rusttorch_data::OwnedDataLoader::workers`, `rusttorch_data::WorkerInfo`, `rusttorch_data::WorkerContext`, `rusttorch_data::CancellationToken`, `rusttorch_data::Deadline`, `rusttorch_data::WaitOutcome`, `rusttorch_data::LoaderCancelled`, `rusttorch_data::WorkerInit`, `rusttorch_data::FnWorkerInit`, `rusttorch_data::NoWorkerInit`, `rusttorch_data::get_worker_info`, `rusttorch_data::WORKER_SEED_DERIVATION_VERSION`, `rusttorch::data::DataLoaderBuilder::workers`, `rusttorch::data::DataLoaderBuilder::persistent_workers`, `rusttorch::data::DataLoaderBuilder::timeout`, `rusttorch::data::DataLoaderBuilder::worker_init`, `rusttorch::data::OwnedDataLoader::workers`, `rusttorch::data::WorkerInfo`, `rusttorch::data::WorkerContext`, `rusttorch::data::CancellationToken`, `rusttorch::data::Deadline`, `rusttorch::data::WaitOutcome`, `rusttorch::data::LoaderCancelled`, `rusttorch::data::WorkerInit`, `rusttorch::data::FnWorkerInit`, `rusttorch::data::NoWorkerInit`, `rusttorch::data::get_worker_info`, `rusttorch::data::WORKER_SEED_DERIVATION_VERSION`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 1 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Positive map-worker counts create joinable bounded Rust threads sharing an Arc dataset, route batch sequence s to worker s modulo worker count, initialize and construct one transform per worker, fetch and transform with cooperative generation cancellation and per-next deadlines, collate on the coordinator, preserve sampler order by default, optionally yield completion order, convert worker panics, and terminate after one typed failure. Optional persistent pools reuse threads, initial seeds, initializer calls, and factory-created transforms while quiescing and discarding tagged stale work between fresh generations.
 - **Pinned source:** [`torch/utils/data/_utils/worker.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/_utils/worker.py)
 - **Evidence:** [`crates/rusttorch-data/tests/map_workers.rs::positive_workers_fetch_batches_concurrently_on_distinct_threads`](../crates/rusttorch-data/tests/map_workers.rs), [`crates/rusttorch-data/tests/map_workers.rs::ordered_and_completion_modes_follow_the_selected_contract`](../crates/rusttorch-data/tests/map_workers.rs), [`crates/rusttorch-data/tests/map_workers.rs::batch_sequence_routes_to_its_modulo_worker_across_iterations`](../crates/rusttorch-data/tests/map_workers.rs), [`crates/rusttorch-data/tests/map_workers.rs::factory_and_initializer_run_once_per_worker_with_fresh_generations`](../crates/rusttorch-data/tests/map_workers.rs), [`crates/rusttorch-data/tests/map_workers.rs::worker_and_coordinator_errors_are_typed_visible_once_and_contextual`](../crates/rusttorch-data/tests/map_workers.rs), [`crates/rusttorch-data/tests/map_workers.rs::worker_panics_are_converted_with_worker_and_batch_context`](../crates/rusttorch-data/tests/map_workers.rs), [`crates/rusttorch-data/tests/map_workers.rs::early_drop_disconnects_saturated_work_and_joins_every_worker`](../crates/rusttorch-data/tests/map_workers.rs), [`crates/rusttorch-data/tests/map_workers.rs::overflowing_timeout_rejects_before_plan_or_worker_callbacks`](../crates/rusttorch-data/tests/map_workers.rs), [`crates/rusttorch-data/tests/worker_context.rs::worker_info_scopes_are_nested_and_panic_safe`](../crates/rusttorch-data/tests/worker_context.rs), [`crates/rusttorch-data/tests/worker_context.rs::worker_info_is_isolated_between_concurrent_threads`](../crates/rusttorch-data/tests/worker_context.rs), [`crates/rusttorch-data/tests/worker_context.rs::worker_info_validates_identity_and_locks_versioned_seed_derivation`](../crates/rusttorch-data/tests/worker_context.rs), [`crates/rusttorch-data/tests/worker_context.rs::worker_seed_derivation_does_not_change_libtorch_global_rng`](../crates/rusttorch-data/tests/worker_context.rs), [`crates/rusttorch-data/tests/worker_lifecycle.rs::public_cancellation_and_deadline_waits_are_notification_driven`](../crates/rusttorch-data/tests/worker_lifecycle.rs), [`crates/rusttorch-data/tests/worker_lifecycle.rs::timeout_deadline_is_fresh_for_each_blocking_next`](../crates/rusttorch-data/tests/worker_lifecycle.rs), [`crates/rusttorch-data/tests/worker_lifecycle.rs::unordered_ready_batch_does_not_block_on_saturated_lane_refill`](../crates/rusttorch-data/tests/worker_lifecycle.rs), [`crates/rusttorch-data/tests/worker_lifecycle.rs::first_error_cancels_siblings_and_every_worker_exits_once`](../crates/rusttorch-data/tests/worker_lifecycle.rs), [`crates/rusttorch-data/tests/worker_lifecycle.rs::worker_init_error_and_panic_are_visible_once`](../crates/rusttorch-data/tests/worker_lifecycle.rs), [`crates/rusttorch-data/tests/worker_lifecycle.rs::full_result_queue_and_idle_task_waits_wake_on_drop`](../crates/rusttorch-data/tests/worker_lifecycle.rs), [`crates/rusttorch-data/tests/worker_lifecycle.rs::nonpersistent_iterations_use_fresh_consecutive_seed_ranges`](../crates/rusttorch-data/tests/worker_lifecycle.rs), [`crates/rusttorch-data/tests/worker_lifecycle.rs::serial_factory_gets_none_and_worker_callbacks_get_lifecycle_context`](../crates/rusttorch-data/tests/worker_lifecycle.rs), [`crates/rusttorch-data/tests/worker_lifecycle.rs::persistent_workers_reuse_threads_seeds_and_callbacks_across_epochs`](../crates/rusttorch-data/tests/worker_lifecycle.rs), [`crates/rusttorch-data/tests/worker_lifecycle.rs::persistent_early_drop_discards_stale_sequence_zero_in_ordered_and_unordered_modes`](../crates/rusttorch-data/tests/worker_lifecycle.rs), [`crates/rusttorch-data/tests/worker_lifecycle.rs::non_cooperative_fetch_makes_drop_wait_until_explicit_release`](../crates/rusttorch-data/tests/worker_lifecycle.rs), [`tests/data.rs::facade_reexports_task_transform_and_worker_context_contracts`](../tests/data.rs)
@@ -353,26 +453,62 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.utils.data.IterableDataset`, `torch.utils.data.DataLoader(num_workers=...)`, `torch.utils.data.DataLoader(in_order=...)`, `torch.utils.data.DataLoader(persistent_workers=...)`
 - **RustTorch:** `rusttorch_data::SequenceId`, `rusttorch_data::LogicalSampleId`, `rusttorch_data::WorkerRecord`, `rusttorch_data::WorkerSourceFactory`, `rusttorch_data::StreamDataLoaderBuilder`, `rusttorch_data::StreamDataLoader`, `rusttorch_data::StreamLoaderIter`, `rusttorch::data::SequenceId`, `rusttorch::data::LogicalSampleId`, `rusttorch::data::WorkerRecord`, `rusttorch::data::WorkerSourceFactory`, `rusttorch::data::StreamDataLoaderBuilder`, `rusttorch::data::StreamDataLoader`, `rusttorch::data::StreamLoaderIter`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Explicitly sharded positive-worker Rust streams with one owned iterator per worker and generation, stable logical sample identity, optional exact global length, ordered contiguous global sequence reassembly or completion-order delivery, coordinator-side global batching and collation, checked bounded result/preallocated-flat-reassembly/batch allocation, typed pipeline/protocol/panic failures, ready-completion-first cooperative per-next timeout and cancellation, and optional loader-owned persistent worker pools.
 - **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
 - **Evidence:** [`crates/rusttorch-data/tests/stream_workers.rs::four_explicit_modulo_shards_produce_each_logical_record_once`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::ordered_sequence_protocol_rejects_every_gap_and_duplicate_shape_once`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::ordered_full_credit_window_reports_first_gap_instead_of_timing_out`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::ordered_internal_gap_beyond_same_worker_quota_is_protocol_error`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::unordered_records_may_be_unsequenced_and_task_rng_uses_logical_id`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::coordinator_batches_globally_and_drops_only_one_global_tail`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::per_worker_credits_bound_fast_shards_without_blocking_their_progress`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::every_stream_stage_failure_is_typed_contextual_and_visible_once`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::queued_low_record_beats_an_expired_deadline_after_high_reassembly`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::queued_protocol_error_beats_expiry_after_a_high_record`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/src/stream.rs::queued_error_and_end_beat_an_expired_receive_deadline`](../crates/rusttorch-data/src/stream.rs), [`crates/rusttorch-data/tests/stream_workers.rs::cooperative_stream_source_wakes_on_timeout_and_early_drop`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::drop_waits_for_a_noncooperative_source_instead_of_detaching_it`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::full_result_queue_drop_wakes_and_joins_every_worker`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::persistent_ordered_and_unordered_workers_recreate_sources_but_keep_pool_state`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::persistent_early_drop_drains_stale_results_before_both_delivery_modes_restart`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::persistent_exhaustion_waits_until_the_generation_source_is_dropped`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::persistent_source_destructor_panic_is_visible_and_poisons_the_pool`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::first_protocol_failure_cancels_before_releasing_reassembly_credits`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::iterator_drop_cancels_before_releasing_reassembly_credits`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::invalid_stream_builders_fail_before_factory_or_worker_side_effects`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::large_inline_batch_and_reassembly_storage_are_rejected_before_callbacks`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::sparse_one_entry_reassembly_uses_one_concrete_vec_slot`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/stream_workers.rs::oversized_one_entry_vec_aggregate_is_rejected_before_every_callback`](../crates/rusttorch-data/tests/stream_workers.rs), [`crates/rusttorch-data/tests/current_api.rs::stream_loader_remains_sync_for_send_but_not_sync_output`](../crates/rusttorch-data/tests/current_api.rs), [`tests/data.rs::facade_exposes_explicit_stream_worker_contracts`](../tests/data.rs)
 - **Notes:** RustTorch uses threads and typed explicitly sharded factories rather than Python worker processes or a shared IterableDataset object. Ordered sources must provide a unique zero-based contiguous global sequence; unordered sources may omit sequence but must provide stable logical IDs. Byte-enabled ordered shards additionally emit strictly increasing IDs per shard; bounded front-waiter state detects a globally missing ID without byte deadlock. Ordered reassembly is one loader-owned preallocated flat vector with linear lookup in the bounded credit window; its actual retained capacity is validated before callbacks and reused across generations. RustTorch merges before batching, so drop\_last removes at most one global tail instead of PyTorch iterable-style per-process tails. Cancellation is cooperative and drop joins rather than force-cancelling a blocking native source. Checkpoint/resume remains outside this row.
 
+### `distributions`
+
+- **PyTorch:** `torch.distributions.Distribution`, `torch.distributions.Normal`, `torch.distributions.Bernoulli`, `torch.distributions.Categorical`
+- **RustTorch:** `rusttorch::distributions::Normal`, `rusttorch::distributions::Bernoulli`, `rusttorch::distributions::Categorical`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Finite dense real Normal, Bernoulli and Categorical parameters with broadcast batch shapes, leading sample dimensions, detached sampling, log probability and entropy. Normal additionally exposes pathwise rsample, mean and variance; discrete families accept probabilities or logits. Parameter and observation validation returns errors.
+- **Pinned source:** [`torch/distributions/distribution.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/distributions/distribution.py)
+- **Evidence:** [`tests/distributions.rs::continuous_samples_and_scores_have_the_expected_gradient_boundary`](../tests/distributions.rs), [`tests/distributions.rs::discrete_distributions_broadcast_scores_and_preserve_parameter_gradients`](../tests/distributions.rs), [`tests/distributions.rs::invalid_distribution_parameters_and_observations_return_errors`](../tests/distributions.rs), [`tests/distributions.rs::distribution_scores_samples_and_gradients_match_pinned_python`](../tests/distributions.rs)
+- **Notes:** Pinned source implementations: torch/distributions/{normal,bernoulli,categorical,utils}.py. CPU Double parity covers scores, entropy, parameter gradients and seeded rsample/Bernoulli/Categorical draws; no universal generator-stream or backend guarantee. The shared native RNG is affected by concurrent draws. Transforms, constraints framework, multivariate/event distributions, infinite parameters and the remaining distribution catalog are not exposed.
+
+### `fft`
+
+- **PyTorch:** `torch.fft`, `torch.fft.rfft`, `torch.fft.irfft`, `torch.fft.fft`, `torch.fft.ifft`
+- **RustTorch:** `rusttorch::tensor::spectral_filter`, `rusttorch::Tensor::f_fft_rfft`, `rusttorch::Tensor::f_fft_irfft`, `rusttorch::Tensor::f_fft_fft`, `rusttorch::Tensor::f_fft_ifft`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 5 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** CPU real-last-axis spectral filtering with exact frequency-bin gain shape, backward normalization and explicit original length for odd/even inverse real transforms; float32/float64 reconstruction and native input/gain gradients. Complex128 one-dimensional FFT/IFFT with ortho normalization, real/imaginary representation and numerical round-trip fixtures are tested.
+- **Pinned source:** [`torch/fft/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/fft/__init__.py)
+- **Evidence:** [`tests/tensor_workflows.rs::fft_and_special_functions_keep_native_gradients`](../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::empty_nested_and_copy_gradient_boundaries`](../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::malformed_inputs_return_errors_without_mutation`](../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::tensor_workflows_python_parity`](../tests/tensor_workflows.rs)
+- **Notes:** The helper applies a periodic filter, not padded linear convolution. Full FFT namespace, arbitrary multidimensional transform families, complex64 numerical fixtures, all normalizations and accelerator kernels remain outside this scope. Python fixture compares spectrum, filtered output and selected gradients.
+
 ### `graph.ir`
 
-- **PyTorch:** `torch.fx.Graph`, `torch.fx.Node`
+- **PyTorch:** `torch.fx.Graph`, `torch.fx.Node`, `torch.fx.node.Node`
 - **RustTorch:** `rusttorch::graph::Graph`, `rusttorch::graph::GraphBuilder`, `rusttorch::graph::Node`, `rusttorch::graph::NodeId`, `rusttorch::graph::ValueId`, `rusttorch::graph::TensorSpec`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** The tested construction, validation, branching, named-value, topological-order, reachability, and tensor-spec behavior of RustTorch's typed DAG.
 - **Pinned source:** [`torch/fx/graph.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/fx/graph.py)
 - **Evidence:** [`tests/graph.rs::builder_rejects_a_value_from_another_graph`](../tests/graph.rs), [`tests/graph.rs::builder_rejects_duplicate_node_names`](../tests/graph.rs), [`tests/graph.rs::graph_without_an_output_is_rejected`](../tests/graph.rs)
 - **Notes:** This is neither FX serialization nor full FX node and transformation parity.
 
+### `linalg`
+
+- **PyTorch:** `torch.linalg`, `torch.linalg.solve`, `torch.linalg.lstsq`, `torch.linalg.svd`, `torch.linalg.eigh`, `torch.linalg.det`, `torch.linalg.norm`
+- **RustTorch:** `rusttorch::tensor::least_squares`, `rusttorch::tensor::LeastSquares`, `rusttorch::Tensor::f_linalg_solve`, `rusttorch::Tensor::f_svd`, `rusttorch::Tensor::f_linalg_eigh`, `rusttorch::Tensor::f_linalg_det`, `rusttorch::Tensor::f_linalg_norm`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 7 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** CPU real two-dimensional least squares with finite float32/float64 matching inputs and SVD-based gelsd driver, nonnegative optional rcond, solution/residual/rank/singular-value diagnostics, rank-deficiency handling and native gradient connectivity. Float64 CPU fixtures additionally cover square solve, SVD singular values/reconstruction, symmetric eigendecomposition, determinant and matrix spectral norm.
+- **Pinned source:** [`torch/linalg/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/linalg/__init__.py)
+- **Evidence:** [`tests/tensor_workflows.rs::least_squares_handles_rank_deficiency_and_native_linalg`](../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::malformed_inputs_return_errors_without_mutation`](../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::tensor_workflows_python_parity`](../tests/tensor_workflows.rs)
+- **Notes:** Safe CPU SVD uses native f\_svd returning V, not Vh: generated f\_linalg\_svd requires a string driver and cannot express driver=None for CPU. This is partial numerical equivalence, not identical Python signature. Batched/complex solver helpers, GPU drivers, every decomposition/matrix function and derivatives at singularities/repeated eigenvalues are not claimed. Residuals can be empty according to native lstsq conditions.
+
 ### `nn.activations`
 
-- **PyTorch:** `torch.nn.Sigmoid`, `torch.nn.Tanh`, `torch.nn.SiLU`, `torch.nn.Softmax`, `torch.nn.LogSoftmax`, `torch.nn.LeakyReLU`, `torch.nn.ELU`
+- **PyTorch:** `torch.nn.Sigmoid`, `torch.nn.Tanh`, `torch.nn.SiLU`, `torch.nn.Softmax`, `torch.nn.LogSoftmax`, `torch.nn.LeakyReLU`, `torch.nn.ELU`, `torch.nn.modules.activation.ELU`, `torch.nn.modules.activation.LeakyReLU`, `torch.nn.modules.activation.LogSoftmax`, `torch.nn.modules.activation.SiLU`, `torch.nn.modules.activation.Sigmoid`, `torch.nn.modules.activation.Softmax`, `torch.nn.modules.activation.Tanh`
 - **RustTorch:** `rusttorch::nn::Sigmoid`, `rusttorch::nn::Tanh`, `rusttorch::nn::SiLU`, `rusttorch::nn::Softmax`, `rusttorch::nn::LogSoftmax`, `rusttorch::nn::LeakyReLU`, `rusttorch::nn::ELU`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 14 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Out-of-place sigmoid, tanh, SiLU, dimension-selected softmax/log-softmax, finite-slope leaky ReLU and finite-alpha ELU modules. CPU Float/Double examples and Double numerical fixtures cover outputs, gradients, zero-boundary derivatives and large finite inputs; ELU avoids overflow in its unused exponential branch.
 - **Pinned source:** [`torch/nn/modules/activation.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/activation.py)
 - **Evidence:** [`tests/nn_spatial.rs::activations_handle_zero_gradients_large_values_and_invalid_options`](../tests/nn_spatial.rs), [`tests/nn_spatial.rs::spatial_layers_match_pinned_python_outputs_gradients_and_buffers`](../tests/nn_spatial.rs)
@@ -380,9 +516,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `nn.attention`
 
-- **PyTorch:** `torch.nn.MultiheadAttention`, `torch.nn.functional.scaled_dot_product_attention`
+- **PyTorch:** `torch.nn.MultiheadAttention`, `torch.nn.functional.scaled_dot_product_attention`, `torch.nn.modules.activation.MultiheadAttention`
 - **RustTorch:** `rusttorch::nn::AttentionMask`, `rusttorch::nn::MultiheadAttentionConfig`, `rusttorch::nn::MultiheadAttention`, `rusttorch::nn::MultiheadAttention::forward_t`, `rusttorch::nn::MultiheadAttention::forward_per_head_t`, `rusttorch::nn::MultiheadAttention::forward_without_weights_t`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 3 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Dense equal-width self/cross multihead attention with batched sequence-first, batch-first and unbatched layouts; optional projection bias; training dropout; boolean/additive attention and padding masks; explicit causal restrictions; head-averaged or per-head weights; and a no-weights path. CPU fixtures cover initialized parameters, outputs and input/parameter gradients.
 - **Pinned source:** [`torch/nn/modules/activation.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/activation.py)
 - **Evidence:** [`tests/nn_sequence.rs::attention_masks_block_future_and_padding_tokens_with_gradients`](../tests/nn_sequence.rs), [`tests/nn_sequence.rs::attention_scales_queries_before_half_precision_dot_products`](../tests/nn_sequence.rs), [`tests/nn_sequence.rs::attention_validation_and_dropout_cover_cross_attention_and_unbatched_inputs`](../tests/nn_sequence.rs), [`tests/nn_sequence.rs::sequence_python_parity`](../tests/nn_sequence.rs)
@@ -390,9 +527,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `nn.convolution`
 
-- **PyTorch:** `torch.nn.Conv1d`, `torch.nn.Conv2d`, `torch.nn.Conv3d`, `torch.nn.functional.conv1d`, `torch.nn.functional.conv2d`, `torch.nn.functional.conv3d`
+- **PyTorch:** `torch.nn.Conv1d`, `torch.nn.Conv2d`, `torch.nn.Conv3d`, `torch.nn.functional.conv1d`, `torch.nn.functional.conv2d`, `torch.nn.functional.conv3d`, `torch.nn.modules.conv.Conv1d`, `torch.nn.modules.conv.Conv2d`, `torch.nn.modules.conv.Conv3d`
 - **RustTorch:** `rusttorch::nn::ConvConfig`, `rusttorch::nn::Conv1d`, `rusttorch::nn::Conv2d`, `rusttorch::nn::Conv3d`, `rusttorch::nn::functional::conv1d`, `rusttorch::nn::functional::conv2d`, `rusttorch::nn::functional::conv3d`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 9 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Fallible one-, two-, and three-dimensional convolution with batched or unbatched inputs, per-axis kernel/stride/zero-padding/dilation, channel groups, optional bias, fan-in uniform initialization, stable parameter names, and Sequential composition.
 - **Pinned source:** [`torch/nn/modules/conv.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/conv.py)
 - **Evidence:** [`tests/nn_layers.rs::grouped_convolution_respects_stride_padding_dilation_and_gradients`](../tests/nn_layers.rs), [`tests/nn_layers.rs::image_and_volume_convolutions_accept_unbatched_inputs`](../tests/nn_layers.rs), [`tests/nn_layers.rs::convolution_initialization_uses_fan_in_and_rejects_invalid_configuration`](../tests/nn_layers.rs), [`tests/nn_layers.rs::sequential_builds_image_and_token_models_with_registered_parameters`](../tests/nn_layers.rs), [`tests/python_parity.rs::bidirectional_python_parity`](../tests/python_parity.rs), [`tests/nn_layers.rs::invalid_parameter_dtype_returns_errors_without_poisoning_the_store`](../tests/nn_layers.rs), [`tests/nn_layers.rs::undefined_tensors_are_rejected_without_metadata_panics`](../tests/nn_layers.rs)
@@ -400,9 +538,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `nn.convolution.transposed`
 
-- **PyTorch:** `torch.nn.ConvTranspose1d`, `torch.nn.ConvTranspose2d`, `torch.nn.ConvTranspose3d`
+- **PyTorch:** `torch.nn.ConvTranspose1d`, `torch.nn.ConvTranspose2d`, `torch.nn.ConvTranspose3d`, `torch.nn.modules.conv.ConvTranspose1d`, `torch.nn.modules.conv.ConvTranspose2d`, `torch.nn.modules.conv.ConvTranspose3d`
 - **RustTorch:** `rusttorch::nn::ConvTransposeConfig`, `rusttorch::nn::ConvTranspose`, `rusttorch::nn::ConvTranspose1d`, `rusttorch::nn::ConvTranspose2d`, `rusttorch::nn::ConvTranspose3d`, `rusttorch::nn::ConvTranspose::forward_with_output_size`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 6 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Fallible one-, two-, and three-dimensional transposed convolutions with optional batch, groups, per-axis stride/padding/output padding/dilation, optional bias, weight-before-bias fan-in uniform initialization, and requested spatial/full output-size resolution. CPU fixtures compare initialization, grouped numerical outputs and input/parameter gradients.
 - **Pinned source:** [`torch/nn/modules/conv.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/conv.py)
 - **Evidence:** [`tests/nn_spatial.rs::transposed_convolution_initialization_output_size_and_validation`](../tests/nn_spatial.rs), [`tests/nn_spatial.rs::spatial_layers_match_pinned_python_outputs_gradients_and_buffers`](../tests/nn_spatial.rs)
@@ -413,6 +552,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.nn.functional.cross_entropy`
 - **RustTorch:** `rusttorch::nn::functional::cross_entropy`, `rusttorch::nn::functional::CrossEntropyOptions`, `rusttorch::nn::functional::cross_entropy_with_options`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 1 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Class-index and probability-target cross entropy from raw logits, optional class weights, ignored class labels, label smoothing in \[0, 1\], and None/Mean/Sum reductions. CPU fixtures cover weighted/smoothed class indices, probability targets, loss values and input gradients.
 - **Pinned source:** [`torch/nn/functional.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/functional.py)
 - **Evidence:** [`tests/eager.rs::mse_and_cross_entropy_have_deterministic_values`](../tests/eager.rs), [`tests/training_losses.rs::binary_and_weighted_classification_losses_backpropagate`](../tests/training_losses.rs), [`tests/training_losses.rs::loss_validation_rejects_invalid_settings_and_undefined_tensors`](../tests/training_losses.rs), [`tests/training_losses.rs::configured_losses_match_python_values_and_gradients`](../tests/training_losses.rs)
@@ -420,9 +560,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `nn.dropout`
 
-- **PyTorch:** `torch.nn.Dropout`, `torch.nn.functional.dropout`
+- **PyTorch:** `torch.nn.Dropout`, `torch.nn.functional.dropout`, `torch.nn.modules.dropout.Dropout`
 - **RustTorch:** `rusttorch::nn::Dropout`, `rusttorch::nn::functional::dropout`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 3 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Validated probabilities, explicit functional mode, module train/eval behavior, boundary probabilities, and evaluation gradients.
 - **Pinned source:** [`torch/nn/modules/dropout.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/dropout.py)
 - **Evidence:** [`tests/eager.rs::dropout_boundary_probabilities_and_eval_gradients_are_correct`](../tests/eager.rs)
@@ -430,9 +571,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `nn.embedding`
 
-- **PyTorch:** `torch.nn.Embedding`, `torch.nn.functional.embedding`
+- **PyTorch:** `torch.nn.Embedding`, `torch.nn.functional.embedding`, `torch.nn.modules.sparse.Embedding`
 - **RustTorch:** `rusttorch::nn::Embedding`, `rusttorch::nn::EmbeddingConfig`, `rusttorch::nn::functional::embedding`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 3 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Trainable embedding lookup with normal initialization, checked integer indices, optional normalized negative padding index with a zero-initialized padding row, padding gradient exclusion, frequency-scaled dense gradients or sparse gradients, stable parameters, and Sequential composition.
 - **Pinned source:** [`torch/nn/modules/sparse.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/sparse.py)
 - **Evidence:** [`tests/nn_layers.rs::embedding_padding_frequency_scaling_sparse_gradients_and_indices_are_checked`](../tests/nn_layers.rs), [`tests/nn_layers.rs::sequential_builds_image_and_token_models_with_registered_parameters`](../tests/nn_layers.rs), [`tests/python_parity.rs::bidirectional_python_parity`](../tests/python_parity.rs), [`tests/nn_layers.rs::invalid_parameter_dtype_returns_errors_without_poisoning_the_store`](../tests/nn_layers.rs), [`tests/nn_layers.rs::undefined_tensors_are_rejected_without_metadata_panics`](../tests/nn_layers.rs)
@@ -440,9 +582,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `nn.gelu`
 
-- **PyTorch:** `torch.nn.GELU`, `torch.nn.functional.gelu`
+- **PyTorch:** `torch.nn.GELU`, `torch.nn.functional.gelu`, `torch.nn.modules.activation.GELU`
 - **RustTorch:** `rusttorch::nn::Gelu`, `rusttorch::nn::GeluApproximation`, `rusttorch::nn::functional::gelu`, `rusttorch::nn::functional::gelu_with_approximation`
 - **Implementation:** Delegated to LibTorch
+- **Pinned inventory:** 3 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Exact GELU forward values for the tested default approximation.
 - **Pinned source:** [`torch/nn/modules/activation.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/activation.py)
 - **Evidence:** [`tests/eager.rs::identity_relu_gelu_and_flatten_match_expected_behavior`](../tests/eager.rs)
@@ -453,6 +596,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.nn.functional.binary_cross_entropy`, `torch.nn.functional.binary_cross_entropy_with_logits`
 - **RustTorch:** `rusttorch::nn::functional::binary_cross_entropy`, `rusttorch::nn::functional::binary_cross_entropy_with_logits`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Binary cross entropy from probabilities or directly from logits with matching input/target shapes, optional native-broadcast loss weights, positive-class weights for logits, and None/Mean/Sum reductions. CPU weighted loss and gradient fixtures cover both operations.
 - **Pinned source:** [`torch/nn/functional.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/functional.py)
 - **Evidence:** [`tests/training_losses.rs::binary_and_weighted_classification_losses_backpropagate`](../tests/training_losses.rs), [`tests/training_losses.rs::loss_validation_rejects_invalid_settings_and_undefined_tensors`](../tests/training_losses.rs), [`tests/training_losses.rs::configured_losses_match_python_values_and_gradients`](../tests/training_losses.rs)
@@ -463,6 +607,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.nn.functional.nll_loss`
 - **RustTorch:** `rusttorch::nn::functional::nll_loss`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 1 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Negative log likelihood from log-probabilities and integer targets with optional class weights, an ignore index and None/Mean/Sum reductions. The native rank-general operation is exposed; CPU batched weighted/ignored-label values and input gradients are verified.
 - **Pinned source:** [`torch/nn/functional.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/functional.py)
 - **Evidence:** [`tests/training_losses.rs::binary_and_weighted_classification_losses_backpropagate`](../tests/training_losses.rs), [`tests/training_losses.rs::loss_validation_rejects_invalid_settings_and_undefined_tensors`](../tests/training_losses.rs), [`tests/training_losses.rs::configured_losses_match_python_values_and_gradients`](../tests/training_losses.rs)
@@ -473,6 +618,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.nn.functional.l1_loss`, `torch.nn.functional.smooth_l1_loss`, `torch.nn.functional.huber_loss`
 - **RustTorch:** `rusttorch::nn::functional::l1_loss`, `rusttorch::nn::functional::smooth_l1_loss`, `rusttorch::nn::functional::huber_loss`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 3 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Absolute, smooth-L1 and Huber regression objectives with None/Mean/Sum reductions, native broadcasting, finite nonnegative beta for smooth L1 and finite positive delta for Huber. CPU tests cover transition behavior, beta zero, loss values and input gradients.
 - **Pinned source:** [`torch/nn/functional.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/functional.py)
 - **Evidence:** [`tests/training_losses.rs::regression_losses_cover_reductions_transitions_and_gradients`](../tests/training_losses.rs), [`tests/training_losses.rs::loss_validation_rejects_invalid_settings_and_undefined_tensors`](../tests/training_losses.rs), [`tests/training_losses.rs::configured_losses_match_python_values_and_gradients`](../tests/training_losses.rs)
@@ -480,9 +626,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `nn.module`
 
-- **PyTorch:** `torch.nn.Module`
+- **PyTorch:** `torch.nn.Module`, `torch.nn.modules.module.Module`
 - **RustTorch:** `rusttorch::nn::Module`, `rusttorch::nn::VarStore`, `rusttorch::nn::ParameterPath`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Send-safe fallible forward/forward\_t dispatch, train/eval state on Sequential and GraphModule, parameter store/path reexports, custom model composition, and registered non-trainable normalization buffers that survive model checkpoints.
 - **Pinned source:** [`torch/nn/modules/module.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/module.py)
 - **Evidence:** [`tests/eager.rs::sequential_uses_numeric_parameter_names_and_tracks_mode`](../tests/eager.rs), [`tests/graph.rs::dropout_follows_train_and_eval_mode_without_rng_assumptions`](../tests/graph.rs), [`tests/nn_layers.rs::grouped_convolution_respects_stride_padding_dilation_and_gradients`](../tests/nn_layers.rs), [`tests/nn_spatial.rs::sequential_spatial_factory_trains_and_restores_registered_buffers`](../tests/nn_spatial.rs), [`tests/nn_spatial.rs::normalization_untracked_modes_unbatched_inputs_and_state_roundtrip`](../tests/nn_spatial.rs)
@@ -493,6 +640,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.nn.functional.mse_loss`
 - **RustTorch:** `rusttorch::nn::functional::mse_loss`, `rusttorch::nn::functional::mse_loss_with_reduction`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 1 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Mean-default MSE plus explicit None/Mean/Sum reductions, native broadcast-compatible tensor arithmetic, fallible target/device validation, and CPU loss/gradient fixtures.
 - **Pinned source:** [`torch/nn/functional.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/functional.py)
 - **Evidence:** [`tests/eager.rs::mse_and_cross_entropy_have_deterministic_values`](../tests/eager.rs), [`tests/training_losses.rs::regression_losses_cover_reductions_transitions_and_gradients`](../tests/training_losses.rs), [`tests/training_losses.rs::loss_validation_rejects_invalid_settings_and_undefined_tensors`](../tests/training_losses.rs), [`tests/training_losses.rs::configured_losses_match_python_values_and_gradients`](../tests/training_losses.rs)
@@ -500,9 +648,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `nn.normalization`
 
-- **PyTorch:** `torch.nn.BatchNorm1d`, `torch.nn.BatchNorm2d`, `torch.nn.BatchNorm3d`, `torch.nn.GroupNorm`, `torch.nn.InstanceNorm1d`, `torch.nn.InstanceNorm2d`, `torch.nn.InstanceNorm3d`
+- **PyTorch:** `torch.nn.BatchNorm1d`, `torch.nn.BatchNorm2d`, `torch.nn.BatchNorm3d`, `torch.nn.GroupNorm`, `torch.nn.InstanceNorm1d`, `torch.nn.InstanceNorm2d`, `torch.nn.InstanceNorm3d`, `torch.nn.modules.batchnorm.BatchNorm1d`, `torch.nn.modules.batchnorm.BatchNorm2d`, `torch.nn.modules.batchnorm.BatchNorm3d`, `torch.nn.modules.instancenorm.InstanceNorm1d`, `torch.nn.modules.instancenorm.InstanceNorm2d`, `torch.nn.modules.instancenorm.InstanceNorm3d`, `torch.nn.modules.normalization.GroupNorm`
 - **RustTorch:** `rusttorch::nn::BatchNormConfig`, `rusttorch::nn::BatchNorm`, `rusttorch::nn::BatchNorm1d`, `rusttorch::nn::BatchNorm2d`, `rusttorch::nn::BatchNorm3d`, `rusttorch::nn::InstanceNormConfig`, `rusttorch::nn::InstanceNorm`, `rusttorch::nn::InstanceNorm1d`, `rusttorch::nn::InstanceNorm2d`, `rusttorch::nn::InstanceNorm3d`, `rusttorch::nn::GroupNormConfig`, `rusttorch::nn::GroupNorm`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 14 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** BatchNorm1d/2d/3d, InstanceNorm1d/2d/3d and GroupNorm with optional learned scale/bias, checked epsilon/channels, explicit train/eval behavior, and stable state names. Batch/instance tracking registers running\_mean, running\_var and Int64 num\_batches\_tracked buffers; BatchNorm supports exponential or cumulative updates and unbiased running variance. CPU tests cover unbatched instance input, untracked evaluation, reset, gradients, composition and checkpoint restoration.
 - **Pinned source:** [`torch/nn/modules/batchnorm.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/batchnorm.py)
 - **Evidence:** [`tests/nn_spatial.rs::batch_norm_tracks_unbiased_variance_cumulative_average_and_eval`](../tests/nn_spatial.rs), [`tests/nn_spatial.rs::normalization_untracked_modes_unbatched_inputs_and_state_roundtrip`](../tests/nn_spatial.rs), [`tests/nn_spatial.rs::normalization_validates_channels_dimensions_and_options`](../tests/nn_spatial.rs), [`tests/nn_spatial.rs::sequential_spatial_factory_trains_and_restores_registered_buffers`](../tests/nn_spatial.rs), [`tests/nn_spatial.rs::spatial_layers_match_pinned_python_outputs_gradients_and_buffers`](../tests/nn_spatial.rs)
@@ -510,9 +659,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `nn.normalization.layer_norm`
 
-- **PyTorch:** `torch.nn.LayerNorm`, `torch.nn.functional.layer_norm`
+- **PyTorch:** `torch.nn.LayerNorm`, `torch.nn.functional.layer_norm`, `torch.nn.modules.normalization.LayerNorm`
 - **RustTorch:** `rusttorch::nn::LayerNorm`, `rusttorch::nn::LayerNormConfig`, `rusttorch::nn::functional::layer_norm`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 3 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Normalization over configured trailing dimensions with validated epsilon, optional learnable affine scale and bias, ones/zeros initialization, registered state, gradients, and Sequential composition.
 - **Pinned source:** [`torch/nn/modules/normalization.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/normalization.py)
 - **Evidence:** [`tests/nn_layers.rs::layer_norm_normalizes_trailing_features_and_optional_affine_parameters`](../tests/nn_layers.rs), [`tests/nn_layers.rs::sequential_builds_image_and_token_models_with_registered_parameters`](../tests/nn_layers.rs), [`tests/python_parity.rs::bidirectional_python_parity`](../tests/python_parity.rs), [`tests/nn_layers.rs::invalid_parameter_dtype_returns_errors_without_poisoning_the_store`](../tests/nn_layers.rs), [`tests/nn_layers.rs::undefined_tensors_are_rejected_without_metadata_panics`](../tests/nn_layers.rs)
@@ -520,9 +670,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `nn.pooling`
 
-- **PyTorch:** `torch.nn.MaxPool1d`, `torch.nn.MaxPool2d`, `torch.nn.MaxPool3d`, `torch.nn.AvgPool1d`, `torch.nn.AvgPool2d`, `torch.nn.AvgPool3d`, `torch.nn.AdaptiveMaxPool1d`, `torch.nn.AdaptiveMaxPool2d`, `torch.nn.AdaptiveMaxPool3d`, `torch.nn.AdaptiveAvgPool1d`, `torch.nn.AdaptiveAvgPool2d`, `torch.nn.AdaptiveAvgPool3d`
+- **PyTorch:** `torch.nn.MaxPool1d`, `torch.nn.MaxPool2d`, `torch.nn.MaxPool3d`, `torch.nn.AvgPool1d`, `torch.nn.AvgPool2d`, `torch.nn.AvgPool3d`, `torch.nn.AdaptiveMaxPool1d`, `torch.nn.AdaptiveMaxPool2d`, `torch.nn.AdaptiveMaxPool3d`, `torch.nn.AdaptiveAvgPool1d`, `torch.nn.AdaptiveAvgPool2d`, `torch.nn.AdaptiveAvgPool3d`, `torch.nn.modules.pooling.AdaptiveAvgPool1d`, `torch.nn.modules.pooling.AdaptiveAvgPool2d`, `torch.nn.modules.pooling.AdaptiveAvgPool3d`, `torch.nn.modules.pooling.AdaptiveMaxPool1d`, `torch.nn.modules.pooling.AdaptiveMaxPool2d`, `torch.nn.modules.pooling.AdaptiveMaxPool3d`, `torch.nn.modules.pooling.AvgPool1d`, `torch.nn.modules.pooling.AvgPool2d`, `torch.nn.modules.pooling.AvgPool3d`, `torch.nn.modules.pooling.MaxPool1d`, `torch.nn.modules.pooling.MaxPool2d`, `torch.nn.modules.pooling.MaxPool3d`
 - **RustTorch:** `rusttorch::nn::MaxPool`, `rusttorch::nn::MaxPool1d`, `rusttorch::nn::MaxPool2d`, `rusttorch::nn::MaxPool3d`, `rusttorch::nn::AvgPool`, `rusttorch::nn::AvgPool1d`, `rusttorch::nn::AvgPool2d`, `rusttorch::nn::AvgPool3d`, `rusttorch::nn::AdaptiveMaxPool`, `rusttorch::nn::AdaptiveMaxPool1d`, `rusttorch::nn::AdaptiveMaxPool2d`, `rusttorch::nn::AdaptiveMaxPool3d`, `rusttorch::nn::AdaptiveAvgPool`, `rusttorch::nn::AdaptiveAvgPool1d`, `rusttorch::nn::AdaptiveAvgPool2d`, `rusttorch::nn::AdaptiveAvgPool3d`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 24 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Max, average, adaptive-max and adaptive-average pooling in one, two and three dimensions with optional batch. Window pools expose strides, validated padding and ceil mode; max pooling adds dilation and source indices, while average pooling supports count\_include\_pad and 2-D/3-D divisor overrides. Adaptive outputs use positive per-axis sizes, with indices for adaptive maxima. CPU numerical fixtures cover outputs, gradients and indices.
 - **Pinned source:** [`torch/nn/modules/pooling.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/pooling.py)
 - **Evidence:** [`tests/nn_spatial.rs::pooling_known_values_indices_unbatched_gradients_and_validation`](../tests/nn_spatial.rs), [`tests/nn_spatial.rs::sequential_spatial_factory_trains_and_restores_registered_buffers`](../tests/nn_spatial.rs), [`tests/nn_spatial.rs::spatial_layers_match_pinned_python_outputs_gradients_and_buffers`](../tests/nn_spatial.rs)
@@ -530,9 +681,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `nn.recurrent`
 
-- **PyTorch:** `torch.nn.RNN`, `torch.nn.LSTM`, `torch.nn.GRU`
+- **PyTorch:** `torch.nn.RNN`, `torch.nn.LSTM`, `torch.nn.GRU`, `torch.nn.modules.rnn.GRU`, `torch.nn.modules.rnn.LSTM`, `torch.nn.modules.rnn.RNN`
 - **RustTorch:** `rusttorch::nn::RnnActivation`, `rusttorch::nn::RnnConfig`, `rusttorch::nn::Rnn`, `rusttorch::nn::Lstm`, `rusttorch::nn::Gru`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 6 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Dense tanh/ReLU RNN, LSTM and GRU with optional explicit initial states, returned final states, unbatched/sequence-first/batch-first layouts, multiple layers, bidirectionality, optional biases, inter-layer training dropout, and LSTM hidden projections. CPU fixtures cover stable parameter names, seeded initialization, outputs, state/input/parameter gradients and carried-state sequence execution.
 - **Pinned source:** [`torch/nn/modules/rnn.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/rnn.py)
 - **Evidence:** [`tests/nn_sequence.rs::sequence_parameters_restore_exact_recurrent_states_and_masked_transformer_outputs`](../tests/nn_sequence.rs), [`tests/nn_sequence.rs::recurrent_models_preserve_states_layouts_and_parameter_names`](../tests/nn_sequence.rs), [`tests/nn_sequence.rs::recurrent_streaming_matches_complete_sequences_and_dropout_obeys_mode`](../tests/nn_sequence.rs), [`tests/nn_sequence.rs::recurrent_validation_rejects_undefined_shapes_dtypes_and_bad_configuration`](../tests/nn_sequence.rs), [`tests/nn_sequence.rs::sequence_python_parity`](../tests/nn_sequence.rs)
@@ -540,9 +692,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `nn.sequential`
 
-- **PyTorch:** `torch.nn.Sequential`
+- **PyTorch:** `torch.nn.Sequential`, `torch.nn.modules.container.Sequential`
 - **RustTorch:** `rusttorch::nn::Sequential`, `rusttorch::nn::SequentialBuilder`, `rusttorch::nn::SequentialBuilder::layer`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Ordered model construction with built-in specs or fallible custom layer factories receiving a numbered ParameterPath, numeric parameter/buffer names, eager forward, training-mode propagation, device movement and SafeTensors methods.
 - **Pinned source:** [`torch/nn/modules/container.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/container.py)
 - **Evidence:** [`tests/eager.rs::sequential_uses_numeric_parameter_names_and_tracks_mode`](../tests/eager.rs), [`tests/backend_parity.rs::accelerator_safetensors_and_cpu_movement_preserve_model_state`](../tests/backend_parity.rs), [`tests/nn_spatial.rs::sequential_spatial_factory_trains_and_restores_registered_buffers`](../tests/nn_spatial.rs)
@@ -550,9 +703,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `nn.transformer`
 
-- **PyTorch:** `torch.nn.Transformer`, `torch.nn.TransformerEncoder`, `torch.nn.TransformerDecoder`, `torch.nn.TransformerEncoderLayer`, `torch.nn.TransformerDecoderLayer`
+- **PyTorch:** `torch.nn.Transformer`, `torch.nn.TransformerEncoder`, `torch.nn.TransformerDecoder`, `torch.nn.TransformerEncoderLayer`, `torch.nn.TransformerDecoderLayer`, `torch.nn.modules.transformer.Transformer`, `torch.nn.modules.transformer.TransformerDecoder`, `torch.nn.modules.transformer.TransformerDecoderLayer`, `torch.nn.modules.transformer.TransformerEncoder`, `torch.nn.modules.transformer.TransformerEncoderLayer`
 - **RustTorch:** `rusttorch::nn::TransformerActivation`, `rusttorch::nn::TransformerConfig`, `rusttorch::nn::TransformerMasks`, `rusttorch::nn::Transformer`, `rusttorch::nn::TransformerEncoder`, `rusttorch::nn::TransformerDecoder`, `rusttorch::nn::TransformerEncoderLayer`, `rusttorch::nn::TransformerDecoderLayer`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 10 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Dense encoder/decoder layers, cloned-parameter-value stacks with independent parameter storage, and complete encoder-decoder models. Exposed options include model/head/feed-forward widths, depths, dropout, ReLU/exact GELU, bias, epsilon, batch-first layouts, pre/post normalization, stack final normalization and explicit source/target/memory masks. CPU fixtures compare loaded-state outputs, input/parameter gradients and mode behavior; standalone layer/stack initialization is separately exercised.
 - **Pinned source:** [`torch/nn/modules/transformer.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/transformer.py)
 - **Evidence:** [`tests/nn_sequence.rs::sequence_parameters_restore_exact_recurrent_states_and_masked_transformer_outputs`](../tests/nn_sequence.rs), [`tests/nn_sequence.rs::transformer_stacks_clone_values_without_sharing_parameters_and_train_end_to_end`](../tests/nn_sequence.rs), [`tests/nn_sequence.rs::transformer_modes_masked_rows_and_invalid_inputs_are_fallible`](../tests/nn_sequence.rs), [`tests/nn_sequence.rs::sequence_python_parity`](../tests/nn_sequence.rs)
@@ -560,9 +714,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `nn.utils.clip_grad`
 
-- **PyTorch:** `torch.nn.utils.clip_grad_norm_`, `torch.nn.utils.clip_grad_value_`
+- **PyTorch:** `torch.nn.utils.clip_grad_norm_`, `torch.nn.utils.clip_grad_value_`, `torch.nn.utils.clip_grad.clip_grad_norm_`, `torch.nn.utils.clip_grad.clip_grad_value_`
 - **RustTorch:** `rusttorch::optim::Optimizer::clip_grad_norm`, `rusttorch::optim::Optimizer::clip_grad_value`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 4 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Validated finite nonnegative gradient limits, combined L2 norm clipping and element-wise value clipping for defined dense gradients, no-op with no gradients, and fallible native operations.
 - **Pinned source:** [`torch/nn/utils/clip_grad.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/utils/clip_grad.py)
 - **Evidence:** [`tests/optimizers.rs::gradient_clipping_controls_the_update`](../tests/optimizers.rs), [`tests/optimizers.rs::optimizer_configuration_rejects_nonfinite_and_negative_values`](../tests/optimizers.rs)
@@ -570,9 +725,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `optim.adadelta`
 
-- **PyTorch:** `torch.optim.Adadelta`
+- **PyTorch:** `torch.optim.Adadelta`, `torch.optim.adadelta.Adadelta`
 - **RustTorch:** `rusttorch::optim::Adadelta`, `rusttorch::optim::Optimizer`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Dense Adadelta with rho, epsilon, coupled weight decay and running squared-gradient/update averages, per-parameter update counters, undefined-gradient skipping, per-group learning rates/decay and checkpointable named moments. CPU Double fixtures compare parameter trajectories and moment tensors over eight steps with group-rate changes and omitted gradients.
 - **Pinned source:** [`torch/optim/adadelta.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/optim/adadelta.py)
 - **Evidence:** [`tests/optim_state.rs::all_optimizer_moments_and_group_settings_resume_exactly_at_every_step`](../tests/optim_state.rs), [`tests/optim_state.rs::optimizer_checkpoint_validation_rejects_corruption_before_any_mutation`](../tests/optim_state.rs), [`tests/optim_state.rs::pinned_python_optimizer_and_scheduler_parity`](../tests/optim_state.rs)
@@ -580,9 +736,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `optim.adagrad`
 
-- **PyTorch:** `torch.optim.Adagrad`
+- **PyTorch:** `torch.optim.Adagrad`, `torch.optim.adagrad.Adagrad`
 - **RustTorch:** `rusttorch::optim::Adagrad`, `rusttorch::optim::Optimizer`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Dense Adagrad with epsilon, coupled weight decay, learning-rate decay and initial accumulated squared gradients, per-parameter update counters, undefined-gradient skipping, per-group learning rates/decay and checkpointable named moments. CPU Double fixtures compare parameter trajectories and moment tensors over eight steps with group-rate changes and omitted gradients.
 - **Pinned source:** [`torch/optim/adagrad.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/optim/adagrad.py)
 - **Evidence:** [`tests/optim_state.rs::all_optimizer_moments_and_group_settings_resume_exactly_at_every_step`](../tests/optim_state.rs), [`tests/optim_state.rs::optimizer_checkpoint_validation_rejects_corruption_before_any_mutation`](../tests/optim_state.rs), [`tests/optim_state.rs::pinned_python_optimizer_and_scheduler_parity`](../tests/optim_state.rs)
@@ -590,9 +747,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `optim.adam`
 
-- **PyTorch:** `torch.optim.Adam`
+- **PyTorch:** `torch.optim.Adam`, `torch.optim.adam.Adam`
 - **RustTorch:** `rusttorch::optim::Adam`, `rusttorch::optim::Optimizer`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Dense Adam with beta1/beta2 moments, epsilon, coupled weight decay and optional AMSGrad. RustTorch stages validated updates using fallible tensor operations, tracks per-parameter steps/moments, skips undefined gradients before decay, supports named learning-rate/decay groups and saves resumable state. CPU parity covers eight updates, changing group rates and omitted gradients.
 - **Pinned source:** [`torch/optim/adam.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/optim/adam.py)
 - **Evidence:** [`tests/eager.rs::sgd_and_adam_each_update_a_parameter_once`](../tests/eager.rs), [`tests/eager.rs::invalid_layer_dropout_and_optimizer_configs_are_rejected`](../tests/eager.rs), [`tests/python_parity.rs::bidirectional_python_parity`](../tests/python_parity.rs), [`tests/optim_state.rs::all_optimizer_moments_and_group_settings_resume_exactly_at_every_step`](../tests/optim_state.rs), [`tests/optim_state.rs::dynamic_registration_and_undefined_gradients_preserve_group_and_skip_semantics`](../tests/optim_state.rs), [`tests/optim_state.rs::gradient_validation_and_sparse_rejection_happen_before_any_update`](../tests/optim_state.rs), [`tests/optim_state.rs::pinned_python_optimizer_and_scheduler_parity`](../tests/optim_state.rs)
@@ -600,9 +758,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `optim.adamax`
 
-- **PyTorch:** `torch.optim.Adamax`
+- **PyTorch:** `torch.optim.Adamax`, `torch.optim.adamax.Adamax`
 - **RustTorch:** `rusttorch::optim::Adamax`, `rusttorch::optim::Optimizer`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Dense Adamax with beta moments, epsilon, coupled weight decay and infinity-norm moment updates, per-parameter update counters, undefined-gradient skipping, per-group learning rates/decay and checkpointable named moments. CPU Double fixtures compare parameter trajectories and moment tensors over eight steps with group-rate changes and omitted gradients.
 - **Pinned source:** [`torch/optim/adamax.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/optim/adamax.py)
 - **Evidence:** [`tests/optim_state.rs::all_optimizer_moments_and_group_settings_resume_exactly_at_every_step`](../tests/optim_state.rs), [`tests/optim_state.rs::optimizer_checkpoint_validation_rejects_corruption_before_any_mutation`](../tests/optim_state.rs), [`tests/optim_state.rs::pinned_python_optimizer_and_scheduler_parity`](../tests/optim_state.rs)
@@ -610,9 +769,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `optim.adamw`
 
-- **PyTorch:** `torch.optim.AdamW`
+- **PyTorch:** `torch.optim.AdamW`, `torch.optim.adamw.AdamW`
 - **RustTorch:** `rusttorch::optim::AdamW`, `rusttorch::optim::Optimizer`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Dense AdamW with beta1/beta2 moments, epsilon, decoupled weight decay (default 0.01) and optional AMSGrad. RustTorch stages validated updates using fallible tensor operations, tracks per-parameter steps/moments, skips undefined gradients before decay, supports named learning-rate/decay groups and saves resumable state. CPU parity covers eight updates, changing group rates and omitted gradients.
 - **Pinned source:** [`torch/optim/adamw.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/optim/adamw.py)
 - **Evidence:** [`tests/optimizers.rs::adamw_applies_decoupled_decay_and_tracks_moments`](../tests/optimizers.rs), [`tests/optimizers.rs::optimizer_configuration_rejects_nonfinite_and_negative_values`](../tests/optimizers.rs), [`tests/python_parity.rs::bidirectional_python_parity`](../tests/python_parity.rs), [`tests/optim_state.rs::all_optimizer_moments_and_group_settings_resume_exactly_at_every_step`](../tests/optim_state.rs), [`tests/optim_state.rs::dynamic_registration_and_undefined_gradients_preserve_group_and_skip_semantics`](../tests/optim_state.rs), [`tests/optim_state.rs::gradient_validation_and_sparse_rejection_happen_before_any_update`](../tests/optim_state.rs), [`tests/optim_state.rs::pinned_python_optimizer_and_scheduler_parity`](../tests/optim_state.rs)
@@ -623,6 +783,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.optim.Optimizer.param_groups`
 - **RustTorch:** `rusttorch::optim::ParameterGroup`, `rusttorch::optim::Optimizer::parameter_groups`, `rusttorch::optim::Optimizer::set_learning_rate`, `rusttorch::optim::Optimizer::set_group_learning_rate`, `rusttorch::optim::Optimizer::set_group_weight_decay`, `rusttorch::optim::Optimizer::named_parameters`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Named parameter groups from VarStore path group IDs, per-group finite nonnegative learning rates and weight decay, all-group learning-rate replacement, stable parameter snapshots, and discovery of later parameter registrations before steps, gradient reset or checkpoint synchronization. Rates and group membership persist in optimizer state.
 - **Pinned source:** [`torch/optim/optimizer.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/optim/optimizer.py)
 - **Evidence:** [`tests/optim_state.rs::dynamic_registration_and_undefined_gradients_preserve_group_and_skip_semantics`](../tests/optim_state.rs), [`tests/optim_state.rs::all_optimizer_moments_and_group_settings_resume_exactly_at_every_step`](../tests/optim_state.rs), [`tests/optim_state.rs::optimizer_checkpoint_validation_rejects_corruption_before_any_mutation`](../tests/optim_state.rs), [`tests/optim_state.rs::pinned_python_optimizer_and_scheduler_parity`](../tests/optim_state.rs)
@@ -630,9 +791,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `optim.rmsprop`
 
-- **PyTorch:** `torch.optim.RMSprop`
+- **PyTorch:** `torch.optim.RMSprop`, `torch.optim.rmsprop.RMSprop`
 - **RustTorch:** `rusttorch::optim::RmsProp`, `rusttorch::optim::Optimizer`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Dense RMSprop with squared-gradient averages, epsilon, coupled weight decay, optional momentum and centered statistics. RustTorch stages validated updates using fallible tensor operations, tracks per-parameter steps/moments, skips undefined gradients before decay, supports named learning-rate/decay groups and saves resumable state. CPU parity covers eight updates, changing group rates and omitted gradients.
 - **Pinned source:** [`torch/optim/rmsprop.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/optim/rmsprop.py)
 - **Evidence:** [`tests/optimizers.rs::rmsprop_uses_squared_gradient_average`](../tests/optimizers.rs), [`tests/optimizers.rs::optimizer_configuration_rejects_nonfinite_and_negative_values`](../tests/optimizers.rs), [`tests/python_parity.rs::bidirectional_python_parity`](../tests/python_parity.rs), [`tests/optim_state.rs::all_optimizer_moments_and_group_settings_resume_exactly_at_every_step`](../tests/optim_state.rs), [`tests/optim_state.rs::dynamic_registration_and_undefined_gradients_preserve_group_and_skip_semantics`](../tests/optim_state.rs), [`tests/optim_state.rs::gradient_validation_and_sparse_rejection_happen_before_any_update`](../tests/optim_state.rs), [`tests/optim_state.rs::pinned_python_optimizer_and_scheduler_parity`](../tests/optim_state.rs)
@@ -643,6 +805,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.optim.lr_scheduler.StepLR`, `torch.optim.lr_scheduler.ExponentialLR`, `torch.optim.lr_scheduler.MultiStepLR`, `torch.optim.lr_scheduler.CosineAnnealingLR`, `torch.optim.lr_scheduler.ReduceLROnPlateau`
 - **RustTorch:** `rusttorch::optim::StepLr`, `rusttorch::optim::ExponentialLr`, `rusttorch::optim::MultiStepLr`, `rusttorch::optim::CosineAnnealingLr`, `rusttorch::optim::ReduceLrOnPlateau`, `rusttorch::optim::PlateauMode`, `rusttorch::optim::ThresholdMode`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 5 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Five learning-rate schedulers with explicit post-update/epoch step ordering, epoch and last-rate access, per-group rates and serde state. MultiStep handles repeated/zero milestones, cosine follows the recurring curve, and plateau tracks metric direction, relative/absolute thresholds, patience, cooldown, epsilon and group minima. CPU tests verify numerical schedules and exact restore at every tested epoch.
 - **Pinned source:** [`torch/optim/lr_scheduler.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/optim/lr_scheduler.py)
 - **Evidence:** [`tests/optim_state.rs::all_schedulers_resume_exactly_at_every_epoch_including_plateau_cooldown`](../tests/optim_state.rs), [`tests/optim_state.rs::malformed_scheduler_state_and_overflow_cannot_partially_update_groups`](../tests/optim_state.rs), [`tests/optim_state.rs::pinned_python_optimizer_and_scheduler_parity`](../tests/optim_state.rs)
@@ -650,9 +813,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `optim.sgd`
 
-- **PyTorch:** `torch.optim.SGD`
+- **PyTorch:** `torch.optim.SGD`, `torch.optim.sgd.SGD`
 - **RustTorch:** `rusttorch::optim::Sgd`, `rusttorch::optim::Optimizer`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** SGD with optional momentum, dampening, Nesterov updates and coupled weight decay; plain zero-momentum/zero-decay SGD also accepts sparse COO gradients. RustTorch stages validated updates using fallible tensor operations, tracks per-parameter steps/moments, skips undefined gradients before decay, supports named learning-rate/decay groups and saves resumable state. CPU parity covers eight updates, changing group rates and omitted gradients.
 - **Pinned source:** [`torch/optim/sgd.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/optim/sgd.py)
 - **Evidence:** [`tests/eager.rs::sgd_and_adam_each_update_a_parameter_once`](../tests/eager.rs), [`tests/eager.rs::invalid_layer_dropout_and_optimizer_configs_are_rejected`](../tests/eager.rs), [`tests/python_parity.rs::bidirectional_python_parity`](../tests/python_parity.rs), [`tests/optim_state.rs::all_optimizer_moments_and_group_settings_resume_exactly_at_every_step`](../tests/optim_state.rs), [`tests/optim_state.rs::dynamic_registration_and_undefined_gradients_preserve_group_and_skip_semantics`](../tests/optim_state.rs), [`tests/optim_state.rs::gradient_validation_and_sparse_rejection_happen_before_any_update`](../tests/optim_state.rs), [`tests/optim_state.rs::pinned_python_optimizer_and_scheduler_parity`](../tests/optim_state.rs)
@@ -663,6 +827,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.optim.Optimizer.state_dict`, `torch.optim.Optimizer.load_state_dict`, `torch.optim.Optimizer.zero_grad`, `torch.optim.Optimizer.step`
 - **RustTorch:** `rusttorch::optim::OptimizerState`, `rusttorch::optim::Optimizer::state_dict`, `rusttorch::optim::Optimizer::load_state_dict`, `rusttorch::optim::Optimizer::try_zero_grad`, `rusttorch::optim::Optimizer::try_step`, `rusttorch::optim::Optimizer::backward_step`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 4 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Versioned serde checkpoints for all seven exposed optimizer families, with algorithm configuration, default/group rates and decay, exact named little-endian moment bytes, parameter shapes/dtypes/group membership and update counters. Complete validation and tensor staging precede restore; invalid gradient/state shapes, dtypes, groups, slot sets, payload lengths and counters return errors. CPU tests resume every tested step exactly, including untouched parameters.
 - **Pinned source:** [`torch/optim/optimizer.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/optim/optimizer.py)
 - **Evidence:** [`tests/optim_state.rs::all_optimizer_moments_and_group_settings_resume_exactly_at_every_step`](../tests/optim_state.rs), [`tests/optim_state.rs::optimizer_checkpoint_validation_rejects_corruption_before_any_mutation`](../tests/optim_state.rs), [`tests/optim_state.rs::dynamic_registration_and_undefined_gradients_preserve_group_and_skip_semantics`](../tests/optim_state.rs), [`tests/optim_state.rs::gradient_validation_and_sparse_rejection_happen_before_any_update`](../tests/optim_state.rs), [`tests/optim_state.rs::checkpoint_capture_rejects_parameter_dtype_or_shape_drift`](../tests/optim_state.rs), [`tests/optim_state.rs::pinned_python_optimizer_and_scheduler_parity`](../tests/optim_state.rs)
@@ -673,6 +838,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.nn.Module.load_state_dict key adaptation`
 - **RustTorch:** `rusttorch::interop::StateDictMapping`, `rusttorch::interop::load_state_dict_with_mapping`
 - **Implementation:** Implemented by RustTorch
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Explicit exact-key mapping and tested dry-run validation without fuzzy matching or implicit tensor transforms.
 - **Pinned source:** [`torch/nn/modules/module.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/module.py)
 - **Evidence:** [`tests/interop.rs::exact_mapping_loads_the_named_destination`](../tests/interop.rs), [`tests/interop.rs::dry_run_reports_a_load_without_mutating_values`](../tests/interop.rs)
@@ -683,6 +849,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `safetensors.torch.save_file`, `safetensors.torch.load_file`
 - **RustTorch:** `rusttorch::interop::save_state_dict`, `rusttorch::interop::load_state_dict`, `rusttorch::nn::Sequential::save_weights`, `rusttorch::nn::Sequential::load_weights`, `rusttorch::graph::GraphModule::save_weights`, `rusttorch::graph::GraphModule::load_weights`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Tested CPU SafeTensors parameter and registered normalization-buffer round trips, including Int64 batch counters, plus gated Python-to-Rust and Rust-to-Python model exchange with architecture supplied separately.
 - **Pinned source:** [`torch/nn/modules/module.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/module.py)
 - **Evidence:** [`tests/interop.rs::strict_safetensors_round_trip_restores_all_variables`](../tests/interop.rs), [`tests/python_parity.rs::bidirectional_python_parity`](../tests/python_parity.rs), [`tests/nn_spatial.rs::normalization_untracked_modes_unbatched_inputs_and_state_roundtrip`](../tests/nn_spatial.rs), [`tests/nn_spatial.rs::sequential_spatial_factory_trains_and_restores_registered_buffers`](../tests/nn_spatial.rs)
@@ -693,10 +860,33 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.nn.Module.state_dict`, `torch.nn.Module.load_state_dict`
 - **RustTorch:** `rusttorch::interop::save_state_dict`, `rusttorch::interop::load_state_dict`, `rusttorch::interop::LoadOptions`, `rusttorch::interop::LoadReport`
 - **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Strict and non-strict SafeTensors loads with sorted reports and pre-mutation shape validation, including registered normalization running-statistic buffers and integer batch counters.
 - **Pinned source:** [`torch/nn/modules/module.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/module.py)
 - **Evidence:** [`tests/interop.rs::non_strict_load_returns_a_sorted_complete_report`](../tests/interop.rs), [`tests/interop.rs::shape_validation_happens_before_any_variable_is_mutated`](../tests/interop.rs), [`tests/nn_spatial.rs::normalization_untracked_modes_unbatched_inputs_and_state_roundtrip`](../tests/nn_spatial.rs), [`tests/nn_spatial.rs::sequential_spatial_factory_trains_and_restores_registered_buffers`](../tests/nn_spatial.rs)
 - **Notes:** This row covers explicitly registered model parameters/buffers, not arbitrary Python attributes, aliases or object reconstruction. Optimizer state uses the separate optim.state serde schema; it is not embedded in model SafeTensors. Other model serialization formats remain outside this claim.
+
+### `sparse`
+
+- **PyTorch:** `torch.sparse`, `torch.sparse_coo_tensor`, `torch.sparse.mm`, `torch.Tensor.to_sparse`, `torch.Tensor.to_sparse_csr`, `torch.Tensor.to_dense`
+- **RustTorch:** `rusttorch::tensor::sparse_coo_matrix`, `rusttorch::tensor::sparse_matmul`, `rusttorch::Tensor::f_to_sparse_sparse_dim`, `rusttorch::Tensor::f_to_sparse_csr`, `rusttorch::Tensor::f_to_dense`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 6 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** CPU real two-dimensional COO coordinate construction with explicit shape/kind/device/bounds validation, independent coordinate/value copies and duplicate coalescing, COO/CSR multiplication by dense features, CSR conversion and densification. Structural validation rejects malformed COO/CSR before multiplication. Native dense-to-COO conversion and sparse multiplication retain tested gradients to the dense source and dense feature tensor.
+- **Pinned source:** [`torch/sparse/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/sparse/__init__.py)
+- **Evidence:** [`tests/tensor_workflows.rs::sparse_coo_csr_and_quantized_boundaries`](../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::malformed_inputs_return_errors_without_mutation`](../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::empty_nested_and_copy_gradient_boundaries`](../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::tensor_workflows_python_parity`](../tests/tensor_workflows.rs)
+- **Notes:** The tch C++ coordinate factory disconnects value gradients, so sparse\_coo\_matrix rejects requires-grad values; this is an explicit difference from Python torch.sparse\_coo\_tensor. Dense-to-COO conversion provides a separately tested native gradient path. Full COO value-constructor autograd, CSR gradient coverage, CSC/BSR/BSC, arbitrary sparse operations and accelerator parity are not claimed. CSR is beta upstream.
+
+### `special`
+
+- **PyTorch:** `torch.special`, `torch.special.ndtr`, `torch.special.log_ndtr`, `torch.special.gammaln`
+- **RustTorch:** `rusttorch::Tensor::f_special_ndtr`, `rusttorch::Tensor::f_special_log_ndtr`, `rusttorch::Tensor::f_special_gammaln`
+- **Implementation:** Delegated to LibTorch
+- **Pinned inventory:** 4 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** CPU native standard-normal CDF, stable log-CDF for negative tails, and log-gamma for log-factorial calculations. Float64 numerical fixtures cover all three; CDF gradients and extreme-tail finite log-CDF are tested, and float32 CDF smoke evidence is included.
+- **Pinned source:** [`torch/special/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/special/__init__.py)
+- **Evidence:** [`tests/tensor_workflows.rs::fft_and_special_functions_keep_native_gradients`](../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::empty_nested_and_copy_gradient_boundaries`](../tests/tensor_workflows.rs), [`tests/tensor_workflows.rs::tensor_workflows_python_parity`](../tests/tensor_workflows.rs)
+- **Notes:** Native Tensor methods are used directly without redundant wrappers. Remaining special functions, comprehensive domain/error bounds, every dtype and accelerator parity are not claimed; NaN/infinity/domain behavior remains native.
 
 ## Planned
 
@@ -705,6 +895,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.utils.data.Dataset for audio samples`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Audio decoding, resampling, feature extraction, and augmentation belong in an optional data package.
 - **Pinned source:** [`torch/utils/data/dataset.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataset.py)
 - **Evidence:** —
@@ -715,16 +906,337 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.autograd.forward_ad`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 1 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Forward-mode automatic differentiation and dual tensors are not exposed.
 - **Pinned source:** [`torch/autograd/forward_ad.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/autograd/forward_ad.py)
 - **Evidence:** —
 - **Notes:** This row is separate from the currently tested reverse-mode subset.
+
+### `census.aten.fft`
+
+- **PyTorch:** `ATen canonical fft schemas`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 42 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Canonical public-name ATen fft schemas mapped here are binding candidates awaiting exact Rust binding and executable compatibility evidence, including declared generated functional/out variants.
+- **Pinned source:** [`aten/src/ATen/native/native_functions.yaml`](https://github.com/pytorch/pytorch/blob/cf30153/aten/src/ATen/native/native_functions.yaml)
+- **Evidence:** —
+- **Notes:** Runtime registration is build availability only; it is not evidence that tch or RustTorch exposes this schema. Exact IDs remain visible in compat/pytorch\_inventory\_map.toml.
+
+### `census.aten.linalg`
+
+- **PyTorch:** `ATen canonical linalg schemas`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 99 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Canonical public-name ATen linalg schemas mapped here are binding candidates awaiting exact Rust binding and executable compatibility evidence, including declared generated functional/out variants.
+- **Pinned source:** [`aten/src/ATen/native/native_functions.yaml`](https://github.com/pytorch/pytorch/blob/cf30153/aten/src/ATen/native/native_functions.yaml)
+- **Evidence:** —
+- **Notes:** Runtime registration is build availability only; it is not evidence that tch or RustTorch exposes this schema. Exact IDs remain visible in compat/pytorch\_inventory\_map.toml.
+
+### `census.aten.nested`
+
+- **PyTorch:** `ATen canonical nested schemas`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 1 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Canonical public-name ATen nested schemas mapped here are binding candidates awaiting exact Rust binding and executable compatibility evidence, including declared generated functional/out variants.
+- **Pinned source:** [`aten/src/ATen/native/native_functions.yaml`](https://github.com/pytorch/pytorch/blob/cf30153/aten/src/ATen/native/native_functions.yaml)
+- **Evidence:** —
+- **Notes:** Runtime registration is build availability only; it is not evidence that tch or RustTorch exposes this schema. Exact IDs remain visible in compat/pytorch\_inventory\_map.toml.
+
+### `census.aten.operators`
+
+- **PyTorch:** `ATen canonical operators schemas`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 1912 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Canonical public-name ATen operators schemas mapped here are binding candidates awaiting exact Rust binding and executable compatibility evidence, including declared generated functional/out variants.
+- **Pinned source:** [`aten/src/ATen/native/native_functions.yaml`](https://github.com/pytorch/pytorch/blob/cf30153/aten/src/ATen/native/native_functions.yaml)
+- **Evidence:** —
+- **Notes:** Runtime registration is build availability only; it is not evidence that tch or RustTorch exposes this schema. Exact IDs remain visible in compat/pytorch\_inventory\_map.toml.
+
+### `census.aten.quantized`
+
+- **PyTorch:** `ATen canonical quantized schemas`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 12 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Canonical public-name ATen quantized schemas mapped here are binding candidates awaiting exact Rust binding and executable compatibility evidence, including declared generated functional/out variants.
+- **Pinned source:** [`aten/src/ATen/native/native_functions.yaml`](https://github.com/pytorch/pytorch/blob/cf30153/aten/src/ATen/native/native_functions.yaml)
+- **Evidence:** —
+- **Notes:** Runtime registration is build availability only; it is not evidence that tch or RustTorch exposes this schema. Exact IDs remain visible in compat/pytorch\_inventory\_map.toml.
+
+### `census.aten.sparse`
+
+- **PyTorch:** `ATen canonical sparse schemas`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 25 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Canonical public-name ATen sparse schemas mapped here are binding candidates awaiting exact Rust binding and executable compatibility evidence, including declared generated functional/out variants.
+- **Pinned source:** [`aten/src/ATen/native/native_functions.yaml`](https://github.com/pytorch/pytorch/blob/cf30153/aten/src/ATen/native/native_functions.yaml)
+- **Evidence:** —
+- **Notes:** Runtime registration is build availability only; it is not evidence that tch or RustTorch exposes this schema. Exact IDs remain visible in compat/pytorch\_inventory\_map.toml.
+
+### `census.aten.special`
+
+- **PyTorch:** `ATen canonical special schemas`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 170 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Canonical public-name ATen special schemas mapped here are binding candidates awaiting exact Rust binding and executable compatibility evidence, including declared generated functional/out variants.
+- **Pinned source:** [`aten/src/ATen/native/native_functions.yaml`](https://github.com/pytorch/pytorch/blob/cf30153/aten/src/ATen/native/native_functions.yaml)
+- **Evidence:** —
+- **Notes:** Runtime registration is build availability only; it is not evidence that tch or RustTorch exposes this schema. Exact IDs remain visible in compat/pytorch\_inventory\_map.toml.
+
+### `census.python.autograd`
+
+- **PyTorch:** `torch.autograd`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 233 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.autograd inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/autograd/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/autograd/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.compiler`
+
+- **PyTorch:** `torch.compiler, torch.export and torch.fx`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 870 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.compiler, torch.export and torch.fx inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/compiler/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/compiler/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.data`
+
+- **PyTorch:** `torch.utils.data`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 49 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.utils.data inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/utils/data/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.devices`
+
+- **PyTorch:** `torch accelerator and backend namespaces`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 610 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch accelerator and backend namespaces inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/accelerator/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/accelerator/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.distributed`
+
+- **PyTorch:** `torch.distributed`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 950 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.distributed inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/distributed/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/distributed/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.distributions`
+
+- **PyTorch:** `torch.distributions`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 607 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.distributions inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/distributions/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/distributions/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.fft`
+
+- **PyTorch:** `torch.fft`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 18 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.fft inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/fft/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/fft/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.func`
+
+- **PyTorch:** `torch.func`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 15 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.func inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/func/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/func/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.linalg`
+
+- **PyTorch:** `torch.linalg`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 35 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.linalg inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/linalg/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/linalg/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.nested`
+
+- **PyTorch:** `torch.nested`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 6 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.nested inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/nested/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nested/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.nn`
+
+- **PyTorch:** `torch.nn`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 1179 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.nn inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/nn/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.onnx`
+
+- **PyTorch:** `torch.onnx`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 67 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.onnx inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/onnx/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/onnx/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.optim`
+
+- **PyTorch:** `torch.optim`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 520 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.optim inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/optim/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/optim/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.profiler`
+
+- **PyTorch:** `torch.profiler`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 27 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.profiler inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/profiler/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/profiler/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.quantization`
+
+- **PyTorch:** `torch.ao`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 725 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.ao inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/ao/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/ao/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.runtime`
+
+- **PyTorch:** `torch`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 1241 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.serialization`
+
+- **PyTorch:** `torch.serialization`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 17 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.serialization inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/serialization.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/serialization.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.sparse`
+
+- **PyTorch:** `torch.sparse`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 1142 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.sparse inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/sparse/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/sparse/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.special`
+
+- **PyTorch:** `torch.special`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 53 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.special inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/special/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/special/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.tensor`
+
+- **PyTorch:** `torch.Tensor`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 532 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.Tensor inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/_tensor.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/_tensor.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.testing`
+
+- **PyTorch:** `torch.testing`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 3 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.testing inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/testing/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/testing/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
+### `census.python.utils`
+
+- **PyTorch:** `torch.utils`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 195 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.utils inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/utils/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
 
 ### `codec`
 
 - **PyTorch:** `torch.utils.data.Dataset for encoded media`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** General image, audio, and video codec integration is not included in the core crate.
 - **Pinned source:** [`torch/utils/data/dataset.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataset.py)
 - **Evidence:** —
@@ -735,6 +1247,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.export.save`, `torch.export.load`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** PT2 ExportedProgram archive import, validation, execution, and export are not implemented.
 - **Pinned source:** [`torch/export/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/export/__init__.py)
 - **Evidence:** —
@@ -745,6 +1258,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.distributed.init_process_group`, `torch.distributed.ProcessGroup`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 1 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Collectives, process groups, rendezvous, and distributed error handling are not exposed.
 - **Pinned source:** [`torch/distributed/distributed_c10d.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/distributed/distributed_c10d.py)
 - **Evidence:** —
@@ -755,6 +1269,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.nn.parallel.DistributedDataParallel`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Distributed data parallel training, bucket scheduling, and state synchronization are not implemented.
 - **Pinned source:** [`torch/nn/parallel/distributed.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/parallel/distributed.py)
 - **Evidence:** —
@@ -765,66 +1280,40 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.distributed.fsdp.FullyShardedDataParallel`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Parameter sharding, resharding, mixed precision, and distributed checkpoint integration are not implemented.
 - **Pinned source:** [`torch/distributed/fsdp/fully_sharded_data_parallel.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/distributed/fsdp/fully_sharded_data_parallel.py)
 - **Evidence:** —
 - **Notes:** FSDP follows process groups, distributed checkpointing, and memory benchmarks.
-
-### `distributions`
-
-- **PyTorch:** `torch.distributions.Distribution`
-- **RustTorch:** —
-- **Implementation:** Not implemented
-- **Scope:** Probability distributions, transforms, constraints, sampling, and log-probability APIs are not exposed.
-- **Pinned source:** [`torch/distributions/distribution.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/distributions/distribution.py)
-- **Evidence:** —
-- **Notes:** Each future distribution requires numerical and gradient parity evidence.
-
-### `fft`
-
-- **PyTorch:** `torch.fft`
-- **RustTorch:** —
-- **Implementation:** Not implemented
-- **Scope:** The torch.fft namespace is not wrapped or compatibility-tested.
-- **Pinned source:** [`torch/fft/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/fft/__init__.py)
-- **Evidence:** —
-- **Notes:** Future coverage will be split by transform family and normalization behavior.
 
 ### `func`
 
 - **PyTorch:** `torch.func`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 1 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Function transforms such as vmap, grad, jacrev, jacfwd, and functionalization are not exposed.
 - **Pinned source:** [`torch/_functorch/apis.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/_functorch/apis.py)
 - **Evidence:** —
 - **Notes:** Rust interfaces require explicit ownership and mutation semantics.
-
-### `linalg`
-
-- **PyTorch:** `torch.linalg`
-- **RustTorch:** —
-- **Implementation:** Not implemented
-- **Scope:** The torch.linalg namespace is not wrapped or compatibility-tested.
-- **Pinned source:** [`torch/linalg/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/linalg/__init__.py)
-- **Evidence:** —
-- **Notes:** Future rows will split decompositions, solvers, norms, and matrix functions.
 
 ### `nested`
 
 - **PyTorch:** `torch.nested`
 - **RustTorch:** —
 - **Implementation:** Not implemented
-- **Scope:** Nested tensor construction, operators, autograd, and layout behavior are not exposed.
+- **Pinned inventory:** 1 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** A supported Rust nested/jagged construction, operator, autograd and layout workflow is not exposed.
 - **Pinned source:** [`torch/nested/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nested/__init__.py)
 - **Evidence:** —
-- **Notes:** Support depends on stable LibTorch bindings and backend evidence.
+- **Notes:** Safe generated internal operators can create experimental nested tensors, but this is not torch.nested workflow parity. Tensor helpers catch unsupported nested size metadata as recoverable errors; empty\_nested\_and\_copy\_gradient\_boundaries tests that boundary. Padding plus an explicit mask is the supported sequence-data route; no unsafe bridge is introduced.
 
 ### `onnx`
 
 - **PyTorch:** `torch.onnx.export`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 1 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** ONNX export, diagnostics, shape constraints, and verification are not implemented.
 - **Pinned source:** [`torch/onnx/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/onnx/__init__.py)
 - **Evidence:** —
@@ -835,6 +1324,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.profiler.profile`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Operator tracing, schedules, memory profiling, stack capture, and trace export are not exposed.
 - **Pinned source:** [`torch/profiler/profiler.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/profiler/profiler.py)
 - **Evidence:** —
@@ -845,36 +1335,18 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.ao.quantization`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 1 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Eager and graph quantization, observers, calibration, fake quantization, and quantized modules are not exposed.
 - **Pinned source:** [`torch/ao/quantization/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/ao/quantization/__init__.py)
 - **Evidence:** —
-- **Notes:** Coverage will distinguish training, post-training, export, dtype, operator, and backend support.
-
-### `sparse`
-
-- **PyTorch:** `torch.sparse`
-- **RustTorch:** —
-- **Implementation:** Not implemented
-- **Scope:** Sparse layouts, constructors, operators, autograd, validation, and conversion are not exposed.
-- **Pinned source:** [`torch/sparse/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/sparse/__init__.py)
-- **Evidence:** —
-- **Notes:** Future rows will distinguish COO, CSR, CSC, BSR, and BSC.
-
-### `special`
-
-- **PyTorch:** `torch.special`
-- **RustTorch:** —
-- **Implementation:** Not implemented
-- **Scope:** The torch.special namespace is not wrapped or compatibility-tested.
-- **Pinned source:** [`torch/special/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/special/__init__.py)
-- **Evidence:** —
-- **Notes:** Future groups require numerical, gradient, dtype, and backend evidence.
+- **Notes:** Quantized tensor construction/dequantization has a separate narrowly tested core.tensor.quantization row. Model transformation, observers, calibration, fake quantization and quantized modules remain planned; pinned legacy primitive availability does not establish torch.ao.quantization coverage.
 
 ### `tabular`
 
 - **PyTorch:** `torch.utils.data.Dataset for tabular records`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** CSV, columnar, database, missing-value, categorical, and numerical preprocessing integrations are not included.
 - **Pinned source:** [`torch/utils/data/dataset.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataset.py)
 - **Evidence:** —
@@ -885,6 +1357,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.testing.assert_close`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 1 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Public tensor comparison, tolerance policy, generated utilities, and OpInfo-style coverage are not exposed.
 - **Pinned source:** [`torch/testing/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/testing/__init__.py)
 - **Evidence:** —
@@ -895,6 +1368,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.utils.data.Dataset for text samples`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Text decoding, tokenization, vocabulary management, packing, and augmentation are not included.
 - **Pinned source:** [`torch/utils/data/dataset.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataset.py)
 - **Evidence:** —
@@ -905,6 +1379,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.utils.checkpoint.checkpoint`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 1 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Activation checkpointing, recomputation policy, RNG-state handling, and selective contexts are not exposed.
 - **Pinned source:** [`torch/utils/checkpoint.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/checkpoint.py)
 - **Evidence:** —
@@ -915,6 +1390,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.utils.data.Dataset for video samples`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Video decoding, frame sampling, temporal transforms, audio alignment, and batching are not included.
 - **Pinned source:** [`torch/utils/data/dataset.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataset.py)
 - **Evidence:** —
@@ -925,6 +1401,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.utils.data.Dataset for image samples`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Image decoding, transforms, augmentation, detection targets, and vision datasets are not included.
 - **Pinned source:** [`torch/utils/data/dataset.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataset.py)
 - **Evidence:** —
@@ -937,6 +1414,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.compile`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 1 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** CPython frame capture, Dynamo guards, and Python graph-break semantics are not native RustTorch APIs.
 - **Pinned source:** [`torch/_dynamo/eval_frame.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/_dynamo/eval_frame.py)
 - **Evidence:** —
@@ -947,6 +1425,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.export.export`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 1 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Python program capture, dynamic Python object handling, and Python-side export diagnostics are not native RustTorch APIs.
 - **Pinned source:** [`torch/export/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/export/__init__.py)
 - **Evidence:** —
@@ -957,6 +1436,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.fx.Graph`, `torch.fx.GraphModule`, `torch.fx.symbolic_trace`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 5 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Python symbolic tracing, dynamic module reconstruction, and FX graph compatibility are not provided.
 - **Pinned source:** [`torch/fx/graph.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/fx/graph.py)
 - **Evidence:** —
@@ -967,6 +1447,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.utils.data.argument_validation`, `torch.utils.data.functional_datapipe`, `torch.utils.data.guaranteed_datapipes_determinism`, `torch.utils.data.non_deterministic`, `torch.utils.data.runtime_validation`, `torch.utils.data.runtime_validation_disabled`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Python decorators dynamically register DataPipe functions, label determinism, and toggle runtime validation or construction-time determinism contexts.
 - **Pinned source:** [`torch/utils/data/datapipes/_decorator.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/datapipes/_decorator.py)
 - **Evidence:** —
@@ -977,6 +1458,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.utils.data._DatasetKind`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** The private loader-kind dispatch enum exported by the pinned module remains a Python implementation detail.
 - **Pinned source:** [`torch/utils/data/dataloader.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataloader.py)
 - **Evidence:** —
@@ -984,11 +1466,34 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ## Not supported
 
+### `census.aten.internal`
+
+- **PyTorch:** `ATen canonical internal schemas`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 840 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Canonical schemas whose operator basename starts with an underscore are retained as non-public implementation inventory, with no public compatibility promise.
+- **Pinned source:** [`aten/src/ATen/native/native_functions.yaml`](https://github.com/pytorch/pytorch/blob/cf30153/aten/src/ATen/native/native_functions.yaml)
+- **Evidence:** —
+- **Notes:** Runtime registration is build availability only; it is not evidence that tch or RustTorch exposes this schema. Exact IDs remain visible in compat/pytorch\_inventory\_map.toml.
+
+### `census.python.jit`
+
+- **PyTorch:** `torch.jit`
+- **RustTorch:** —
+- **Implementation:** Not implemented
+- **Pinned inventory:** 1 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Remaining documented torch.jit inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
+- **Pinned source:** [`torch/jit/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/jit/__init__.py)
+- **Evidence:** —
+- **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
+
 ### `serialization.pickle`
 
 - **PyTorch:** `torch.save`, `torch.load`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 2 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Arbitrary Python pickle objects, whole-model class reconstruction, and CPython object graphs are intentionally unavailable.
 - **Pinned source:** [`torch/serialization.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/serialization.py)
 - **Evidence:** —
@@ -999,6 +1504,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.jit.load`, `torch.jit.ScriptModule`
 - **RustTorch:** —
 - **Implementation:** Not implemented
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** RustTorch does not expose TorchScript modules or convert TorchScript into eager modules or its graph IR.
 - **Pinned source:** [`torch/jit/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/jit/__init__.py)
 - **Evidence:** —

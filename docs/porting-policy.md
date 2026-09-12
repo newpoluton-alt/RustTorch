@@ -11,15 +11,22 @@ serialization, and error conditions. Express Python keyword arguments as
 small Rust configuration types or builders only when optional settings need
 them.
 
-Every public API is classified in `compat/pytorch_api.toml`:
+The canonical ledger is `compat/pytorch_api.toml`. Its status is one of
+`supported`, `partial`, `planned`, `not_supported`, or `python_only`; its
+implementation is `libtorch`, `rusttorch`, `mixed`, or `none`. A status applies
+only to the exact written scope and named test evidence. It is not a claim
+about every option on the referenced symbol.
 
-- `reexport`: the `tch` type is already the right API.
-- `delegate`: RustTorch validates or improves ergonomics, then calls `tch`.
-- `composite_port`: meaningful high-level PyTorch logic is adapted while
-  tensor calculations remain delegated.
-- `interop`: state, metadata, graph, or checkpoint exchange.
-- `unsupported`: Python runtime behavior or backend support prevents a safe,
-  honest MVP implementation.
+The separate census assigns every pinned documented object and canonical
+ATen schema exactly one disposition. An available schema or generated binding
+is only a candidate for implementation, not proof of compatibility. See the
+[API census maintenance guide](api-census.md) for reproducible refresh and
+offline checks. Update mappings when adding or narrowing a supported scope.
+
+Implementation choices should remain simple: reexport an appropriate native
+type, delegate to a safe existing kernel, compose necessary high-level behavior,
+or define an explicit artifact boundary. Keep unsupported functionality absent
+or return a clear error.
 
 Before adding a wrapper, check `tch` and LibTorch. Do not wrap hundreds of
 tensor methods, port kernels, reproduce autograd, or copy large comments and

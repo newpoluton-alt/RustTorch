@@ -5,10 +5,22 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{TaskContext, Transform, TransformFactory, WorkerContext};
 
-/// Replay-safe source with self-contained state captured before each read.
+/// A stream reader whose next unread position can be saved and restored exactly.
+///
+/// Implement this for seekable files, versioned record stores, or other sources
+/// where replaying a read produces the same record. The state must contain every
+/// cursor and decoder setting that affects later output; keep it owned and
+/// independent of mutable buffers. A destructive queue cannot promise this
+/// contract merely by remembering how many items were read.
+///
+/// [`crate::ExactStreamDataLoader`] demonstrates a lazy source, cursor validation,
+/// JSON state, and a restart that yields the same remaining batches.
 ///
 /// Validation is read-only; applying accepted state must not fail or panic.
-/// Records must have strictly increasing per-shard global sequence IDs.
+/// Records must have strictly increasing per-shard global sequence IDs, and all
+/// shards together must cover the ordered global sequence without gaps. If the
+/// source retains a [`WorkerContext`], implement [`Self::set_run_context`] so a
+/// checkpoint barrier can replace the cancelled context before further reads.
 pub trait CheckpointableSource:
     Iterator<Item = std::result::Result<crate::WorkerRecord<Self::Sample>, Self::Error>>
 {
@@ -37,6 +49,13 @@ pub trait CheckpointableSource:
 }
 
 /// Stable factory identity for explicitly checkpointable stream sources.
+///
+/// Implement this alongside [`CheckpointableSource`] on the factory's source
+/// type. `CHECKPOINT_KIND` identifies the implementation and cursor format;
+/// `.checkpointable("contents-version")` separately identifies the actual data.
+/// Change the kind when a cursor format or its meaning changes, and change the
+/// contents identity when records change. See [`crate::ExactStreamDataLoader`]
+/// for a complete successful implementation.
 ///
 /// An ordinary factory cannot acquire exact replay just by setting an identity:
 ///
@@ -123,7 +142,14 @@ pub struct StreamLaneState<S, T> {
     pub transform: T,
 }
 
-/// Versioned exact stream state at the next consumer-visible batch.
+/// Serializable input position and component state for resuming a sharded stream.
+///
+/// Obtain this from [`crate::ExactStreamLoaderIter::checkpoint`] and pass the
+/// decoded value to [`crate::StreamDataLoaderBuilder::resume`]. Store it with the
+/// model, optimizer and training counters from the same completed batch. It
+/// contains shard cursors and transform/collator state, not decoded records or
+/// model tensors. [`crate::ExactStreamDataLoader`] demonstrates JSON round-trip
+/// and exact replay; applications choose their storage format and atomic writes.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StreamLoaderState<S, T = (), C = ()> {
     /// Stream schema version; currently one.
@@ -263,7 +289,61 @@ pub struct LoaderConfiguration {
     pub pin_status: CheckpointPinStatus,
 }
 
-/// Versioned state for the next batch visible from a map loader.
+/// Serializable input position and pipeline state for an exact map-loader restart.
+///
+/// Capture this on the iterator, after the application has successfully used a
+/// batch. Recreate the same dataset and options, deserialize the state, and pass
+/// it to [`crate::DataLoaderBuilder::resume_from`]. The next iterator resumes
+/// before the first unconsumed batch. Prefetched samples are read again from
+/// saved component state; sample payloads are not serialized.
+///
+/// # Save and restore a prefetched loader
+///
+/// The immutable rows below can safely be fetched again. A content version
+/// identifies the data, while the loader validates sampling, batching, worker
+/// and component configuration during restore. This example uses `serde_json`;
+/// add it as a dependency when choosing JSON in your application.
+///
+/// ```
+/// use std::convert::Infallible;
+/// use rusttorch_data::{DataLoader, Dataset, ReplaySafeDataset, ReplaySafeMap, VecCollate};
+/// struct Rows([i64; 5]);
+/// impl Dataset for Rows {
+///     type Sample = i64;
+///     type Error = Infallible;
+///     fn len(&self) -> usize { self.0.len() }
+///     fn get(&self, index: usize) -> Result<i64, Infallible> { Ok(self.0[index]) }
+/// }
+/// impl ReplaySafeDataset for Rows {}
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let build = || DataLoader::builder(ReplaySafeMap::new(Rows([2, 3, 5, 7, 11])))
+///         .batch_size(2).workers(2).prefetch_factor(2).collate(VecCollate)
+///         .dataset_identity("prime-rows-v1".to_owned());
+///     let mut loader = build().build()?;
+///     let mut iteration = loader.iter();
+///     assert_eq!(iteration.next().unwrap()?, [2, 3]);
+///     let saved = serde_json::to_string(&iteration.checkpoint()?)?;
+///     let uninterrupted = iteration.collect::<Result<Vec<_>, _>>()?;
+///
+///     let mut restored = build().resume_from(serde_json::from_str(&saved)?).build()?;
+///     let remaining = restored.iter().collect::<Result<Vec<_>, _>>()?;
+///     assert_eq!(remaining, [vec![5, 7], vec![11]]);
+///     assert_eq!(remaining, uninterrupted);
+///     Ok(())
+/// }
+/// ```
+///
+/// Save model and optimizer state at the same training step; this state covers
+/// only the input pipeline. Capture initially or after a successful batch, before
+/// observing an error or exhaustion. Do not change the selected epoch before
+/// consuming a pending resume: `set_epoch` intentionally starts a fresh pass.
+///
+/// Serial checkpoints support replay-safe or transactional datasets. Worker
+/// checkpoints require replay-safe datasets and ordered delivery, with no byte
+/// budget, timeout, custom worker initializer or persistent workers. Custom
+/// transforms and collation need explicit checkpoint contracts. Use
+/// [`crate::TensorDataset::into_replay_safe`] for isolated serial tensor data.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct LoaderState<D, S, T = (), C = ()> {
     /// State schema version.
@@ -296,6 +376,11 @@ pub struct LoaderState<D, S, T = (), C = ()> {
 
 /// A component whose state can be validated before it is restored.
 ///
+/// Implement this on a custom collator or converter when it retains state that
+/// affects later batches. Built-in collators already supply it. Capture all
+/// relevant counters/configuration in an owned serde state; validation should
+/// reject incompatible values without resetting the live component.
+///
 /// Validation must be read-only. `load_validated` must not fail or panic after
 /// the same component accepted the supplied state; violating either rule
 /// breaks the resume transaction contract.
@@ -313,7 +398,13 @@ pub trait Checkpointable {
     fn load_validated(&mut self, state: &Self::State);
 }
 
-/// Marker for a map dataset whose fixed-identity fetches are replay-safe.
+/// Promise that fetching an index again from fixed dataset contents is safe.
+///
+/// Implement this only when reads have no state changes that affect later
+/// samples and no external side effects that must happen exactly once. Wrap the
+/// dataset in [`crate::ReplaySafeMap`] to use this contract in an exact loader;
+/// [`LoaderState`] includes a complete example. Mutable/stateful datasets should
+/// use [`DatasetCheckpoint`] through [`crate::TransactionalMap`] instead.
 pub trait ReplaySafeDataset: crate::Dataset {}
 
 /// Dataset state used by exact serial loader checkpoints.

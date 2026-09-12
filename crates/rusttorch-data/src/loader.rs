@@ -758,7 +758,118 @@ impl Default for BuilderConfiguration {
     }
 }
 
-/// Builder for an owned, re-iterable map-style data loader.
+/// Configure repeated passes over an owned indexed dataset.
+///
+/// Create this with [`crate::DataLoader::builder`]. By default, samples arrive
+/// in index order, batch size is one, the final short batch is kept, and work
+/// runs on the calling thread. [`crate::DefaultCollator`] stacks tensors and
+/// numeric values recursively while preserving tuple fields.
+///
+/// # Shuffle each epoch and prepare batches with workers
+///
+/// Keep immutable metadata in the dataset and do decoding in `get()`. A positive
+/// worker count overlaps fetching and per-sample transforms; collation remains
+/// on the calling thread. The example uses small Rust records so its sampling
+/// and ownership behavior is visible without a decoder.
+///
+/// ```
+/// use std::convert::Infallible;
+/// use rusttorch_data::{DataLoader, Dataset, VecCollate};
+/// struct Rows;
+/// impl Dataset for Rows {
+///     type Sample = i64;
+///     type Error = Infallible;
+///     fn len(&self) -> usize { 6 }
+///     fn get(&self, index: usize) -> Result<i64, Infallible> { Ok(index as i64) }
+/// }
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let mut loader = DataLoader::builder(Rows)
+///         .batch_size(2).shuffle(42)?.workers(2).prefetch_factor(2)
+///         .collate(VecCollate).build()?;
+///     for epoch in 0..3 {
+///         loader.set_epoch(epoch);
+///         let batches = loader.iter().collect::<Result<Vec<_>, _>>()?;
+///         assert_eq!(batches.len(), 3);
+///         let mut visited: Vec<_> = batches.into_iter().flatten().collect();
+///         visited.sort_unstable();
+///         assert_eq!(visited, [0, 1, 2, 3, 4, 5]);
+///     }
+///     Ok(())
+/// }
+/// ```
+///
+/// Repeating an epoch repeats its sampling order. [`Self::shuffle`] sets the
+/// sampler seed; [`Self::seed`] separately seeds worker and sample-transform
+/// contexts. Omit `.workers(...)` for datasets that are not `Send + Sync`,
+/// including [`crate::TensorDataset`]. Calling `.workers(0)` still selects the
+/// worker-safe API and requires those bounds.
+///
+/// # Pad variable-length sequences in a custom batch
+///
+/// [`crate::FnCollate`] receives the selected samples after transforms. Return
+/// your model's batch representation, including lengths or padding masks when
+/// needed. Here zero is the padding value and lengths identify real tokens.
+///
+/// ```
+/// use std::convert::Infallible;
+/// use rusttorch_core::Tensor;
+/// use rusttorch_data::{DataLoader, Dataset, FnCollate};
+/// struct Sentences(Vec<Vec<i64>>);
+/// impl Dataset for Sentences {
+///     type Sample = Vec<i64>;
+///     type Error = Infallible;
+///     fn len(&self) -> usize { self.0.len() }
+///     fn get(&self, index: usize) -> Result<Self::Sample, Infallible> {
+///         Ok(self.0[index].clone())
+///     }
+/// }
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let padding = FnCollate::new(|rows: Vec<Vec<i64>>| {
+///         let width = rows.iter().map(Vec::len).max().unwrap_or(0);
+///         let lengths: Vec<_> = rows.iter().map(|row| row.len() as i64).collect();
+///         let count = rows.len();
+///         let mut values = Vec::new();
+///         for mut row in rows {
+///             row.resize(width, 0);
+///             values.extend(row);
+///         }
+///         Ok::<_, rusttorch_core::RustTorchError>((
+///             Tensor::f_from_slice(&values)?.f_reshape([count as i64, width as i64])?,
+///             Tensor::f_from_slice(&lengths)?,
+///         ))
+///     });
+///     let mut loader = DataLoader::builder(Sentences(vec![vec![1, 2], vec![3, 4, 5]]))
+///         .batch_size(2).collate(padding).build()?;
+///     let (tokens, lengths) = loader.iter().next().unwrap()?;
+///     assert_eq!(Vec::<Vec<i64>>::try_from(&tokens)?, [vec![1, 2, 0], vec![3, 4, 5]]);
+///     assert_eq!(Vec::<i64>::try_from(&lengths)?, [2, 3]);
+///     Ok(())
+/// }
+/// ```
+///
+/// # Infer one sample at a time
+///
+/// [`Self::without_batching`] uses conversion instead of stacking. It adds no
+/// batch dimension and is useful when each dataset item is already a model
+/// input or a preassembled batch. Do not also set `batch_size` or `drop_last`.
+///
+/// ```
+/// use rusttorch_core::Tensor;
+/// use rusttorch_data::{DataLoader, TensorDataset};
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let features = Tensor::from_slice(&[1_f32, 2., 3., 4.]).reshape([2, 2]);
+///     let mut loader = DataLoader::builder(TensorDataset::new(vec![features])?)
+///         .without_batching().build()?;
+///     for sample in loader.iter() {
+///         assert_eq!(sample?[0].size(), [2]);
+///     }
+///     Ok(())
+/// }
+/// ```
+///
+/// Use [`Self::dataset_identity`] with a replay-safe dataset to enable exact
+/// restart; [`crate::LoaderState`] has a complete checkpoint example. Independent
+/// stream shards use [`crate::StreamDataLoaderBuilder`] instead.
 pub struct DataLoaderBuilder<
     D,
     P,
@@ -824,14 +935,21 @@ impl<D, P, C, F, I, X, M, N, K> DataLoaderBuilder<D, P, C, F, I, X, M, N, K> {
         }
     }
 
-    /// Sets the automatic batch size.
+    /// Sets how many selected samples form one automatic batch; defaults to one.
+    ///
+    /// Zero is rejected by `build()`. The final batch may be smaller unless
+    /// [`Self::drop_last`] is enabled. This option cannot be combined with an
+    /// explicit batch sampler or [`Self::without_batching`].
     pub fn batch_size(mut self, batch_size: usize) -> Self {
         self.configuration.batch_size = batch_size;
         self.explicit.batch_size = true;
         self
     }
 
-    /// Selects whether a short final automatic batch is omitted.
+    /// Omits the final incomplete automatic batch when `true`; defaults to `false`.
+    ///
+    /// Use this when a training step requires a fixed batch size. It does not
+    /// change how a distributed sampler divides indices between ranks.
     pub fn drop_last(mut self, drop_last: bool) -> Self {
         self.configuration.drop_last = drop_last;
         self.explicit.drop_last = true;
@@ -844,6 +962,7 @@ impl<D, P, C, F, I, X, M, N, K> DataLoaderBuilder<D, P, C, F, I, X, M, N, K> {
     /// transform in deterministic worker lanes, and collate on the calling
     /// thread. Passing zero keeps serial execution, but selecting this method
     /// still requires worker-safe types at compile time.
+    /// See the [`DataLoaderBuilder`] epoch example for a complete pipeline.
     pub fn workers(
         mut self,
         workers: usize,
@@ -862,7 +981,10 @@ impl<D, P, C, F, I, X, M, N, K> DataLoaderBuilder<D, P, C, F, I, X, M, N, K> {
         }
     }
 
-    /// Sets the seed used by deterministic task and worker contexts.
+    /// Seeds deterministic worker initialization and sample-transform contexts.
+    ///
+    /// This does not enable shuffling or replace the sampler's seed. Select
+    /// [`Self::shuffle`] or a seeded [`Self::sampler`] separately.
     pub fn seed(mut self, seed: u64) -> Self {
         self.configuration.loader_seed = seed;
         self
@@ -875,6 +997,10 @@ impl<D, P, C, F, I, X, M, N, K> DataLoaderBuilder<D, P, C, F, I, X, M, N, K> {
     }
 
     /// Sets the distributed rank included in deterministic contexts.
+    ///
+    /// This does not partition the dataset. Use [`crate::DistributedSampler`]
+    /// with the same rank to select its indices; gradient synchronization belongs
+    /// to the training application.
     pub fn rank(mut self, rank: usize) -> Self {
         self.configuration.rank = rank;
         self
@@ -969,10 +1095,10 @@ impl<D, P, C, F, I, X, M, N, K> DataLoaderBuilder<D, P, C, F, I, X, M, N, K> {
 
     /// Selects whether positive-worker iterators reuse loader-owned threads.
     ///
-    /// Persistent workers keep their initial [`crate::WorkerInfo`] seeds and
-    /// factory-created state across epochs. Each iterator still receives a
-    /// fresh generation cancellation token and deadline, and dropping either
-    /// the iterator or loader cooperatively wakes and joins the affected work.
+    /// Reuse avoids rebuilding expensive worker-local decoders each epoch.
+    /// Workers keep their initial [`crate::WorkerInfo`] seeds and factory-created
+    /// state. Dropping an iterator cancels and waits for its active work; the
+    /// threads remain available until the loader is dropped and joins the pool.
     pub fn persistent_workers(mut self, persistent: bool) -> Self {
         self.configuration.persistent_workers = persistent;
         self
@@ -991,7 +1117,10 @@ impl<D, P, C, F, I, X, M, N, K> DataLoaderBuilder<D, P, C, F, I, X, M, N, K> {
         self
     }
 
-    /// Selects ordered or completion-order delivery.
+    /// Keeps sampler order when `true` (the default), or yields ready batches first.
+    ///
+    /// Completion order can reduce waits for a slow batch but changes the order
+    /// observed by training. Exact checkpointing requires ordered delivery.
     pub fn ordered(mut self, ordered: bool) -> Self {
         self.configuration.ordered = ordered;
         self
@@ -1003,6 +1132,11 @@ impl<D, P, C, F, I, X, M, N, K> DataLoaderBuilder<D, P, C, F, I, X, M, N, K> {
     }
 
     /// Enables automatic recursive pinning for CUDA device zero when available.
+    ///
+    /// Pinning happens after collation and preserves the batch type. It prepares
+    /// host memory for transfer; the application still moves tensors to its
+    /// model's device. Without CUDA, batches pass through unchanged and
+    /// [`OwnedDataLoader::pin_memory_status`] reports that pinning is disabled.
     ///
     /// Enabling pinning requires the final batch type to implement
     /// [`PinMemory`] at build time:
@@ -1059,7 +1193,12 @@ impl<D, P, C, F, I, X, M, N, K> DataLoaderBuilder<D, P, C, F, I, X, M, N, K> {
         }
     }
 
-    /// Sets bounded batches prefetched per worker.
+    /// Bounds outstanding batches per worker; defaults to two with positive workers.
+    ///
+    /// For example, four workers and factor two permit eight outstanding batches.
+    /// Increase this when input preparation cannot otherwise keep training busy;
+    /// larger values retain more data. The unit here is batches, while
+    /// [`crate::StreamDataLoaderBuilder::prefetch_factor`] counts records.
     ///
     /// The worker count multiplied by this factor is checked before any
     /// worker starts and is also the global outstanding-work credit limit.
@@ -1212,6 +1351,11 @@ impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N, Checkpoin
     ///
     /// The identity must describe the exact dataset contents, not merely its
     /// Rust type or path. Empty identities are rejected by [`Self::build`].
+    /// Wrap an immutable [`crate::ReplaySafeDataset`] in [`crate::ReplaySafeMap`],
+    /// or use [`crate::TensorDataset::into_replay_safe`] for isolated serial tensor
+    /// inputs. Built-in samplers, identity transforms and collators support state
+    /// capture; custom components must provide their checkpoint contracts.
+    /// [`crate::LoaderState`] shows the complete save/restore flow.
     pub fn dataset_identity(
         self,
         identity: String,
@@ -1231,7 +1375,13 @@ impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N, Checkpoin
 }
 
 impl<D, P, C, F, I, X, M, N> DataLoaderBuilder<D, P, C, F, I, X, M, N, CheckpointFresh> {
-    /// Selects a typed serial loader checkpoint for validated resume.
+    /// Selects a saved map-loader boundary for validated resume.
+    ///
+    /// Recreate the dataset and the same loader options, set its identity, then
+    /// pass a deserialized [`crate::LoaderState`] here. `build()` rejects
+    /// incompatible schema, identity, configuration or component state before
+    /// applying a restore. The first `iter()` continues the saved cursor;
+    /// later calls begin fresh passes. See [`crate::LoaderState`] for an example.
     pub fn resume_from<S>(
         self,
         state: S,
@@ -1755,15 +1905,22 @@ where
     }
 }
 
-/// An owned, re-iterable map-style data loader.
+/// A reusable dataset pipeline, created by [`crate::DataLoader::builder`].
 ///
-/// The default [`SerialExecution`] capability accepts local non-`Send` data.
-/// Calling [`DataLoaderBuilder::workers`] selects [`WorkerExecution`], where
-/// positive counts share the dataset through [`Arc`]. Each worker owns a
-/// bounded task lane and one transform instance; the coordinator alone owns
-/// ordering and collation. This differs from PyTorch's process-local dataset
-/// copies and worker-side collation while preserving bounded prefetch,
-/// deterministic routing, task-local randomness, and ordered delivery.
+/// Call `iter()` for a pass over the selected epoch and `set_epoch(epoch)` before
+/// the next epoch's shuffle. The iterator borrows this owner mutably, preventing
+/// two overlapping passes over the same pipeline. [`Self::len`] reports batches
+/// (or individual outputs without batching), not the dataset's sample count.
+///
+/// The [`DataLoaderBuilder`] examples cover worker prefetch, custom padding and
+/// inference without batching. Serial loading accepts local non-`Send` types;
+/// worker loading shares a thread-safe dataset and fetches samples concurrently.
+/// Dropping an iteration cancels its outstanding work and waits for it to stop.
+/// Persistent workers remain alive for reuse until this owner is dropped.
+///
+/// Exact loaders additionally expose `checkpoint()` on their iterator. Save
+/// after a successful batch and recreate the matching builder to resume;
+/// [`crate::LoaderState`] demonstrates the complete sequence.
 #[allow(private_bounds)]
 pub struct OwnedDataLoader<
     D,
@@ -2001,7 +2158,13 @@ where
     }
 }
 
-/// One fresh iteration borrowed from an [`OwnedDataLoader`].
+/// One pass over an [`OwnedDataLoader`], yielding a typed result for each batch.
+///
+/// Obtain this from the owner's `iter()` method and use `for batch in ...` or
+/// `collect::<Result<Vec<_>, _>>()`. Loading, transform and collation failures
+/// end that pass. A subsequent `iter()` starts a fresh pass; it does not silently
+/// continue from the failed sample. Checkpoint-enabled iterations can instead
+/// record a successful boundary with [`Self::checkpoint`].
 pub struct LoaderIter<
     'a,
     D,
@@ -2219,7 +2382,13 @@ where
     }
 }
 
-/// One positive-worker iteration borrowed from an [`OwnedDataLoader`].
+/// A pass over an owned loader configured through [`DataLoaderBuilder::workers`].
+///
+/// The caller receives collated batches while workers prepare bounded pending
+/// work. Use it like an ordinary fallible iterator; its lifetime keeps the loader
+/// borrowed until the pass ends. Drop waits for active work to stop, so dataset
+/// and transform callbacks should cooperate with cancellation. Explicitly
+/// selecting zero workers uses serial fetching with the same worker-safe types.
 #[allow(private_bounds)]
 pub struct WorkerLoaderIter<
     'a,

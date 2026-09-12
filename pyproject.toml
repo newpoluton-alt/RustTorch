@@ -8,6 +8,14 @@ dependencies = [
     "torch==2.13.0",
 ]
 
+[dependency-groups]
+dev = [
+    "myst-nb==1.4.0",
+    "myst-parser==5.1.0",
+    "pyyaml==6.0.3",
+    "sphinx==9.1.0",
+]
+
 [tool.uv]
 package = false
 

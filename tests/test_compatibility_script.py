@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -22,7 +23,7 @@ SPEC.loader.exec_module(CHECKER)
 
 VALID_ROW = {
     "id": "nn.linear",
-    "python_symbols": ["torch.nn.Linear"],
+    "python_symbols": ["torch.nn.Linear", "aten:aten::linear"],
     "rust_symbols": ["rusttorch::nn::Linear"],
     "status": "supported",
     "implementation": "mixed",
@@ -54,7 +55,7 @@ pytorch_commit = "cf30153"
 
 [[api]]
 id = "nn.linear"
-python_symbols = ["torch.nn.Linear"]
+python_symbols = ["torch.nn.Linear", "aten:aten::linear"]
 rust_symbols = ["rusttorch::nn::Linear"]
 status = "supported"
 implementation = "mixed"
@@ -514,6 +515,14 @@ class CompatibilityScriptTests(unittest.TestCase):
         (self.root / "crates" / "rusttorch-core").mkdir(parents=True)
         (self.root / "crates" / "rusttorch-data").mkdir(parents=True)
         shutil.copyfile(SCRIPT, self.root / "scripts" / SCRIPT.name)
+        shutil.copyfile(ROOT / "scripts/sync-pytorch-inventory.py", self.root / "scripts/sync-pytorch-inventory.py")
+        shutil.copyfile(ROOT / "compat/pytorch_reference.toml", self.root / "compat/pytorch_reference.toml")
+        fixture = dict(format_version=1, pytorch_version="2.13.0", pytorch_commit="cf30153c4c131c8164ee7798e5022d810682e2cb", scope=["torch"], symbols=[
+            dict(id="aten:aten::linear", kind="aten_schema", module="aten", name="linear", signature="aten::linear(Tensor input, Tensor weight, Tensor? bias=None) -> Tensor", source="aten/src/ATen/native/native_functions.yaml", line=1, visibility="public", runtime_present=True),
+            dict(id="python:torch.nn.Linear", kind="class", module="torch.nn", name="Linear", signature=None, source="torch/nn/modules/linear.py")
+        ], runtime_build=dict(wheel_version="2.13.0", git_commit="cf30153c4c131c8164ee7798e5022d810682e2cb", platform="darwin", machine="arm64", cuda=None, hip=None, debug=False, torch_config_sha256="0" * 64))
+        (self.root / "compat/pytorch_inventory.json").write_text(json.dumps(fixture, indent=2) + "\n")
+        (self.root / "compat/pytorch_inventory_map.toml").write_text('format_version = 1\n\n[mapping]\n"aten:aten::linear" = "nn.linear"\n"python:torch.nn.Linear" = "nn.linear"\n')
         (self.root / "compat" / "pytorch_api.toml").write_text(
             VALID_LEDGER_TOML, encoding="utf-8"
         )
@@ -531,11 +540,12 @@ class CompatibilityScriptTests(unittest.TestCase):
     def test_cli_check_accepts_current_generated_bytes(self) -> None:
         self.cli_root()
         (self.root / "docs" / "api-coverage.md").write_text(
-            CHECKER.render_markdown(self.ledger()), encoding="utf-8"
+            CHECKER.render_markdown(self.ledger(), inventory_counts={"nn.linear": 2}), encoding="utf-8"
         )
         (self.root / "crates" / "rusttorch-core" / "COMPATIBILITY.md").write_text(
             CHECKER.render_markdown(
                 self.ledger(),
+                inventory_counts={"nn.linear": 2},
                 title="rusttorch-core compatibility",
                 row_prefixes=("autograd.", "core."),
                 relative_root="../..",
@@ -545,6 +555,7 @@ class CompatibilityScriptTests(unittest.TestCase):
         (self.root / "crates" / "rusttorch-data" / "COMPATIBILITY.md").write_text(
             CHECKER.render_markdown(
                 self.ledger(),
+                inventory_counts={"nn.linear": 2},
                 title="rusttorch-data compatibility",
                 row_prefixes=("data.",),
                 relative_root="../..",
@@ -557,7 +568,7 @@ class CompatibilityScriptTests(unittest.TestCase):
     def test_cli_check_rejects_newline_normalization(self) -> None:
         self.cli_root()
         for path, contents in CHECKER.generated_documents(
-            self.root, self.ledger()
+            self.root, self.ledger(), {"nn.linear": 2}
         ).items():
             path.write_text(contents, encoding="utf-8")
         coverage = self.root / "docs" / "api-coverage.md"
@@ -598,13 +609,14 @@ class CompatibilityScriptTests(unittest.TestCase):
         first_write = self.run_cli("--write")
         self.assertEqual(first_write.returncode, 0, first_write.stderr)
         first_bytes = coverage.read_bytes()
-        self.assertEqual(first_bytes, CHECKER.render_markdown(self.ledger()).encode())
+        self.assertEqual(first_bytes, CHECKER.render_markdown(self.ledger(), inventory_counts={"nn.linear": 2}).encode())
         core_compatibility = self.root / "crates" / "rusttorch-core" / "COMPATIBILITY.md"
         data_compatibility = self.root / "crates" / "rusttorch-data" / "COMPATIBILITY.md"
         self.assertEqual(
             core_compatibility.read_bytes(),
             CHECKER.render_markdown(
                 self.ledger(),
+                inventory_counts={"nn.linear": 2},
                 title="rusttorch-core compatibility",
                 row_prefixes=("autograd.", "core."),
                 relative_root="../..",
@@ -614,6 +626,7 @@ class CompatibilityScriptTests(unittest.TestCase):
             data_compatibility.read_bytes(),
             CHECKER.render_markdown(
                 self.ledger(),
+                inventory_counts={"nn.linear": 2},
                 title="rusttorch-data compatibility",
                 row_prefixes=("data.",),
                 relative_root="../..",

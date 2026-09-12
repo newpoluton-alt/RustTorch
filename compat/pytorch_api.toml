@@ -39,8 +39,19 @@ evidence = []
 notes = "This row is separate from the currently tested reverse-mode subset."
 
 [[api]]
+id = "autograd.functional"
+python_symbols = ["torch.autograd.grad", "torch.autograd.functional.vjp", "torch.autograd.functional.jvp", "torch.autograd.functional.jacobian", "torch.autograd.functional.hessian"]
+rust_symbols = ["rusttorch::autograd::GradOptions", "rusttorch::autograd::grad", "rusttorch::autograd::vjp", "rusttorch::autograd::jvp", "rusttorch::autograd::jacobian", "rusttorch::autograd::hessian"]
+status = "partial"
+implementation = "mixed"
+scope = "Dense real single-input functional derivatives: scalar gradients without leaf-buffer accumulation; fixed-cotangent VJP; reverse-over-reverse JVP; Jacobians shaped output-shape plus input-shape; scalar Hessians and optional higher-order graphs. Constant/unused functional inputs produce zero derivatives, while direct grad rejects disconnected inputs."
+source = "torch/autograd/functional.py"
+evidence = ["tests/autograd.rs::gradients_preserve_leaf_buffers_and_support_higher_orders", "tests/autograd.rs::vector_products_and_jacobian_hessian_match_analytic_derivatives", "tests/autograd.rs::constant_unused_empty_and_multidimensional_derivatives_are_defined", "tests/autograd.rs::functional_derivatives_match_pinned_python"]
+notes = "CPU Double numerical parity uses scripts/run-python-parity.sh. No native dual tensors, vectorized transforms, complex differentiation, batched gradients, or arbitrary custom Function hooks. Jacobians use one backward pass per output element; JVP requires native double-backward support. Tangent/cotangent seeds are detached. Native operation errors propagate."
+
+[[api]]
 id = "autograd.reverse_mode"
-python_symbols = ["torch.Tensor.backward", "torch.no_grad", "torch.Tensor.detach"]
+python_symbols = ["torch.Tensor.backward", "torch.no_grad", "torch.Tensor.detach", "torch.autograd.grad_mode.no_grad"]
 rust_symbols = ["rusttorch_core::Tensor", "rusttorch_core::no_grad", "rusttorch_core::no_grad_guard", "rusttorch::Tensor", "rusttorch::no_grad", "rusttorch::no_grad_guard"]
 status = "partial"
 implementation = "libtorch"
@@ -48,6 +59,358 @@ scope = "Reverse-mode gradients through the tested eager and graph operations, p
 source = "torch/autograd/__init__.py"
 evidence = ["tests/eager.rs::gradients_accumulate_across_eager_residual_branches", "tests/eager.rs::no_grad_and_detach_stop_gradient_recording"]
 notes = "rusttorch-core owns these direct reexports and the rusttorch facade preserves them; LibTorch owns autograd, while hooks, custom Function, forward AD, and the rest of the Python surface remain outside this claim."
+
+[[api]]
+id = "autograd.surrogate"
+python_symbols = ["torch.Tensor.detach"]
+rust_symbols = ["rusttorch::autograd::with_surrogate_gradient"]
+status = "supported"
+implementation = "mixed"
+scope = "Algebraic custom-gradient composition for same-shape/dtype/device dense real tensors: exact detached forward value plus surrogate minus detached surrogate. The surrogate must be finite; its autograd graph supplies derivatives."
+source = "torch/_tensor.py"
+evidence = ["tests/autograd.rs::surrogate_derivatives_preserve_forward_values_and_validate_boundaries"]
+notes = "This is a Rust composition recipe over ordinary tensor operations, not Python autograd.Function registration, saved-tensor hooks, or native custom backward callbacks."
+
+[[api]]
+id = "census.aten.fft"
+python_symbols = ["ATen canonical fft schemas"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Canonical public-name ATen fft schemas mapped here are binding candidates awaiting exact Rust binding and executable compatibility evidence, including declared generated functional/out variants."
+source = "aten/src/ATen/native/native_functions.yaml"
+evidence = []
+notes = "Runtime registration is build availability only; it is not evidence that tch or RustTorch exposes this schema. Exact IDs remain visible in compat/pytorch_inventory_map.toml."
+
+[[api]]
+id = "census.aten.internal"
+python_symbols = ["ATen canonical internal schemas"]
+rust_symbols = []
+status = "not_supported"
+implementation = "none"
+scope = "Canonical schemas whose operator basename starts with an underscore are retained as non-public implementation inventory, with no public compatibility promise."
+source = "aten/src/ATen/native/native_functions.yaml"
+evidence = []
+notes = "Runtime registration is build availability only; it is not evidence that tch or RustTorch exposes this schema. Exact IDs remain visible in compat/pytorch_inventory_map.toml."
+
+[[api]]
+id = "census.aten.linalg"
+python_symbols = ["ATen canonical linalg schemas"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Canonical public-name ATen linalg schemas mapped here are binding candidates awaiting exact Rust binding and executable compatibility evidence, including declared generated functional/out variants."
+source = "aten/src/ATen/native/native_functions.yaml"
+evidence = []
+notes = "Runtime registration is build availability only; it is not evidence that tch or RustTorch exposes this schema. Exact IDs remain visible in compat/pytorch_inventory_map.toml."
+
+[[api]]
+id = "census.aten.nested"
+python_symbols = ["ATen canonical nested schemas"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Canonical public-name ATen nested schemas mapped here are binding candidates awaiting exact Rust binding and executable compatibility evidence, including declared generated functional/out variants."
+source = "aten/src/ATen/native/native_functions.yaml"
+evidence = []
+notes = "Runtime registration is build availability only; it is not evidence that tch or RustTorch exposes this schema. Exact IDs remain visible in compat/pytorch_inventory_map.toml."
+
+[[api]]
+id = "census.aten.operators"
+python_symbols = ["ATen canonical operators schemas"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Canonical public-name ATen operators schemas mapped here are binding candidates awaiting exact Rust binding and executable compatibility evidence, including declared generated functional/out variants."
+source = "aten/src/ATen/native/native_functions.yaml"
+evidence = []
+notes = "Runtime registration is build availability only; it is not evidence that tch or RustTorch exposes this schema. Exact IDs remain visible in compat/pytorch_inventory_map.toml."
+
+[[api]]
+id = "census.aten.quantized"
+python_symbols = ["ATen canonical quantized schemas"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Canonical public-name ATen quantized schemas mapped here are binding candidates awaiting exact Rust binding and executable compatibility evidence, including declared generated functional/out variants."
+source = "aten/src/ATen/native/native_functions.yaml"
+evidence = []
+notes = "Runtime registration is build availability only; it is not evidence that tch or RustTorch exposes this schema. Exact IDs remain visible in compat/pytorch_inventory_map.toml."
+
+[[api]]
+id = "census.aten.sparse"
+python_symbols = ["ATen canonical sparse schemas"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Canonical public-name ATen sparse schemas mapped here are binding candidates awaiting exact Rust binding and executable compatibility evidence, including declared generated functional/out variants."
+source = "aten/src/ATen/native/native_functions.yaml"
+evidence = []
+notes = "Runtime registration is build availability only; it is not evidence that tch or RustTorch exposes this schema. Exact IDs remain visible in compat/pytorch_inventory_map.toml."
+
+[[api]]
+id = "census.aten.special"
+python_symbols = ["ATen canonical special schemas"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Canonical public-name ATen special schemas mapped here are binding candidates awaiting exact Rust binding and executable compatibility evidence, including declared generated functional/out variants."
+source = "aten/src/ATen/native/native_functions.yaml"
+evidence = []
+notes = "Runtime registration is build availability only; it is not evidence that tch or RustTorch exposes this schema. Exact IDs remain visible in compat/pytorch_inventory_map.toml."
+
+[[api]]
+id = "census.python.autograd"
+python_symbols = ["torch.autograd"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch.autograd inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/autograd/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.compiler"
+python_symbols = ["torch.compiler, torch.export and torch.fx"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch.compiler, torch.export and torch.fx inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/compiler/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.data"
+python_symbols = ["torch.utils.data"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch.utils.data inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/utils/data/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.devices"
+python_symbols = ["torch accelerator and backend namespaces"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch accelerator and backend namespaces inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/accelerator/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.distributed"
+python_symbols = ["torch.distributed"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch.distributed inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/distributed/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.distributions"
+python_symbols = ["torch.distributions"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch.distributions inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/distributions/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.fft"
+python_symbols = ["torch.fft"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch.fft inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/fft/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.func"
+python_symbols = ["torch.func"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch.func inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/func/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.jit"
+python_symbols = ["torch.jit"]
+rust_symbols = []
+status = "not_supported"
+implementation = "none"
+scope = "Remaining documented torch.jit inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/jit/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.linalg"
+python_symbols = ["torch.linalg"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch.linalg inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/linalg/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.nested"
+python_symbols = ["torch.nested"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch.nested inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/nested/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.nn"
+python_symbols = ["torch.nn"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch.nn inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/nn/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.onnx"
+python_symbols = ["torch.onnx"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch.onnx inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/onnx/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.optim"
+python_symbols = ["torch.optim"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch.optim inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/optim/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.profiler"
+python_symbols = ["torch.profiler"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch.profiler inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/profiler/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.quantization"
+python_symbols = ["torch.ao"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch.ao inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/ao/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.runtime"
+python_symbols = ["torch"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.serialization"
+python_symbols = ["torch.serialization"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch.serialization inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/serialization.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.sparse"
+python_symbols = ["torch.sparse"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch.sparse inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/sparse/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.special"
+python_symbols = ["torch.special"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch.special inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/special/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.tensor"
+python_symbols = ["torch.Tensor"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch.Tensor inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/_tensor.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.testing"
+python_symbols = ["torch.testing"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch.testing inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/testing/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
+
+[[api]]
+id = "census.python.utils"
+python_symbols = ["torch.utils"]
+rust_symbols = []
+status = "planned"
+implementation = "none"
+scope = "Remaining documented torch.utils inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows."
+source = "torch/utils/__init__.py"
+evidence = []
+notes = "This is an explicit disposition for the exact IDs in compat/pytorch_inventory_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage."
 
 [[api]]
 id = "codec"
@@ -117,7 +480,7 @@ notes = "rusttorch-core owns the direct surface and the rusttorch facade preserv
 
 [[api]]
 id = "core.random"
-python_symbols = ["torch.manual_seed"]
+python_symbols = ["torch.manual_seed", "torch.random.manual_seed"]
 rust_symbols = ["rusttorch_core::manual_seed", "rusttorch::manual_seed"]
 status = "partial"
 implementation = "libtorch"
@@ -135,7 +498,51 @@ implementation = "libtorch"
 scope = "Root type reexports plus the tensor construction, dtype, device, and eager operations exercised by current RustTorch tests."
 source = "torch/_tensor.py"
 evidence = ["tests/eager.rs::tensor_core_types_are_reexported"]
-notes = "rusttorch-core owns the direct reexports and the rusttorch facade preserves them. Reexporting tch::Tensor is not evidence that every torch.Tensor method matches PyTorch."
+notes = "rusttorch-core owns the direct reexports and rusttorch preserves them. Reexporting tch::Tensor does not establish every method as compatible. Checked indexing, storage/view semantics, conversion/reductions and quantized primitives have separate scoped rows; advanced numerical families have their own rows."
+
+[[api]]
+id = "core.tensor.conversion_reductions"
+python_symbols = ["torch.Tensor.to", "torch.mean", "torch.std", "torch.clamp"]
+rust_symbols = ["rusttorch::tensor::standardize", "rusttorch::Tensor::f_to_kind", "rusttorch::Tensor::f_to_device", "rusttorch::Tensor::f_mean", "rusttorch::Tensor::f_std_dim"]
+status = "partial"
+implementation = "mixed"
+scope = "CPU-tested explicit integer-to-float conversion and population-standard-deviation feature normalization along a validated positive/negative axis: (x-mean)/max(std,epsilon), retained reduction dimensions, epsilon that remains finite and positive in the input dtype, constant features producing zero, empty reduction rejection and float32/float64 inputs."
+source = "aten/src/ATen/native/native_functions.yaml"
+evidence = ["tests/tensor_workflows.rs::views_copies_broadcasts_and_standardization", "tests/tensor_workflows.rs::empty_nested_and_copy_gradient_boundaries", "tests/tensor_workflows.rs::malformed_inputs_return_errors_without_mutation", "tests/tensor_workflows.rs::tensor_workflows_python_parity"]
+notes = "The native same-device CPU conversion is exercised in the executable tutorial; this is not accelerator transfer evidence or every reduction, accumulation dtype, correction, NaN policy or conversion mode. Population variance uses correction=0. Integer conversion cannot preserve floating gradients."
+
+[[api]]
+id = "core.tensor.indexing"
+python_symbols = ["torch.index_select", "torch.gather", "torch.index_add", "torch.where"]
+rust_symbols = ["rusttorch::tensor::select_rows", "rusttorch::tensor::gather_rows", "rusttorch::tensor::scatter_add_rows", "rusttorch::tensor::replace_masked"]
+status = "partial"
+implementation = "mixed"
+scope = "CPU-tested out-of-place row selection, one class per matrix row, additive aggregation of repeated row IDs, and exact-shape Boolean masked replacement. IDs are int64, nonnegative, in bounds and on the input device; helper-specific shapes and kinds are validated. Native selected-input gradients accumulate across repeated indices; empty row selections and empty aggregation are tested."
+source = "aten/src/ATen/native/native_functions.yaml"
+evidence = ["tests/tensor_workflows.rs::indexing_updates_preserve_inputs_and_accumulate_gradients", "tests/tensor_workflows.rs::malformed_inputs_return_errors_without_mutation", "tests/tensor_workflows.rs::empty_nested_and_copy_gradient_boundaries", "tests/tensor_workflows.rs::tensor_workflows_python_parity"]
+notes = "Task-oriented helpers use native index_select/gather/index_add/where. This is not every indexing mode, Python negative indexing, assignment syntax or advanced-index broadcasting. Native f_* methods remain available; accelerator reductions retain native nondeterminism. Python parity runs through scripts/run-python-parity.sh."
+
+[[api]]
+id = "core.tensor.quantization"
+python_symbols = ["torch.quantize_per_tensor", "torch.Tensor.dequantize", "torch.Tensor.int_repr"]
+rust_symbols = ["rusttorch::tensor::quantize_per_tensor", "rusttorch::Tensor::f_dequantize", "rusttorch::Tensor::f_int_repr"]
+status = "partial"
+implementation = "mixed"
+scope = "CPU per-tensor affine quantization of finite detached float32 input to QInt8 or QUInt8 with scale that remains finite and positive after float32 conversion and a representable zero point. Signed 8-bit values, tie rounding, saturation, integer representation and dequantization are numerically tested."
+source = "aten/src/ATen/native/native_functions.yaml"
+evidence = ["tests/tensor_workflows.rs::sparse_coo_csr_and_quantized_boundaries", "tests/tensor_workflows.rs::malformed_inputs_return_errors_without_mutation", "tests/tensor_workflows.rs::tensor_workflows_python_parity"]
+notes = "Pinned PyTorch 2.13 deprecates these legacy quantized tensor constructors. Requires-grad inputs are rejected instead of silently disconnecting gradients. QUInt8 parameter validation is tested; no full unsigned numerical fixture, model conversion, observers, calibration algorithms, quantized operators or quantization-aware training is claimed. torch.ao.quantization remains planned separately."
+
+[[api]]
+id = "core.tensor.views"
+python_symbols = ["torch.Tensor.view", "torch.reshape", "torch.transpose", "torch.Tensor.expand", "torch.view_copy"]
+rust_symbols = ["rusttorch::tensor::flatten_features", "rusttorch::Tensor::f_view", "rusttorch::Tensor::f_reshape", "rusttorch::Tensor::f_transpose", "rusttorch::Tensor::f_expand", "rusttorch::Tensor::f_view_copy"]
+status = "partial"
+implementation = "mixed"
+scope = "CPU-tested batch-feature flattening with explicit shared-view or always-independent-copy storage, noncontiguous view rejection/copy success, empty batches, copy gradients, transpose layout and zero-stride broadcasting. Native reshape may alias or copy; helper copy=true always allocates."
+source = "aten/src/ATen/native/native_functions.yaml"
+evidence = ["tests/tensor_workflows.rs::views_copies_broadcasts_and_standardization", "tests/tensor_workflows.rs::empty_nested_and_copy_gradient_boundaries", "tests/tensor_workflows.rs::tensor_workflows_python_parity"]
+notes = "The helper requires at least a batch and feature axis; feature-count overflow and undefined/unsupported nested metadata return errors. Mutation through a view changes its source; expanded repeated storage should not be mutated. Arbitrary memory formats and overlapping-stride construction are not covered."
 
 [[api]]
 id = "data.batched_fetch"
@@ -150,7 +557,7 @@ notes = "Rust map indices are usize and do not reproduce Python negative indexin
 
 [[api]]
 id = "data.batches"
-python_symbols = ["torch.utils.data.IterableDataset", "torch.utils.data.DataLoader"]
+python_symbols = ["torch.utils.data.IterableDataset", "torch.utils.data.DataLoader", "torch.utils.data.dataset.IterableDataset"]
 rust_symbols = ["rusttorch_data::batches", "rusttorch_data::batches_with_collate", "rusttorch::data::batches", "rusttorch::data::batches_with_collate"]
 status = "supported"
 implementation = "rusttorch"
@@ -161,7 +568,7 @@ notes = "rusttorch-data owns the direct surface and rusttorch::data preserves it
 
 [[api]]
 id = "data.chain_dataset"
-python_symbols = ["torch.utils.data.ChainDataset"]
+python_symbols = ["torch.utils.data.ChainDataset", "torch.utils.data.dataset.ChainDataset"]
 rust_symbols = ["rusttorch_data::chain_datasets", "rusttorch::data::chain_datasets"]
 status = "supported"
 implementation = "rusttorch"
@@ -183,7 +590,7 @@ notes = "RustTorch uses associated Rust types and a Bytes newtype instead of Pyt
 
 [[api]]
 id = "data.concat_dataset"
-python_symbols = ["torch.utils.data.ConcatDataset"]
+python_symbols = ["torch.utils.data.ConcatDataset", "torch.utils.data.dataset.ConcatDataset"]
 rust_symbols = ["rusttorch_data::ConcatDataset", "rusttorch::data::ConcatDataset"]
 status = "supported"
 implementation = "rusttorch"
@@ -194,7 +601,7 @@ notes = "Indices are usize, so Python negative-index translation is intentionall
 
 [[api]]
 id = "data.dataset"
-python_symbols = ["torch.utils.data.Dataset"]
+python_symbols = ["torch.utils.data.Dataset", "torch.utils.data.dataset.Dataset"]
 rust_symbols = ["rusttorch_data::Dataset", "rusttorch_data::DatasetSamples", "rusttorch::data::Dataset", "rusttorch::data::DatasetSamples"]
 status = "supported"
 implementation = "rusttorch"
@@ -238,7 +645,7 @@ notes = "RustTorch uses type-state builders instead of exposing Python's interna
 
 [[api]]
 id = "data.loader"
-python_symbols = ["torch.utils.data.DataLoader"]
+python_symbols = ["torch.utils.data.DataLoader", "torch.utils.data.dataloader.DataLoader"]
 rust_symbols = ["rusttorch_data::DataLoader", "rusttorch_data::DataLoaderBuilder", "rusttorch_data::OwnedDataLoader", "rusttorch_data::LoaderIter", "rusttorch_data::WorkerLoaderIter", "rusttorch_data::SerialExecution", "rusttorch_data::WorkerExecution", "rusttorch_data::AutoBatch", "rusttorch_data::ExplicitBatches", "rusttorch_data::NoBatch", "rusttorch_data::LoaderError", "rusttorch_data::PipelineError", "rusttorch::data::DataLoader", "rusttorch::data::DataLoaderBuilder", "rusttorch::data::OwnedDataLoader", "rusttorch::data::LoaderIter", "rusttorch::data::WorkerLoaderIter", "rusttorch::data::SerialExecution", "rusttorch::data::WorkerExecution", "rusttorch::data::AutoBatch", "rusttorch::data::ExplicitBatches", "rusttorch::data::NoBatch", "rusttorch::data::LoaderError", "rusttorch::data::PipelineError"]
 status = "supported"
 implementation = "rusttorch"
@@ -326,7 +733,7 @@ notes = "SplitLength is a typed Rust enum replacing Python's mixed numeric list,
 
 [[api]]
 id = "data.sampler"
-python_symbols = ["torch.utils.data.Sampler", "torch.utils.data.BatchSampler", "torch.utils.data.SequentialSampler", "torch.utils.data.RandomSampler", "torch.utils.data.SubsetRandomSampler", "torch.utils.data.WeightedRandomSampler"]
+python_symbols = ["torch.utils.data.Sampler", "torch.utils.data.BatchSampler", "torch.utils.data.SequentialSampler", "torch.utils.data.RandomSampler", "torch.utils.data.SubsetRandomSampler", "torch.utils.data.WeightedRandomSampler", "torch.utils.data.sampler.BatchSampler", "torch.utils.data.sampler.RandomSampler", "torch.utils.data.sampler.Sampler", "torch.utils.data.sampler.SequentialSampler", "torch.utils.data.sampler.SubsetRandomSampler", "torch.utils.data.sampler.WeightedRandomSampler"]
 rust_symbols = ["rusttorch_data::Sampler", "rusttorch_data::BatchSource", "rusttorch_data::FnSampler", "rusttorch_data::FnBatchSource", "rusttorch_data::BatchSampler", "rusttorch_data::SequentialSampler", "rusttorch_data::RandomSampler", "rusttorch_data::SubsetRandomSampler", "rusttorch_data::WeightedRandomSampler", "rusttorch::data::Sampler", "rusttorch::data::BatchSource", "rusttorch::data::FnSampler", "rusttorch::data::FnBatchSource", "rusttorch::data::BatchSampler", "rusttorch::data::SequentialSampler", "rusttorch::data::RandomSampler", "rusttorch::data::SubsetRandomSampler", "rusttorch::data::WeightedRandomSampler"]
 status = "supported"
 implementation = "rusttorch"
@@ -337,7 +744,7 @@ notes = "rusttorch-data owns the direct samplers and rusttorch::data preserves t
 
 [[api]]
 id = "data.sampler.distributed"
-python_symbols = ["torch.utils.data.DistributedSampler"]
+python_symbols = ["torch.utils.data.DistributedSampler", "torch.utils.data.distributed.DistributedSampler"]
 rust_symbols = ["rusttorch_data::DistributedSampler", "rusttorch::data::DistributedSampler"]
 status = "supported"
 implementation = "rusttorch"
@@ -348,7 +755,7 @@ notes = "RustTorch requires explicit replica and rank values instead of consulti
 
 [[api]]
 id = "data.stack_dataset"
-python_symbols = ["torch.utils.data.StackDataset"]
+python_symbols = ["torch.utils.data.StackDataset", "torch.utils.data.dataset.StackDataset"]
 rust_symbols = ["rusttorch_data::StackDataset", "rusttorch_data::StackTuple", "rusttorch::data::StackDataset", "rusttorch::data::StackTuple"]
 status = "supported"
 implementation = "rusttorch"
@@ -370,7 +777,7 @@ notes = "RustTorch uses threads and typed explicitly sharded factories rather th
 
 [[api]]
 id = "data.subset"
-python_symbols = ["torch.utils.data.Subset"]
+python_symbols = ["torch.utils.data.Subset", "torch.utils.data.dataset.Subset"]
 rust_symbols = ["rusttorch_data::Subset", "rusttorch::data::Subset"]
 status = "supported"
 implementation = "rusttorch"
@@ -381,7 +788,7 @@ notes = "Construction rejects out-of-range usize indices, so Python negative ind
 
 [[api]]
 id = "data.tensor_dataset"
-python_symbols = ["torch.utils.data.TensorDataset"]
+python_symbols = ["torch.utils.data.TensorDataset", "torch.utils.data.dataset.TensorDataset"]
 rust_symbols = ["rusttorch_data::TensorDataset", "rusttorch::data::TensorDataset"]
 status = "supported"
 implementation = "mixed"
@@ -425,25 +832,25 @@ notes = "FSDP follows process groups, distributed checkpointing, and memory benc
 
 [[api]]
 id = "distributions"
-python_symbols = ["torch.distributions.Distribution"]
-rust_symbols = []
-status = "planned"
-implementation = "none"
-scope = "Probability distributions, transforms, constraints, sampling, and log-probability APIs are not exposed."
+python_symbols = ["torch.distributions.Distribution", "torch.distributions.Normal", "torch.distributions.Bernoulli", "torch.distributions.Categorical"]
+rust_symbols = ["rusttorch::distributions::Normal", "rusttorch::distributions::Bernoulli", "rusttorch::distributions::Categorical"]
+status = "partial"
+implementation = "mixed"
+scope = "Finite dense real Normal, Bernoulli and Categorical parameters with broadcast batch shapes, leading sample dimensions, detached sampling, log probability and entropy. Normal additionally exposes pathwise rsample, mean and variance; discrete families accept probabilities or logits. Parameter and observation validation returns errors."
 source = "torch/distributions/distribution.py"
-evidence = []
-notes = "Each future distribution requires numerical and gradient parity evidence."
+evidence = ["tests/distributions.rs::continuous_samples_and_scores_have_the_expected_gradient_boundary", "tests/distributions.rs::discrete_distributions_broadcast_scores_and_preserve_parameter_gradients", "tests/distributions.rs::invalid_distribution_parameters_and_observations_return_errors", "tests/distributions.rs::distribution_scores_samples_and_gradients_match_pinned_python"]
+notes = "Pinned source implementations: torch/distributions/{normal,bernoulli,categorical,utils}.py. CPU Double parity covers scores, entropy, parameter gradients and seeded rsample/Bernoulli/Categorical draws; no universal generator-stream or backend guarantee. The shared native RNG is affected by concurrent draws. Transforms, constraints framework, multivariate/event distributions, infinite parameters and the remaining distribution catalog are not exposed."
 
 [[api]]
 id = "fft"
-python_symbols = ["torch.fft"]
-rust_symbols = []
-status = "planned"
-implementation = "none"
-scope = "The torch.fft namespace is not wrapped or compatibility-tested."
+python_symbols = ["torch.fft", "torch.fft.rfft", "torch.fft.irfft", "torch.fft.fft", "torch.fft.ifft"]
+rust_symbols = ["rusttorch::tensor::spectral_filter", "rusttorch::Tensor::f_fft_rfft", "rusttorch::Tensor::f_fft_irfft", "rusttorch::Tensor::f_fft_fft", "rusttorch::Tensor::f_fft_ifft"]
+status = "partial"
+implementation = "mixed"
+scope = "CPU real-last-axis spectral filtering with exact frequency-bin gain shape, backward normalization and explicit original length for odd/even inverse real transforms; float32/float64 reconstruction and native input/gain gradients. Complex128 one-dimensional FFT/IFFT with ortho normalization, real/imaginary representation and numerical round-trip fixtures are tested."
 source = "torch/fft/__init__.py"
-evidence = []
-notes = "Future coverage will be split by transform family and normalization behavior."
+evidence = ["tests/tensor_workflows.rs::fft_and_special_functions_keep_native_gradients", "tests/tensor_workflows.rs::empty_nested_and_copy_gradient_boundaries", "tests/tensor_workflows.rs::malformed_inputs_return_errors_without_mutation", "tests/tensor_workflows.rs::tensor_workflows_python_parity"]
+notes = "The helper applies a periodic filter, not padded linear convolution. Full FFT namespace, arbitrary multidimensional transform families, complex64 numerical fixtures, all normalizations and accelerator kernels remain outside this scope. Python fixture compares spectrum, filtered output and selected gradients."
 
 [[api]]
 id = "func"
@@ -458,7 +865,7 @@ notes = "Rust interfaces require explicit ownership and mutation semantics."
 
 [[api]]
 id = "graph.executor"
-python_symbols = ["torch.fx.Interpreter"]
+python_symbols = ["torch.fx.Interpreter", "torch.fx.interpreter.Interpreter"]
 rust_symbols = ["rusttorch::graph::EagerExecutor", "rusttorch::graph::GraphModule", "rusttorch::graph::GraphInputs", "rusttorch::graph::GraphOutputs"]
 status = "supported"
 implementation = "mixed"
@@ -480,7 +887,7 @@ notes = "DOT generation returns text and does not invoke Graphviz."
 
 [[api]]
 id = "graph.ir"
-python_symbols = ["torch.fx.Graph", "torch.fx.Node"]
+python_symbols = ["torch.fx.Graph", "torch.fx.Node", "torch.fx.node.Node"]
 rust_symbols = ["rusttorch::graph::Graph", "rusttorch::graph::GraphBuilder", "rusttorch::graph::Node", "rusttorch::graph::NodeId", "rusttorch::graph::ValueId", "rusttorch::graph::TensorSpec"]
 status = "partial"
 implementation = "rusttorch"
@@ -513,14 +920,14 @@ notes = "These passes operate on RustTorch graphs and do not accept arbitrary FX
 
 [[api]]
 id = "linalg"
-python_symbols = ["torch.linalg"]
-rust_symbols = []
-status = "planned"
-implementation = "none"
-scope = "The torch.linalg namespace is not wrapped or compatibility-tested."
+python_symbols = ["torch.linalg", "torch.linalg.solve", "torch.linalg.lstsq", "torch.linalg.svd", "torch.linalg.eigh", "torch.linalg.det", "torch.linalg.norm"]
+rust_symbols = ["rusttorch::tensor::least_squares", "rusttorch::tensor::LeastSquares", "rusttorch::Tensor::f_linalg_solve", "rusttorch::Tensor::f_svd", "rusttorch::Tensor::f_linalg_eigh", "rusttorch::Tensor::f_linalg_det", "rusttorch::Tensor::f_linalg_norm"]
+status = "partial"
+implementation = "mixed"
+scope = "CPU real two-dimensional least squares with finite float32/float64 matching inputs and SVD-based gelsd driver, nonnegative optional rcond, solution/residual/rank/singular-value diagnostics, rank-deficiency handling and native gradient connectivity. Float64 CPU fixtures additionally cover square solve, SVD singular values/reconstruction, symmetric eigendecomposition, determinant and matrix spectral norm."
 source = "torch/linalg/__init__.py"
-evidence = []
-notes = "Future rows will split decompositions, solvers, norms, and matrix functions."
+evidence = ["tests/tensor_workflows.rs::least_squares_handles_rank_deficiency_and_native_linalg", "tests/tensor_workflows.rs::malformed_inputs_return_errors_without_mutation", "tests/tensor_workflows.rs::tensor_workflows_python_parity"]
+notes = "Safe CPU SVD uses native f_svd returning V, not Vh: generated f_linalg_svd requires a string driver and cannot express driver=None for CPU. This is partial numerical equivalence, not identical Python signature. Batched/complex solver helpers, GPU drivers, every decomposition/matrix function and derivatives at singularities/repeated eigenvalues are not claimed. Residuals can be empty according to native lstsq conditions."
 
 [[api]]
 id = "nested"
@@ -528,14 +935,14 @@ python_symbols = ["torch.nested"]
 rust_symbols = []
 status = "planned"
 implementation = "none"
-scope = "Nested tensor construction, operators, autograd, and layout behavior are not exposed."
+scope = "A supported Rust nested/jagged construction, operator, autograd and layout workflow is not exposed."
 source = "torch/nested/__init__.py"
 evidence = []
-notes = "Support depends on stable LibTorch bindings and backend evidence."
+notes = "Safe generated internal operators can create experimental nested tensors, but this is not torch.nested workflow parity. Tensor helpers catch unsupported nested size metadata as recoverable errors; empty_nested_and_copy_gradient_boundaries tests that boundary. Padding plus an explicit mask is the supported sequence-data route; no unsafe bridge is introduced."
 
 [[api]]
 id = "nn.activations"
-python_symbols = ["torch.nn.Sigmoid", "torch.nn.Tanh", "torch.nn.SiLU", "torch.nn.Softmax", "torch.nn.LogSoftmax", "torch.nn.LeakyReLU", "torch.nn.ELU"]
+python_symbols = ["torch.nn.Sigmoid", "torch.nn.Tanh", "torch.nn.SiLU", "torch.nn.Softmax", "torch.nn.LogSoftmax", "torch.nn.LeakyReLU", "torch.nn.ELU", "torch.nn.modules.activation.ELU", "torch.nn.modules.activation.LeakyReLU", "torch.nn.modules.activation.LogSoftmax", "torch.nn.modules.activation.SiLU", "torch.nn.modules.activation.Sigmoid", "torch.nn.modules.activation.Softmax", "torch.nn.modules.activation.Tanh"]
 rust_symbols = ["rusttorch::nn::Sigmoid", "rusttorch::nn::Tanh", "rusttorch::nn::SiLU", "rusttorch::nn::Softmax", "rusttorch::nn::LogSoftmax", "rusttorch::nn::LeakyReLU", "rusttorch::nn::ELU"]
 status = "partial"
 implementation = "mixed"
@@ -546,7 +953,7 @@ notes = "These seven modules do not establish the entire activation catalog. In-
 
 [[api]]
 id = "nn.attention"
-python_symbols = ["torch.nn.MultiheadAttention", "torch.nn.functional.scaled_dot_product_attention"]
+python_symbols = ["torch.nn.MultiheadAttention", "torch.nn.functional.scaled_dot_product_attention", "torch.nn.modules.activation.MultiheadAttention"]
 rust_symbols = ["rusttorch::nn::AttentionMask", "rusttorch::nn::MultiheadAttentionConfig", "rusttorch::nn::MultiheadAttention", "rusttorch::nn::MultiheadAttention::forward_t", "rusttorch::nn::MultiheadAttention::forward_per_head_t", "rusttorch::nn::MultiheadAttention::forward_without_weights_t"]
 status = "partial"
 implementation = "mixed"
@@ -557,7 +964,7 @@ notes = "Separate kdim/vdim, appended bias/zero tokens, nested tensors, cached k
 
 [[api]]
 id = "nn.convolution"
-python_symbols = ["torch.nn.Conv1d", "torch.nn.Conv2d", "torch.nn.Conv3d", "torch.nn.functional.conv1d", "torch.nn.functional.conv2d", "torch.nn.functional.conv3d"]
+python_symbols = ["torch.nn.Conv1d", "torch.nn.Conv2d", "torch.nn.Conv3d", "torch.nn.functional.conv1d", "torch.nn.functional.conv2d", "torch.nn.functional.conv3d", "torch.nn.modules.conv.Conv1d", "torch.nn.modules.conv.Conv2d", "torch.nn.modules.conv.Conv3d"]
 rust_symbols = ["rusttorch::nn::ConvConfig", "rusttorch::nn::Conv1d", "rusttorch::nn::Conv2d", "rusttorch::nn::Conv3d", "rusttorch::nn::functional::conv1d", "rusttorch::nn::functional::conv2d", "rusttorch::nn::functional::conv3d"]
 status = "partial"
 implementation = "mixed"
@@ -568,7 +975,7 @@ notes = "String padding and nonzero padding modes remain unimplemented. Transpos
 
 [[api]]
 id = "nn.convolution.transposed"
-python_symbols = ["torch.nn.ConvTranspose1d", "torch.nn.ConvTranspose2d", "torch.nn.ConvTranspose3d"]
+python_symbols = ["torch.nn.ConvTranspose1d", "torch.nn.ConvTranspose2d", "torch.nn.ConvTranspose3d", "torch.nn.modules.conv.ConvTranspose1d", "torch.nn.modules.conv.ConvTranspose2d", "torch.nn.modules.conv.ConvTranspose3d"]
 rust_symbols = ["rusttorch::nn::ConvTransposeConfig", "rusttorch::nn::ConvTranspose", "rusttorch::nn::ConvTranspose1d", "rusttorch::nn::ConvTranspose2d", "rusttorch::nn::ConvTranspose3d", "rusttorch::nn::ConvTranspose::forward_with_output_size"]
 status = "partial"
 implementation = "mixed"
@@ -590,7 +997,7 @@ notes = "Probability-target normalization is the caller responsibility. Rust opt
 
 [[api]]
 id = "nn.dropout"
-python_symbols = ["torch.nn.Dropout", "torch.nn.functional.dropout"]
+python_symbols = ["torch.nn.Dropout", "torch.nn.functional.dropout", "torch.nn.modules.dropout.Dropout"]
 rust_symbols = ["rusttorch::nn::Dropout", "rusttorch::nn::functional::dropout"]
 status = "partial"
 implementation = "mixed"
@@ -601,7 +1008,7 @@ notes = "The full stochastic distribution, all shapes and dtypes, and backend pa
 
 [[api]]
 id = "nn.embedding"
-python_symbols = ["torch.nn.Embedding", "torch.nn.functional.embedding"]
+python_symbols = ["torch.nn.Embedding", "torch.nn.functional.embedding", "torch.nn.modules.sparse.Embedding"]
 rust_symbols = ["rusttorch::nn::Embedding", "rusttorch::nn::EmbeddingConfig", "rusttorch::nn::functional::embedding"]
 status = "partial"
 implementation = "mixed"
@@ -623,7 +1030,7 @@ notes = "Python dynamic argument coercion is not supported."
 
 [[api]]
 id = "nn.gelu"
-python_symbols = ["torch.nn.GELU", "torch.nn.functional.gelu"]
+python_symbols = ["torch.nn.GELU", "torch.nn.functional.gelu", "torch.nn.modules.activation.GELU"]
 rust_symbols = ["rusttorch::nn::Gelu", "rusttorch::nn::GeluApproximation", "rusttorch::nn::functional::gelu", "rusttorch::nn::functional::gelu_with_approximation"]
 status = "partial"
 implementation = "libtorch"
@@ -634,7 +1041,7 @@ notes = "GeluApproximation::Tanh is exposed but lacks focused numerical and grad
 
 [[api]]
 id = "nn.identity"
-python_symbols = ["torch.nn.Identity"]
+python_symbols = ["torch.nn.Identity", "torch.nn.modules.linear.Identity"]
 rust_symbols = ["rusttorch::nn::Identity"]
 status = "supported"
 implementation = "libtorch"
@@ -645,7 +1052,7 @@ notes = "The Rust unit type does not accept arbitrary ignored Python arguments."
 
 [[api]]
 id = "nn.linear"
-python_symbols = ["torch.nn.Linear", "torch.nn.functional.linear"]
+python_symbols = ["torch.nn.Linear", "torch.nn.functional.linear", "torch.nn.modules.linear.Linear"]
 rust_symbols = ["rusttorch::nn::Linear", "rusttorch::nn::LinearConfig", "rusttorch::nn::linear", "rusttorch::nn::functional::linear"]
 status = "supported"
 implementation = "mixed"
@@ -689,7 +1096,7 @@ notes = "Stateful loss modules, optional per-element weights, deprecated size_av
 
 [[api]]
 id = "nn.module"
-python_symbols = ["torch.nn.Module"]
+python_symbols = ["torch.nn.Module", "torch.nn.modules.module.Module"]
 rust_symbols = ["rusttorch::nn::Module", "rusttorch::nn::VarStore", "rusttorch::nn::ParameterPath"]
 status = "partial"
 implementation = "rusttorch"
@@ -711,7 +1118,7 @@ notes = "Elementwise weighting, deprecated size_average/reduce flags, a stateful
 
 [[api]]
 id = "nn.normalization"
-python_symbols = ["torch.nn.BatchNorm1d", "torch.nn.BatchNorm2d", "torch.nn.BatchNorm3d", "torch.nn.GroupNorm", "torch.nn.InstanceNorm1d", "torch.nn.InstanceNorm2d", "torch.nn.InstanceNorm3d"]
+python_symbols = ["torch.nn.BatchNorm1d", "torch.nn.BatchNorm2d", "torch.nn.BatchNorm3d", "torch.nn.GroupNorm", "torch.nn.InstanceNorm1d", "torch.nn.InstanceNorm2d", "torch.nn.InstanceNorm3d", "torch.nn.modules.batchnorm.BatchNorm1d", "torch.nn.modules.batchnorm.BatchNorm2d", "torch.nn.modules.batchnorm.BatchNorm3d", "torch.nn.modules.instancenorm.InstanceNorm1d", "torch.nn.modules.instancenorm.InstanceNorm2d", "torch.nn.modules.instancenorm.InstanceNorm3d", "torch.nn.modules.normalization.GroupNorm"]
 rust_symbols = ["rusttorch::nn::BatchNormConfig", "rusttorch::nn::BatchNorm", "rusttorch::nn::BatchNorm1d", "rusttorch::nn::BatchNorm2d", "rusttorch::nn::BatchNorm3d", "rusttorch::nn::InstanceNormConfig", "rusttorch::nn::InstanceNorm", "rusttorch::nn::InstanceNorm1d", "rusttorch::nn::InstanceNorm2d", "rusttorch::nn::InstanceNorm3d", "rusttorch::nn::GroupNormConfig", "rusttorch::nn::GroupNorm"]
 status = "partial"
 implementation = "mixed"
@@ -722,7 +1129,7 @@ notes = "Additional pinned definitions are in torch/nn/modules/instancenorm.py a
 
 [[api]]
 id = "nn.normalization.layer_norm"
-python_symbols = ["torch.nn.LayerNorm", "torch.nn.functional.layer_norm"]
+python_symbols = ["torch.nn.LayerNorm", "torch.nn.functional.layer_norm", "torch.nn.modules.normalization.LayerNorm"]
 rust_symbols = ["rusttorch::nn::LayerNorm", "rusttorch::nn::LayerNormConfig", "rusttorch::nn::functional::layer_norm"]
 status = "partial"
 implementation = "mixed"
@@ -733,7 +1140,7 @@ notes = "CPU evidence covers the tested shapes and affine variants. Zero-sized n
 
 [[api]]
 id = "nn.pooling"
-python_symbols = ["torch.nn.MaxPool1d", "torch.nn.MaxPool2d", "torch.nn.MaxPool3d", "torch.nn.AvgPool1d", "torch.nn.AvgPool2d", "torch.nn.AvgPool3d", "torch.nn.AdaptiveMaxPool1d", "torch.nn.AdaptiveMaxPool2d", "torch.nn.AdaptiveMaxPool3d", "torch.nn.AdaptiveAvgPool1d", "torch.nn.AdaptiveAvgPool2d", "torch.nn.AdaptiveAvgPool3d"]
+python_symbols = ["torch.nn.MaxPool1d", "torch.nn.MaxPool2d", "torch.nn.MaxPool3d", "torch.nn.AvgPool1d", "torch.nn.AvgPool2d", "torch.nn.AvgPool3d", "torch.nn.AdaptiveMaxPool1d", "torch.nn.AdaptiveMaxPool2d", "torch.nn.AdaptiveMaxPool3d", "torch.nn.AdaptiveAvgPool1d", "torch.nn.AdaptiveAvgPool2d", "torch.nn.AdaptiveAvgPool3d", "torch.nn.modules.pooling.AdaptiveAvgPool1d", "torch.nn.modules.pooling.AdaptiveAvgPool2d", "torch.nn.modules.pooling.AdaptiveAvgPool3d", "torch.nn.modules.pooling.AdaptiveMaxPool1d", "torch.nn.modules.pooling.AdaptiveMaxPool2d", "torch.nn.modules.pooling.AdaptiveMaxPool3d", "torch.nn.modules.pooling.AvgPool1d", "torch.nn.modules.pooling.AvgPool2d", "torch.nn.modules.pooling.AvgPool3d", "torch.nn.modules.pooling.MaxPool1d", "torch.nn.modules.pooling.MaxPool2d", "torch.nn.modules.pooling.MaxPool3d"]
 rust_symbols = ["rusttorch::nn::MaxPool", "rusttorch::nn::MaxPool1d", "rusttorch::nn::MaxPool2d", "rusttorch::nn::MaxPool3d", "rusttorch::nn::AvgPool", "rusttorch::nn::AvgPool1d", "rusttorch::nn::AvgPool2d", "rusttorch::nn::AvgPool3d", "rusttorch::nn::AdaptiveMaxPool", "rusttorch::nn::AdaptiveMaxPool1d", "rusttorch::nn::AdaptiveMaxPool2d", "rusttorch::nn::AdaptiveMaxPool3d", "rusttorch::nn::AdaptiveAvgPool", "rusttorch::nn::AdaptiveAvgPool1d", "rusttorch::nn::AdaptiveAvgPool2d", "rusttorch::nn::AdaptiveAvgPool3d"]
 status = "partial"
 implementation = "mixed"
@@ -744,7 +1151,7 @@ notes = "Unpooling, fractional/Lp pooling, lazy variants and standalone function
 
 [[api]]
 id = "nn.recurrent"
-python_symbols = ["torch.nn.RNN", "torch.nn.LSTM", "torch.nn.GRU"]
+python_symbols = ["torch.nn.RNN", "torch.nn.LSTM", "torch.nn.GRU", "torch.nn.modules.rnn.GRU", "torch.nn.modules.rnn.LSTM", "torch.nn.modules.rnn.RNN"]
 rust_symbols = ["rusttorch::nn::RnnActivation", "rusttorch::nn::RnnConfig", "rusttorch::nn::Rnn", "rusttorch::nn::Lstm", "rusttorch::nn::Gru"]
 status = "partial"
 implementation = "mixed"
@@ -755,7 +1162,7 @@ notes = "Packed sequences, standalone recurrent cells, lazy modules, quantized v
 
 [[api]]
 id = "nn.relu"
-python_symbols = ["torch.nn.ReLU", "torch.nn.functional.relu"]
+python_symbols = ["torch.nn.ReLU", "torch.nn.functional.relu", "torch.nn.modules.activation.ReLU"]
 rust_symbols = ["rusttorch::nn::ReLU", "rusttorch::nn::functional::relu"]
 status = "supported"
 implementation = "libtorch"
@@ -766,7 +1173,7 @@ notes = "In-place mutation is not exposed."
 
 [[api]]
 id = "nn.sequential"
-python_symbols = ["torch.nn.Sequential"]
+python_symbols = ["torch.nn.Sequential", "torch.nn.modules.container.Sequential"]
 rust_symbols = ["rusttorch::nn::Sequential", "rusttorch::nn::SequentialBuilder", "rusttorch::nn::SequentialBuilder::layer"]
 status = "partial"
 implementation = "rusttorch"
@@ -777,7 +1184,7 @@ notes = "The generic factory composes custom or newly added Module implementatio
 
 [[api]]
 id = "nn.transformer"
-python_symbols = ["torch.nn.Transformer", "torch.nn.TransformerEncoder", "torch.nn.TransformerDecoder", "torch.nn.TransformerEncoderLayer", "torch.nn.TransformerDecoderLayer"]
+python_symbols = ["torch.nn.Transformer", "torch.nn.TransformerEncoder", "torch.nn.TransformerDecoder", "torch.nn.TransformerEncoderLayer", "torch.nn.TransformerDecoderLayer", "torch.nn.modules.transformer.Transformer", "torch.nn.modules.transformer.TransformerDecoder", "torch.nn.modules.transformer.TransformerDecoderLayer", "torch.nn.modules.transformer.TransformerEncoder", "torch.nn.modules.transformer.TransformerEncoderLayer"]
 rust_symbols = ["rusttorch::nn::TransformerActivation", "rusttorch::nn::TransformerConfig", "rusttorch::nn::TransformerMasks", "rusttorch::nn::Transformer", "rusttorch::nn::TransformerEncoder", "rusttorch::nn::TransformerDecoder", "rusttorch::nn::TransformerEncoderLayer", "rusttorch::nn::TransformerDecoderLayer"]
 status = "partial"
 implementation = "mixed"
@@ -788,7 +1195,7 @@ notes = "Full Transformer allocation/random-consumption order differs from Pytho
 
 [[api]]
 id = "nn.utils.clip_grad"
-python_symbols = ["torch.nn.utils.clip_grad_norm_", "torch.nn.utils.clip_grad_value_"]
+python_symbols = ["torch.nn.utils.clip_grad_norm_", "torch.nn.utils.clip_grad_value_", "torch.nn.utils.clip_grad.clip_grad_norm_", "torch.nn.utils.clip_grad.clip_grad_value_"]
 rust_symbols = ["rusttorch::optim::Optimizer::clip_grad_norm", "rusttorch::optim::Optimizer::clip_grad_value"]
 status = "partial"
 implementation = "mixed"
@@ -810,7 +1217,7 @@ notes = "Future support must identify the opset and runtime verification matrix.
 
 [[api]]
 id = "optim.adadelta"
-python_symbols = ["torch.optim.Adadelta"]
+python_symbols = ["torch.optim.Adadelta", "torch.optim.adadelta.Adadelta"]
 rust_symbols = ["rusttorch::optim::Adadelta", "rusttorch::optim::Optimizer"]
 status = "partial"
 implementation = "mixed"
@@ -821,7 +1228,7 @@ notes = "Dense Float/Double/Half/BFloat16 parameter storage is accepted, but the
 
 [[api]]
 id = "optim.adagrad"
-python_symbols = ["torch.optim.Adagrad"]
+python_symbols = ["torch.optim.Adagrad", "torch.optim.adagrad.Adagrad"]
 rust_symbols = ["rusttorch::optim::Adagrad", "rusttorch::optim::Optimizer"]
 status = "partial"
 implementation = "mixed"
@@ -832,7 +1239,7 @@ notes = "Dense Float/Double/Half/BFloat16 parameter storage is accepted, but the
 
 [[api]]
 id = "optim.adam"
-python_symbols = ["torch.optim.Adam"]
+python_symbols = ["torch.optim.Adam", "torch.optim.adam.Adam"]
 rust_symbols = ["rusttorch::optim::Adam", "rusttorch::optim::Optimizer"]
 status = "partial"
 implementation = "mixed"
@@ -843,7 +1250,7 @@ notes = "Update orchestration and state are implemented by RustTorch over LibTor
 
 [[api]]
 id = "optim.adamax"
-python_symbols = ["torch.optim.Adamax"]
+python_symbols = ["torch.optim.Adamax", "torch.optim.adamax.Adamax"]
 rust_symbols = ["rusttorch::optim::Adamax", "rusttorch::optim::Optimizer"]
 status = "partial"
 implementation = "mixed"
@@ -854,7 +1261,7 @@ notes = "Dense Float/Double/Half/BFloat16 parameter storage is accepted, but the
 
 [[api]]
 id = "optim.adamw"
-python_symbols = ["torch.optim.AdamW"]
+python_symbols = ["torch.optim.AdamW", "torch.optim.adamw.AdamW"]
 rust_symbols = ["rusttorch::optim::AdamW", "rusttorch::optim::Optimizer"]
 status = "partial"
 implementation = "mixed"
@@ -876,7 +1283,7 @@ notes = "Algorithm-specific options such as betas and momentum are shared across
 
 [[api]]
 id = "optim.rmsprop"
-python_symbols = ["torch.optim.RMSprop"]
+python_symbols = ["torch.optim.RMSprop", "torch.optim.rmsprop.RMSprop"]
 rust_symbols = ["rusttorch::optim::RmsProp", "rusttorch::optim::Optimizer"]
 status = "partial"
 implementation = "mixed"
@@ -898,7 +1305,7 @@ notes = "The full scheduler catalog, chained/sequential composition, arbitrary c
 
 [[api]]
 id = "optim.sgd"
-python_symbols = ["torch.optim.SGD"]
+python_symbols = ["torch.optim.SGD", "torch.optim.sgd.SGD"]
 rust_symbols = ["rusttorch::optim::Sgd", "rusttorch::optim::Optimizer"]
 status = "partial"
 implementation = "mixed"
@@ -938,7 +1345,7 @@ implementation = "none"
 scope = "Eager and graph quantization, observers, calibration, fake quantization, and quantized modules are not exposed."
 source = "torch/ao/quantization/__init__.py"
 evidence = []
-notes = "Coverage will distinguish training, post-training, export, dtype, operator, and backend support."
+notes = "Quantized tensor construction/dequantization has a separate narrowly tested core.tensor.quantization row. Model transformation, observers, calibration, fake quantization and quantized modules remain planned; pinned legacy primitive availability does not establish torch.ao.quantization coverage."
 
 [[api]]
 id = "runtime.setup"
@@ -1008,25 +1415,25 @@ notes = "Applications may use tch::CModule directly outside the RustTorch contra
 
 [[api]]
 id = "sparse"
-python_symbols = ["torch.sparse"]
-rust_symbols = []
-status = "planned"
-implementation = "none"
-scope = "Sparse layouts, constructors, operators, autograd, validation, and conversion are not exposed."
+python_symbols = ["torch.sparse", "torch.sparse_coo_tensor", "torch.sparse.mm", "torch.Tensor.to_sparse", "torch.Tensor.to_sparse_csr", "torch.Tensor.to_dense"]
+rust_symbols = ["rusttorch::tensor::sparse_coo_matrix", "rusttorch::tensor::sparse_matmul", "rusttorch::Tensor::f_to_sparse_sparse_dim", "rusttorch::Tensor::f_to_sparse_csr", "rusttorch::Tensor::f_to_dense"]
+status = "partial"
+implementation = "mixed"
+scope = "CPU real two-dimensional COO coordinate construction with explicit shape/kind/device/bounds validation, independent coordinate/value copies and duplicate coalescing, COO/CSR multiplication by dense features, CSR conversion and densification. Structural validation rejects malformed COO/CSR before multiplication. Native dense-to-COO conversion and sparse multiplication retain tested gradients to the dense source and dense feature tensor."
 source = "torch/sparse/__init__.py"
-evidence = []
-notes = "Future rows will distinguish COO, CSR, CSC, BSR, and BSC."
+evidence = ["tests/tensor_workflows.rs::sparse_coo_csr_and_quantized_boundaries", "tests/tensor_workflows.rs::malformed_inputs_return_errors_without_mutation", "tests/tensor_workflows.rs::empty_nested_and_copy_gradient_boundaries", "tests/tensor_workflows.rs::tensor_workflows_python_parity"]
+notes = "The tch C++ coordinate factory disconnects value gradients, so sparse_coo_matrix rejects requires-grad values; this is an explicit difference from Python torch.sparse_coo_tensor. Dense-to-COO conversion provides a separately tested native gradient path. Full COO value-constructor autograd, CSR gradient coverage, CSC/BSR/BSC, arbitrary sparse operations and accelerator parity are not claimed. CSR is beta upstream."
 
 [[api]]
 id = "special"
-python_symbols = ["torch.special"]
-rust_symbols = []
-status = "planned"
-implementation = "none"
-scope = "The torch.special namespace is not wrapped or compatibility-tested."
+python_symbols = ["torch.special", "torch.special.ndtr", "torch.special.log_ndtr", "torch.special.gammaln"]
+rust_symbols = ["rusttorch::Tensor::f_special_ndtr", "rusttorch::Tensor::f_special_log_ndtr", "rusttorch::Tensor::f_special_gammaln"]
+status = "partial"
+implementation = "libtorch"
+scope = "CPU native standard-normal CDF, stable log-CDF for negative tails, and log-gamma for log-factorial calculations. Float64 numerical fixtures cover all three; CDF gradients and extreme-tail finite log-CDF are tested, and float32 CDF smoke evidence is included."
 source = "torch/special/__init__.py"
-evidence = []
-notes = "Future groups require numerical, gradient, dtype, and backend evidence."
+evidence = ["tests/tensor_workflows.rs::fft_and_special_functions_keep_native_gradients", "tests/tensor_workflows.rs::empty_nested_and_copy_gradient_boundaries", "tests/tensor_workflows.rs::tensor_workflows_python_parity"]
+notes = "Native Tensor methods are used directly without redundant wrappers. Remaining special functions, comprehensive domain/error bounds, every dtype and accelerator parity are not claimed; NaN/infinity/domain behavior remains native."
 
 [[api]]
 id = "tabular"

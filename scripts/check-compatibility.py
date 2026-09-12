@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import importlib.util
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -355,6 +356,7 @@ def render_markdown(
     title: str = "API coverage",
     row_prefixes: tuple[str, ...] = (),
     relative_root: str = "..",
+    inventory_counts: dict[str, int] | None = None,
 ) -> str:
     """Render a deterministic public compatibility page."""
 
@@ -409,6 +411,8 @@ def render_markdown(
                     f"- **PyTorch:** {python_symbols}",
                     f"- **RustTorch:** {rust_symbols}",
                     f"- **Implementation:** {IMPLEMENTATION_LABELS[row['implementation']]}",
+                    f"- **Pinned inventory:** {(inventory_counts or {}).get(row['id'], 0)} identities "
+                    f"([exact mapping]({relative_root}/compat/pytorch_inventory_map.toml)); disposition only, not a support claim.",
                     f"- **Scope:** {_markdown_text(row['scope'])}",
                     f"- **Pinned source:** {_source_link(ledger, row['source'])}",
                     f"- **Evidence:** {evidence}",
@@ -419,22 +423,34 @@ def render_markdown(
     return "\n".join(lines).rstrip() + "\n"
 
 
-def generated_documents(root: Path, ledger: dict[str, Any]) -> dict[Path, str]:
+def load_inventory_counts(root: Path, ledger: dict[str, Any]) -> dict[str, int]:
+    """Validate the committed inventory without importing torch or using a network."""
+    spec = importlib.util.spec_from_file_location("pytorch_inventory", root / "scripts/sync-pytorch-inventory.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _, mapping = module.load_snapshot(root, ledger)
+    return dict(module.inventory_counts(mapping))
+
+
+def generated_documents(root: Path, ledger: dict[str, Any], inventory_counts: dict[str, int] | None = None) -> dict[Path, str]:
     """Return every generated compatibility document and its contents."""
 
     return {
-        root / "docs" / "api-coverage.md": render_markdown(ledger),
+        root / "docs" / "api-coverage.md": render_markdown(ledger, inventory_counts=inventory_counts),
         root / "crates" / "rusttorch-core" / "COMPATIBILITY.md": render_markdown(
             ledger,
             title="rusttorch-core compatibility",
             row_prefixes=("autograd.", "core."),
             relative_root="../..",
+            inventory_counts=inventory_counts,
         ),
         root / "crates" / "rusttorch-data" / "COMPATIBILITY.md": render_markdown(
             ledger,
             title="rusttorch-data compatibility",
             row_prefixes=("data.",),
             relative_root="../..",
+            inventory_counts=inventory_counts,
         ),
     }
 
@@ -486,7 +502,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {error}", file=sys.stderr)
         return 1
 
-    documents = generated_documents(root, ledger)
+    try:
+        counts = load_inventory_counts(root, ledger)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        print(f"error: pinned inventory: {error}", file=sys.stderr)
+        return 1
+    documents = generated_documents(root, ledger, counts)
     if arguments.write:
         for path, expected in documents.items():
             relative_path = path.relative_to(root)

@@ -1,4 +1,92 @@
-//! Optional, inspectable graph IR executed eagerly through LibTorch.
+//! Build models with named inputs, branching computations, and inspectable outputs.
+//!
+//! Use [`GraphBuilder`] when you want to expose intermediate features, join
+//! multiple inputs, or inspect a residual model's connectivity. Each operation
+//! returns a [`ValueId`] that another operation can consume. Reusing a value
+//! creates a branch, while output names give your application a stable way to
+//! retrieve results. For a simple layer chain, [`crate::nn::Sequential`] is a
+//! shorter starting point.
+//!
+//! # Combine learned features with a baseline
+//!
+//! This residual block refines four measurements per sample and adds a supplied
+//! baseline. Both inputs share the symbolic `batch` dimension, so each call can
+//! use a different batch size while requiring the two inputs to agree. The
+//! learned projection preserves the four-feature width used by the addition.
+//!
+//! ```
+//! use rusttorch::{DeviceSpec, Kind, Result, Tensor, no_grad};
+//! use rusttorch::graph::{Dim, GraphBuilder, GraphInputs, TensorSpec};
+//!
+//! fn main() -> Result<()> {
+//!     let mut builder = GraphBuilder::new();
+//!     let spec = TensorSpec::new()
+//!         .dimensions(vec![Dim::Symbol("batch".into()), Dim::Known(4)])
+//!         .kind(Kind::Float);
+//!     let features = builder.input("features", spec.clone())?;
+//!     let baseline = builder.input("baseline", spec)?;
+//!     let projection = builder.linear("projection", features, 4, 4)?;
+//!     let correction = builder.relu("correction", projection)?;
+//!     let combined = builder.add("residual", correction, baseline)?;
+//!     builder.add_output("learned_features", correction)?;
+//!     let mut model = builder.output("prediction", combined)?.build(DeviceSpec::Cpu)?;
+//!     model.eval();
+//!
+//!     let inputs = GraphInputs::new()
+//!         .with("features", Tensor::f_ones([2, 4], (Kind::Float, model.device()))?)?
+//!         .with("baseline", Tensor::f_zeros([2, 4], (Kind::Float, model.device()))?)?;
+//!     let outputs = no_grad(|| model.forward(inputs))?;
+//!     assert_eq!(outputs.get("prediction")?.size(), [2, 4]);
+//!     assert_eq!(outputs.get("learned_features")?.size(), [2, 4]);
+//!     println!("{}", model.summary());
+//!     println!("{}", model.to_dot());
+//!
+//!     // A different number of rows for the two inputs violates `batch`.
+//!     let invalid = GraphInputs::new()
+//!         .with("features", Tensor::f_ones([2, 4], (Kind::Float, model.device()))?)?
+//!         .with("baseline", Tensor::f_zeros([3, 4], (Kind::Float, model.device()))?)?;
+//!     assert!(model.forward(invalid).is_err());
+//!     Ok(())
+//! }
+//! ```
+//!
+//! # Describe inputs and handle errors
+//!
+//! [`TensorSpec`] declares runtime constraints; it does not allocate a tensor.
+//! Use [`Dim::Known`] for a fixed width, [`Dim::Symbol`] for dimensions that must
+//! agree within a call, and [`Dim::Dynamic`] for an unconstrained size. A dtype
+//! constraint distinguishes floating-point features from integer class labels.
+//! Supply tensors on [`GraphModule::device`]; execution does not move inputs.
+//!
+//! Names must be unique across inputs, operations, and outputs. Construction
+//! rejects invalid references and shape conflicts established from the available
+//! specs. Every forward call must supply exactly the declared input names, and
+//! each input is checked against its spec. Tensor operations validate remaining
+//! dimensions as they execute. Propagate the returned [`crate::Result`] to
+//! report malformed inputs instead of assuming every batch is valid.
+//!
+//! # Train, inspect, and save a graph
+//!
+//! Graph operations preserve gradients through shared branches. Attach an
+//! optimizer to [`GraphModule::var_store`] and compute a loss from the returned
+//! tensors, or add a named loss with [`GraphBuilder::mse_loss`] or
+//! [`GraphBuilder::cross_entropy_loss`]. A graph with a declared label input
+//! requires labels even in evaluation mode; use a graph without that input for
+//! label-free inference. [`GraphModule::train`] and [`GraphModule::eval`] control
+//! dropout, while [`crate::no_grad`] separately controls gradient recording.
+//!
+//! [`GraphBuilder::finish`] returns a validated graph definition before weights
+//! are allocated. Use [`Graph::summary`] for shapes and parameter counts, and
+//! [`Graph::to_dot`] for Graphviz text. Call [`Graph::build`] when ready to execute.
+//! [`GraphModule::save_weights`] persists parameters by node name; rebuild the
+//! same parameter-bearing nodes before [`GraphModule::load_weights`].
+//!
+//! The graph supports the operations listed in [`GraphOp`]. It executes tensor
+//! operations eagerly; it does not compile models or provide a stable serialized
+//! architecture format. Use ordinary Rust modules for other layers or
+//! data-dependent control flow. The
+//! [graph guide](https://github.com/newpoluton-alt/RustTorch/blob/main/docs/graph-system.md)
+//! includes a complete classifier training example and inspection recipes.
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},

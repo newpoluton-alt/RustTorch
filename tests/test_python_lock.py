@@ -134,6 +134,26 @@ class PythonLockCheckerTests(unittest.TestCase):
                 )
                 path.write_text(original, encoding="utf-8")
 
+    def test_documentation_pins_and_transitive_graph_fail_closed(self) -> None:
+        manifest = self.root / "pyproject.toml"
+        original = manifest.read_text()
+        for pin in ("sphinx==9.1.0", "myst-parser==5.1.0", "pyyaml==6.0.3", "myst-nb==1.4.0"):
+            with self.subTest(pin=pin):
+                manifest.write_text(original.replace(pin, pin.split("==")[0]))
+                self.assert_rejected(self.run_checker("--root", str(self.root), cwd=self.root))
+        manifest.write_text(original)
+        lock = self.root / "uv.lock"
+        contents = lock.read_text()
+        for original_text, replacement in (
+            ('name = "docutils"\nversion = "0.22.4"', 'name = "docutils"\nversion = "0.22.5"'),
+            ('{ name = "myst-parser" },', '{ name = "unlocked-parser" },'),
+            ('name = "pyyaml"\nversion = "6.0.3"\nsource = { registry = "https://pypi.org/simple" }', 'name = "pyyaml"\nversion = "6.0.3"\nsource = { registry = "https://evil.example/simple" }'),
+        ):
+            self.assertIn(original_text, contents)
+            lock.write_text(contents.replace(original_text, replacement, 1))
+            self.assert_rejected(self.run_checker("--root", str(self.root), cwd=self.root))
+        lock.write_text(contents)
+
     def test_lock_contract_rejects_source_artifact_and_platform_drift(self) -> None:
         path = self.root / "uv.lock"
         original = path.read_text(encoding="utf-8")

@@ -1,4 +1,4 @@
-//! Retained-source lifecycle for exact streams. Ordinary streams have no journal.
+//! Save and restore stream positions at successful consumer-visible batch boundaries.
 
 use super::*;
 use crate::{
@@ -28,6 +28,12 @@ fn invalid(reason: impl Into<String>) -> RustTorchError {
 impl<S, C, F, I, M, N> StreamDataLoaderBuilder<S, C, F, I, M, N, CheckpointDisabled> {
     /// Enables exact checkpoints for an explicit replay-safe source identity.
     ///
+    /// The identity must change when the source contents change. Implement
+    /// [`CheckpointSourceFactory`] and [`CheckpointableSource`] for the factory
+    /// and reader; [`ExactStreamDataLoader`] provides an executable cursor and
+    /// JSON restore example. Capture on the iterator after using a batch, then
+    /// recreate the same builder and call [`Self::resume`] to continue.
+    ///
     /// Building requires a checkpoint factory, checkpointable sources/transforms,
     /// ordered delivery, no byte budget, no custom initializer, no persistence,
     /// and no timeout. Ordinary iterator batching has no checkpoint method.
@@ -54,7 +60,13 @@ impl<S, C, F, I, M, N> StreamDataLoaderBuilder<S, C, F, I, M, N, CheckpointDisab
         }
     }
 
-    /// Selects a serialized next-visible-batch stream checkpoint for resume.
+    /// Restores the input position saved after a successful batch.
+    ///
+    /// Pass the deserialized [`StreamLoaderState`] and the same content identity
+    /// used when enabling checkpointing. Builder settings, source kind and state
+    /// must match; `build()` validates the envelope and components before applying
+    /// any restore. The first `iter()` resumes that cursor, while later calls
+    /// start fresh passes. See [`ExactStreamDataLoader`] for a complete example.
     #[allow(clippy::type_complexity)]
     pub fn resume<SS, TS, CS>(
         self,
@@ -570,7 +582,112 @@ where
     }
 }
 
-/// Exact stream owner with suspended, transactionally validated worker sources.
+/// A reusable sharded stream whose unread position can survive a restart.
+///
+/// Build it with [`StreamDataLoaderBuilder::checkpointable`]. Use this for
+/// versioned data whose source and transform state can be restored before the
+/// next unread record. Prefetched work is rolled back to the last visible batch
+/// and replayed; the checkpoint contains cursors and component state, not samples.
+///
+/// # Save a lazy shard cursor and resume the next batch
+///
+/// Each shard below saves the number of its own records already read. Validation
+/// rejects an out-of-range cursor without changing the reader. `set_run_context`
+/// replaces cancellation state after a checkpoint barrier without resetting that
+/// cursor. The example uses JSON; applications that choose this format need a
+/// `serde_json` dependency.
+///
+/// ```
+/// use std::io;
+/// use rusttorch_data::{
+///     CheckpointSourceFactory, CheckpointableSource, LogicalSampleId, SequenceId,
+///     StreamDataLoaderBuilder, StreamLoaderState, VecCollate, WorkerContext,
+///     WorkerRecord, WorkerSourceFactory,
+/// };
+///
+/// const ROWS: usize = 11;
+/// struct Rows;
+/// struct Shard { cursor: usize, context: WorkerContext }
+/// impl Shard {
+///     fn len(&self) -> usize {
+///         ROWS.saturating_sub(self.context.info.id).div_ceil(self.context.info.num_workers)
+///     }
+/// }
+/// impl Iterator for Shard {
+///     type Item = Result<WorkerRecord<usize>, io::Error>;
+///     fn next(&mut self) -> Option<Self::Item> {
+///         if self.context.cancellation.is_cancelled() || self.cursor == self.len() {
+///             return None;
+///         }
+///         let row = self.context.info.id + self.cursor * self.context.info.num_workers;
+///         self.cursor += 1;
+///         Some(Ok(WorkerRecord {
+///             sequence: Some(SequenceId::new(row as u64)),
+///             logical_id: LogicalSampleId::new(row as u64),
+///             sample: row,
+///         }))
+///     }
+/// }
+/// impl WorkerSourceFactory for Rows {
+///     type Sample = usize;
+///     type Error = io::Error;
+///     type Source = Shard;
+///     fn create(&self, context: WorkerContext) -> Result<Shard, io::Error> {
+///         Ok(Shard { cursor: 0, context })
+///     }
+///     fn exact_len(&self) -> Option<usize> { Some(ROWS) }
+/// }
+/// impl CheckpointSourceFactory for Rows {
+///     const CHECKPOINT_KIND: &'static str = "example.modulo-rows.v1";
+/// }
+/// impl CheckpointableSource for Shard {
+///     type Sample = usize;
+///     type Error = io::Error;
+///     type State = usize;
+///     fn snapshot(&self) -> usize { self.cursor }
+///     fn validate_snapshot(&self, cursor: &usize) -> Result<(), io::Error> {
+///         if *cursor > self.len() {
+///             return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid shard cursor"));
+///         }
+///         Ok(())
+///     }
+///     fn restore_validated(&mut self, cursor: &usize) { self.cursor = *cursor; }
+///     fn set_run_context(&mut self, context: WorkerContext) { self.context = context; }
+///     fn error_sequence(&self, _: &io::Error) -> SequenceId {
+///         unreachable!("this in-memory source never returns a read error")
+///     }
+/// }
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let build = || StreamDataLoaderBuilder::new(Rows)
+///         .workers(3).prefetch_factor(2).batch_size(4).collate(VecCollate);
+///     let mut loader = build().checkpointable("rows-0-through-10.v1").build()?;
+///     let mut iteration = loader.iter();
+///     assert_eq!(iteration.next().unwrap()?, [0, 1, 2, 3]);
+///     let saved = serde_json::to_string(&iteration.checkpoint()?)?;
+///     let uninterrupted = iteration.collect::<Result<Vec<_>, _>>()?;
+///
+///     let state: StreamLoaderState<usize> = serde_json::from_str(&saved)?;
+///     let mut restored = build().resume("rows-0-through-10.v1", state).build()?;
+///     let remaining = restored.iter().collect::<Result<Vec<_>, _>>()?;
+///     assert_eq!(remaining, [vec![4, 5, 6, 7], vec![8, 9, 10]]);
+///     assert_eq!(remaining, uninterrupted);
+///     Ok(())
+/// }
+/// ```
+///
+/// For a file decoder, include byte offsets and all decoder state affecting future
+/// reads. Real read failures must report their reproducible global position through
+/// [`CheckpointableSource::error_sequence`]; this in-memory example has none.
+/// Use a source kind/version for the cursor format and a separate content identity
+/// for the underlying records. All shards must emit increasing sequence IDs that
+/// together cover the global sequence without gaps.
+///
+/// Exact streams require ordered delivery and checkpointable transforms/collation,
+/// with no byte budget, timeout, custom initializer or persistent workers. Save
+/// model, optimizer and training counters at the same completed batch. Application
+/// storage owns atomic writes and retention; decoding or validation errors should
+/// be propagated rather than treated as permission to restart from zero.
 pub struct ExactStreamDataLoader<S, C, F = IdentityTransformFactory, N = PinDisabled>
 where
     S: WorkerSourceFactory,
@@ -765,7 +882,12 @@ where
     Ok(loader)
 }
 
-/// Iterator whose checkpoint rolls unpublished reads back to the visible boundary.
+/// A resumable pass over an [`ExactStreamDataLoader`].
+///
+/// Consume batches like an ordinary fallible iterator. Call [`Self::checkpoint`]
+/// initially or after a successfully handled batch, then store the returned
+/// state with the matching training state. The original iterator remains usable;
+/// the owner example verifies its remaining output against a restored loader.
 pub struct ExactStreamLoaderIter<'a, S, C, F = IdentityTransformFactory, N = PinDisabled>
 where
     S: WorkerSourceFactory,
@@ -828,7 +950,11 @@ where
         self.pending = None;
         self.configuration.epoch = epoch;
     }
-    /// Starts the retained resume once, then fresh logical generations.
+    /// Starts a pass, consuming a pending resume only on the first call.
+    ///
+    /// Following passes reopen the source from the beginning. Calling
+    /// [`Self::set_epoch`] before that first pass discards its saved cursor and
+    /// starts the selected epoch afresh.
     pub fn iter(&mut self) -> ExactStreamLoaderIter<'_, S, C, F, N> {
         let retained = self.pending.is_some();
         let mut pending_error = None;
@@ -938,11 +1064,18 @@ where
     C: Collate<TransformOutput<S, F>> + Checkpointable,
     N: StreamPinPolicy<S, C, F>,
 {
-    /// Cancels active callbacks and rolls paired snapshots back before resuming.
+    /// Captures the position before the next unconsumed batch.
     ///
-    /// The original iterator remains usable. Source/transform errors can be
-    /// replayed from the last successful boundary; coordinator failures cannot.
-    /// Blocking native callbacks must cooperate with cancellation to finish.
+    /// Call initially or after successfully using a visible batch; then save
+    /// the returned [`StreamLoaderState`] with the same model/optimizer step.
+    /// See [`ExactStreamDataLoader`] for a full JSON round-trip example.
+    ///
+    /// The barrier cancels active reads, restores unpublished source/transform
+    /// progress and restarts the iterator from that boundary. The original
+    /// iterator remains usable. Source/transform errors can be replayed from the
+    /// last successful boundary; collation or pinning failures cannot. A request
+    /// after observed exhaustion or a hidden dropped tail is rejected. Blocking
+    /// callbacks must cooperate with cancellation for the barrier to finish.
     pub fn checkpoint(&mut self) -> std::result::Result<State<S, F, C>, IterError<S, F, C>> {
         if !self.boundary_valid {
             return Err(LoaderError::Checkpoint {

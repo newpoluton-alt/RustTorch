@@ -27,13 +27,13 @@ inference inside a Rust application. The API is evolving in the 0.x series. The
 
 ## Installation
 
-Install the 0.2 release from crates.io. Rust 1.88 or newer is required:
+Install the 0.3 release from crates.io. Rust 1.88 or newer is required:
 
 ```sh
-cargo install rusttorch-cli --version 0.2.0
+cargo install rusttorch-cli --version 0.3.0
 cargo new rusttorch-demo
 cd rusttorch-demo
-cargo add rusttorch@0.2
+cargo add rusttorch@0.3
 rusttorch setup --backend auto
 ```
 
@@ -43,15 +43,9 @@ or `--backend cuda-12.6` for the managed CUDA distribution on a supported host.
 See [platform setup](docs/platform-support.md) for prerequisites and runtime
 library paths.
 
-This source guide includes model and optimizer APIs added after 0.2.0. To run
-its examples before the next release, use a checkout containing these changes
-and point your application at it:
-
-```sh
-cargo add rusttorch --path /absolute/path/to/RustTorch
-```
-
-For the released 0.2 API, use the [published documentation](https://docs.rs/rusttorch/0.2.0).
+These examples use the 0.3 API. For an older application, see the
+[0.2 documentation](https://docs.rs/rusttorch/0.2.0). To use a development
+checkout, run `cargo add rusttorch --path /absolute/path/to/RustTorch`.
 
 ## Example: train a regressor
 
@@ -146,6 +140,8 @@ checkpoint/resume combinations.
 | Spatial features and upsampling | Conv1d/2d/3d, transposed convolution, max/average/adaptive pooling |
 | Feature normalization | LayerNorm, BatchNorm, InstanceNorm, and GroupNorm |
 | Recurrent models | RNN, LSTM with optional projections, and GRU with explicit state |
+| Numerical workflows | Indexing, views, reductions, linalg, FFT, sparse inference and validated quantization |
+| Sensitivity and probability | Functional derivatives, Jacobians, Hessians, surrogate gradients and three distribution families |
 | Attention and sequence models | MultiheadAttention, Transformer layers, encoder/decoder stacks |
 | Learned categorical or token features | `nn::Embedding` |
 | Model training | Configurable regression/classification losses and seven optimizer families |
@@ -161,7 +157,7 @@ and enable `doc-only`. **`doc-only` cannot run a model.**
 
 ```toml
 [dependencies]
-rusttorch = { version = "0.2", default-features = false, features = ["doc-only"] }
+rusttorch = { version = "0.3", default-features = false, features = ["doc-only"] }
 ```
 
 ## Native runtime
@@ -183,6 +179,8 @@ availability. An explicit unavailable device returns an error. Consult the
 | Guide | Start here when you want to… |
 |---|---|
 | [Rust API reference](https://docs.rs/rusttorch) | Find types, methods, defaults, and Rust examples |
+| [Tensor workflows](docs/tensor-workflows.md) | Index, reshape, normalize, solve systems, filter signals and use sparse data |
+| [Differentiation and probability](docs/differentiation.md) | Compute sensitivities, higher derivatives, surrogate gradients and sample latent variables |
 | [Models and training](docs/training.md) | Build a classifier, choose losses, schedule updates and resume training |
 | [Sequence models](docs/sequence-models.md) | Train recurrent and Transformer models with state and masks |
 | [Checkpoint example](examples/training_checkpoint.rs) | Restore model, optimizer, scheduler and scaler together |
@@ -192,6 +190,7 @@ availability. An explicit unavailable device returns an error. Consult the
 | [Platform setup](docs/platform-support.md) | Configure the native runtime for your machine |
 | [Architecture](docs/architecture.md) | Understand ownership and execution boundaries |
 | [Roadmap](docs/roadmap.md) | See implementation priorities and remaining capabilities |
+| [API census maintenance](docs/api-census.md) | Refresh the pinned inventory and validate scoped compatibility claims |
 | [Compatibility evidence](docs/api-coverage.md) | Check exact tested scopes and source references |
 
 PyTorch is the behavioral reference for compatibility tests and weight exchange.

@@ -1,0 +1,13 @@
+format_version = 1
+pytorch_version = "2.13.0"
+pytorch_commit = "cf30153c4c131c8164ee7798e5022d810682e2cb"
+documentation_root = "docs/source"
+sphinx_builder = "dummy"
+sphinx_inventory_format = 1
+sphinx_tags = ["cpu", "linux"]
+python_namespaces = ["torch"]
+
+[source_suffixes]
+".ipynb" = "myst-nb"
+".md" = "myst-nb"
+".rst" = "restructuredtext"

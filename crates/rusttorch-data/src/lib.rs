@@ -6,6 +6,8 @@
 //! dataset and pipeline failures are returned to the caller.
 //!
 //! The same API is available through [`rusttorch::data`](https://docs.rs/rusttorch/latest/rusttorch/data/).
+//! That module includes an end-to-end classifier training example; this crate
+//! focuses on preparing its inputs without depending on a model or optimizer.
 //!
 //! # Choose a loading pattern
 //!
@@ -19,6 +21,15 @@
 //! | Custom batch padding, packing, or conversion | [`FnCollate`] |
 //! | Explicitly partitioned worker streams | [`StreamDataLoaderBuilder`] |
 //! | Resume at a recorded iteration boundary | [`DataLoaderBuilder::resume_from`] |
+//!
+//! # Borrow once or own for repeated epochs
+//!
+//! [`DataLoader::new`] borrows a dataset and returns an iterator directly. It
+//! keeps samples in a `Vec`; use [`DataLoader::with_collate`] to change that.
+//! [`DataLoader::builder`] takes ownership, defaults to recursive tensor
+//! collation, and returns an [`OwnedDataLoader`] after `build()`. Call its
+//! `iter()` method for each pass and `set_epoch(epoch)` to advance seeded
+//! shuffling. Neither path collects the entire dataset before yielding a batch.
 //!
 //! # Batch paired tensors
 //!
@@ -40,11 +51,14 @@
 //!     .shuffle(42)?
 //!     .build()?;
 //!
-//! for batch in loader.iter() {
-//!     let batch = batch?;
-//!     assert_eq!(batch[0].size(), [2, 3]);
-//!     assert_eq!(batch[1].size(), [2]);
-//!     // Pass batch[0] to a model and batch[1] to its classification loss.
+//! for epoch in 0..2 {
+//!     loader.set_epoch(epoch);
+//!     for batch in loader.iter() {
+//!         let batch = batch?;
+//!         assert_eq!(batch[0].size(), [2, 3]);
+//!         assert_eq!(batch[1].size(), [2]);
+//!         // batch[0] is the model input; batch[1] contains its target classes.
+//!     }
 //! }
 //! # Ok(())
 //! # }
@@ -54,6 +68,10 @@
 //! [`DataLoaderBuilder::drop_last`] when the model requires fixed-size batches.
 //! Tensor samples share storage with their dataset; avoid modifying views when
 //! the original values are needed for later epochs.
+//!
+//! A custom dataset returning `(Tensor, i64)` instead yields a typed
+//! `(Tensor, Tensor)` batch, so the training loop can use
+//! `let (features, labels) = batch?`. See [`Dataset`] for a working example.
 //!
 //! # Load your own records
 //!
@@ -89,18 +107,30 @@
 //! # }
 //! ```
 //!
-//! # Workers and resumable loading
+//! # Customize batching and overlap preparation
 //!
 //! Start with serial loading, then use [`DataLoaderBuilder::workers`] to
 //! overlap sample preparation when your dataset satisfies the worker ownership
-//! requirements. [`WorkerContext`] exposes cancellation, deadlines, and worker
-//! identity to context-aware data sources.
+//! requirements. A positive worker count shares the dataset through `Arc`;
+//! each worker fetches and transforms samples, and the calling thread collates
+//! them. [`DataLoaderBuilder::prefetch_factor`] bounds outstanding batches per
+//! worker. A dataset of file paths or ordinary Rust records can create new
+//! tensors during `get`; [`TensorDataset`] itself uses the serial path.
+//!
+//! [`DataLoaderBuilder`] demonstrates variable-length padding with [`FnCollate`]
+//! and inference without an extra batch dimension using `without_batching()`.
+//! [`StreamDataLoaderBuilder`] demonstrates lazy, independently owned shards
+//! when records do not have random-access indices. All shards are merged
+//! before batching, so `drop_last` drops at most one global tail.
+//!
+//! # Resume a training job
 //!
 //! Exact resumption requires replay-safe data and checkpointable pipeline
-//! components. [`ReplaySafeMap`], [`TensorDataset::into_replay_safe`], and
-//! [`LoaderState`] describe those contracts. Model-weight files and loader
-//! checkpoints serve different purposes; save each state your training job
-//! needs to resume.
+//! components. [`LoaderState`] contains a complete map-loader save/restore
+//! example; [`ExactStreamDataLoader`] shows resumable stream cursors. Save at a
+//! successful batch boundary together with the corresponding model, optimizer
+//! and training counters. Loader checkpoints store the input position and
+//! component state, not model weights or decoded samples.
 
 #![deny(missing_docs)]
 
@@ -174,6 +204,41 @@ pub use worker_context::{
 ///
 /// Implementations return owned samples so loaders can move them into batches
 /// without cloning. Dataset-specific failures remain in [`Dataset::Error`].
+/// Keep `len()` stable during an iteration and make each sampled index valid
+/// for `get()`. Override [`Self::get_batch`] when one file read or database query
+/// can retrieve multiple rows more efficiently.
+///
+/// # Return typed feature/label pairs
+///
+/// The default collator stacks tensor features and converts integer labels into
+/// a tensor. Ordinary Rust storage can be shared by workers even though each
+/// fetched tensor is owned by a single sample.
+///
+/// ```
+/// use std::convert::Infallible;
+/// use rusttorch_core::Tensor;
+/// use rusttorch_data::{DataLoader, Dataset};
+///
+/// struct Rows(Vec<([f32; 2], i64)>);
+/// impl Dataset for Rows {
+///     type Sample = (Tensor, i64);
+///     type Error = Infallible;
+///     fn len(&self) -> usize { self.0.len() }
+///     fn get(&self, index: usize) -> Result<Self::Sample, Infallible> {
+///         let (values, label) = &self.0[index];
+///         Ok((Tensor::from_slice(values), *label))
+///     }
+/// }
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let rows = Rows(vec![([1., 2.], 0), ([3., 4.], 1)]);
+///     let mut loader = DataLoader::builder(rows).batch_size(2).workers(2).build()?;
+///     let (features, labels) = loader.iter().next().unwrap()?;
+///     assert_eq!(features.size(), [2, 2]);
+///     assert_eq!(Vec::<i64>::try_from(&labels)?, [0, 1]);
+///     Ok(())
+/// }
+/// ```
 pub trait Dataset {
     /// One owned item produced by the dataset.
     type Sample;
@@ -444,6 +509,25 @@ where
 /// `true`. Source and collation errors are yielded once and then terminate the
 /// returned iterator.
 ///
+/// Use this for a parser or decoder that already yields records lazily. Here
+/// integer records become tensors without defining a dataset or worker factory.
+/// The source and closure use the same error type.
+///
+/// ```
+/// use rusttorch_core::Tensor;
+/// use rusttorch_data::batches_with_collate;
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let records = ["10", "20", "30"].into_iter().map(str::parse::<i64>);
+///     let mut loader = batches_with_collate(records, 2, false, |rows: Vec<i64>| {
+///         Ok::<_, std::num::ParseIntError>(Tensor::from_slice(&rows))
+///     })?;
+///     assert_eq!(Vec::<i64>::try_from(loader.next().unwrap()?)?, [10, 20]);
+///     assert_eq!(Vec::<i64>::try_from(loader.next().unwrap()?)?, [30]);
+///     assert!(loader.next().is_none());
+///     Ok(())
+/// }
+/// ```
+///
 /// # Errors
 ///
 /// Returns [`RustTorchError::InvalidConfiguration`] when `batch_size` is zero.
@@ -460,18 +544,26 @@ where
     BatchIterator::new(source, batch_size, drop_last, collate)
 }
 
-/// A single-threaded iterator over batches from a map-style [`Dataset`].
+/// Load indexed samples through a borrowed iterator or a reusable owned loader.
 ///
-/// The loader borrows its dataset and owns both its sampler and collation
-/// closure. Samples are moved into one pre-sized vector per batch without a
-/// `Clone` requirement. Dataset and collation errors are yielded once and
-/// then terminate the iterator.
+/// Choose the constructor according to who should own the dataset:
+///
+/// | Constructor | Ownership and use | Default batch |
+/// | --- | --- | --- |
+/// | [`Self::new`] | Borrows `&dataset`; iterate the returned value directly | `Vec<Sample>` |
+/// | [`Self::with_collate`] | Same borrowed lifetime, with a collation closure | The closure's result |
+/// | [`Self::builder`] | Owns `dataset`; call `build()`, then `iter()` each epoch | [`DefaultCollator`] output |
+///
+/// The borrowed iterator fetches on the calling thread and yields errors once
+/// before ending. Samples are moved, so they need not implement `Clone`.
+/// For shuffling across epochs, worker prefetch, or checkpoint recovery, start
+/// with [`Self::builder`] and follow the [`DataLoaderBuilder`] examples.
 ///
 /// # Examples
 ///
 /// A seeded sampler and a collation closure can produce tensor batches:
 ///
-/// ```no_run
+/// ```
 /// use std::convert::Infallible;
 ///
 /// use rusttorch_core::{Result, Tensor};
@@ -526,7 +618,12 @@ pub struct DataLoader<
 impl DataLoader<'static, BuilderDatasetMarker, std::iter::Empty<usize>, (), (), Infallible> {
     /// Starts an owned, re-iterable loader builder for `dataset`.
     ///
-    /// ```no_run
+    /// Defaults are batch size one, sequential sampling, recursive collation,
+    /// zero workers, and keeping the final short batch. The builder's generic
+    /// parameters are inferred from the dataset and options; callers normally
+    /// do not write an explicit [`DataLoaderBuilder`] type.
+    ///
+    /// ```
     /// use std::convert::Infallible;
     /// use rusttorch_core::Result;
     /// use rusttorch_data::{DataLoader, Dataset, VecCollate};
@@ -573,6 +670,28 @@ where
     ///
     /// `dataset` is borrowed, while `sampler` is consumed by the loader.
     /// A short final batch is omitted when `drop_last` is `true`.
+    /// This constructor keeps each sample unchanged in a `Vec`; it does not
+    /// stack tensor rows. See [`Self::with_collate`] for tensor stacking or
+    /// [`Self::builder`] for default recursive collation.
+    ///
+    /// ```
+    /// use std::convert::Infallible;
+    /// use rusttorch_data::{DataLoader, Dataset};
+    /// struct Rows([i64; 3]);
+    /// impl Dataset for Rows {
+    ///     type Sample = i64;
+    ///     type Error = Infallible;
+    ///     fn len(&self) -> usize { self.0.len() }
+    ///     fn get(&self, i: usize) -> Result<i64, Infallible> { Ok(self.0[i]) }
+    /// }
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let dataset = Rows([5, 8, 13]);
+    ///     let loader = DataLoader::new(&dataset, 0..dataset.len(), 2, false)?;
+    ///     assert_eq!(loader.collect::<Result<Vec<_>, _>>()?, [vec![5, 8], vec![13]]);
+    ///     assert_eq!(dataset.get(0)?, 5); // The dataset is still available.
+    ///     Ok(())
+    /// }
+    /// ```
     ///
     /// # Errors
     ///

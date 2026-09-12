@@ -748,7 +748,7 @@ dependencies = [
 
 [[package]]
 name = "rusttorch"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "rusttorch-core",
  "rusttorch-data",
@@ -759,7 +759,7 @@ dependencies = [
 
 [[package]]
 name = "rusttorch-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "tempfile",
  "toml_edit",
@@ -767,7 +767,7 @@ dependencies = [
 
 [[package]]
 name = "rusttorch-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "tch",
  "thiserror 2.0.20",
@@ -775,7 +775,7 @@ dependencies = [
 
 [[package]]
 name = "rusttorch-data"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "crossbeam-channel",
  "rand",
