@@ -129,6 +129,9 @@ jobs:
       - name: Test documentation examples
         run: cargo test --workspace --doc --locked
 
+      - name: Run training checkpoint example
+        run: cargo run --example training_checkpoint --locked
+
       - name: Enforce Python parity
         run: scripts/run-python-parity.sh
 

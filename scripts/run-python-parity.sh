@@ -14,4 +14,8 @@ RUSTTORCH_PYTHON_REFERENCE_DIR=${RUSTTORCH_PYTHON_REFERENCE_DIR:-"$RUSTTORCH_ROO
 export RUSTTORCH_PYTHON_REFERENCE_DIR
 
 python "$RUSTTORCH_ROOT/tests/python_reference/generate.py" "$RUSTTORCH_PYTHON_REFERENCE_DIR"
-cargo test --test python_parity -- --ignored --nocapture
+python "$RUSTTORCH_ROOT/tests/python_reference/spatial.py" > "$RUSTTORCH_PYTHON_REFERENCE_DIR/spatial.json"
+python "$RUSTTORCH_ROOT/tests/python_reference/sequence.py" "$RUSTTORCH_PYTHON_REFERENCE_DIR"
+python "$RUSTTORCH_ROOT/tests/python_reference/training.py" "$RUSTTORCH_PYTHON_REFERENCE_DIR"
+cargo test --locked --test python_parity --test nn_spatial --test nn_sequence \
+    --test training_losses --test amp --test optim_state -- --ignored --nocapture

@@ -2,8 +2,23 @@
 //!
 //! Build image feature extractors with [`ConvConfig`], token models with
 //! [`EmbeddingConfig`] and [`LayerNormConfig`], and feed-forward networks with
-//! [`Sequential`]. A [`VarStore`] holds parameters for custom models; [`Module`]
-//! lets their fallible forward passes share the same interface.
+//! [`Sequential`]. A [`VarStore`] holds parameters and persistent buffers for
+//! custom models; [`Module`] lets their fallible forward passes share the same
+//! interface. Use [`SequentialBuilder::layer`] to register additional modules.
+//!
+//! | Model task | Useful building blocks |
+//! | --- | --- |
+//! | Image features | [`Conv2d`], [`BatchNorm2d`], [`MaxPool2d`], [`AdaptiveAvgPool2d`] |
+//! | Upsampling | [`ConvTransposeConfig`] |
+//! | Time series | [`RnnConfig`], [`Rnn`], [`Gru`], [`Lstm`] |
+//! | Token relationships | [`MultiheadAttentionConfig`], [`AttentionMask`] |
+//! | Sequence-to-sequence learning | [`TransformerConfig`], [`TransformerMasks`] |
+//! | Small-batch normalization | [`GroupNormConfig`], [`InstanceNormConfig`] |
+//!
+//! Pass `training` explicitly to mode-dependent layers. Recurrent APIs can
+//! return hidden state for the next chunk; attention and Transformer APIs accept
+//! masks for padding and causal prediction. Each configuration documents its
+//! input layout and includes a runnable Rust example.
 //!
 //! ```
 //! use rusttorch::{DeviceSpec, Kind, Tensor, nn::{ConvConfig, Sequential}};
@@ -18,8 +33,18 @@
 //! # Ok::<(), rusttorch::RustTorchError>(())
 //! ```
 
+mod activations;
 pub mod functional;
 mod layers;
+mod loss;
+mod normalization;
+mod sequence;
+mod spatial;
+
+pub use activations::*;
+pub use normalization::*;
+pub use sequence::*;
+pub use spatial::*;
 
 pub use layers::{
     Conv, Conv1d, Conv2d, Conv3d, ConvConfig, Embedding, EmbeddingConfig, LayerNorm,
@@ -47,7 +72,7 @@ pub use tch::nn::Path as ParameterPath;
 
 use std::{fmt, path::Path};
 
-use tch::{Device, Tensor, no_grad};
+use tch::{Device, Tensor};
 
 use crate::{
     DeviceSpec, Result, RustTorchError,
@@ -144,23 +169,24 @@ impl LinearConfig {
                 reason: "must be non-negative".to_owned(),
             });
         }
-        let inner = tch::nn::linear(
-            path,
-            self.in_features,
-            self.out_features,
-            tch::nn::LinearConfig {
-                bias: self.bias,
-                ..Default::default()
-            },
-        );
-        // Adapted from PyTorch v2.13.0 torch/nn/modules/linear.py:
-        // zero fan-in uses a zero bias bound. See THIRD_PARTY_NOTICES.md.
-        if self.in_features == 0
-            && let Some(bias) = &inner.bs
-        {
-            let mut bias = bias.shallow_clone();
-            let _ = no_grad(|| bias.f_zero_())?;
-        }
+        // PyTorch v2.13.0 torch/nn/modules/linear.py initializes weight before
+        // bias, uniformly with fan-in bound. tch's convenience default uses
+        // a different gain and allocation order. See THIRD_PARTY_NOTICES.md.
+        let bound = if self.in_features == 0 {
+            0.0
+        } else {
+            1.0 / (self.in_features as f64).sqrt()
+        };
+        let init = tch::nn::Init::Uniform {
+            lo: -bound,
+            up: bound,
+        };
+        let ws = path.f_var("weight", &[self.out_features, self.in_features], init)?;
+        let bs = self
+            .bias
+            .then(|| path.f_var("bias", &[self.out_features], init))
+            .transpose()?;
+        let inner = tch::nn::Linear { ws, bs };
         Ok(Linear { inner })
     }
 }
@@ -328,6 +354,7 @@ impl Module for Flatten {
 }
 
 enum LayerSpec {
+    Custom(LayerFactory),
     Conv1d(ConvConfig<1>),
     Conv2d(ConvConfig<2>),
     Conv3d(ConvConfig<3>),
@@ -341,6 +368,8 @@ enum LayerSpec {
     Flatten(i64, i64),
 }
 
+type LayerFactory = Box<dyn FnOnce(&ParameterPath<'_>) -> Result<Box<dyn Module>> + Send>;
+
 /// Builder for an owned eager model and its `VarStore`.
 #[derive(Default)]
 pub struct SequentialBuilder {
@@ -351,6 +380,33 @@ impl SequentialBuilder {
     /// Creates an empty sequential model builder.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Adds any module using the model's parameter path at this layer index.
+    ///
+    /// Use this for custom layers and configurations without a shorthand builder
+    /// method. The factory runs on the resolved model device at build time, so
+    /// parameters and persistent buffers belong to the same store and checkpoint.
+    ///
+    /// ```
+    /// use rusttorch::{DeviceSpec, nn::{Sequential, LinearConfig, ReLU}};
+    /// let model = Sequential::builder()
+    ///     .layer(|path| LinearConfig::new(4, 2).build(path))
+    ///     .layer(|_| Ok(ReLU))
+    ///     .build(DeviceSpec::Cpu)?;
+    /// assert!(model.var_store().variables().contains_key("0.weight"));
+    /// # Ok::<(), rusttorch::RustTorchError>(())
+    /// ```
+    #[must_use]
+    pub fn layer<M, F>(mut self, factory: F) -> Self
+    where
+        M: Module + 'static,
+        F: FnOnce(&ParameterPath<'_>) -> Result<M> + Send + 'static,
+    {
+        self.layers.push(LayerSpec::Custom(Box::new(move |path| {
+            Ok(Box::new(factory(path)?))
+        })));
+        self
     }
 
     /// Appends a sequence convolution; validates the configuration when building.
@@ -482,6 +538,7 @@ impl SequentialBuilder {
         for (index, layer) in self.layers.into_iter().enumerate() {
             let path = var_store.root() / index.to_string();
             let layer: Box<dyn Module> = match layer {
+                LayerSpec::Custom(factory) => factory(&path)?,
                 LayerSpec::Conv1d(config) => Box::new(config.build(&path)?),
                 LayerSpec::Conv2d(config) => Box::new(config.build(&path)?),
                 LayerSpec::Conv3d(config) => Box::new(config.build(&path)?),

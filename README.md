@@ -20,9 +20,9 @@ functions, compose layers, and train on CPU or an available CUDA or MPS device.
 LibTorch supplies the numerical kernels; RustTorch supplies model construction,
 validation, data loading, and weight management.
 
-Use it for regression and classification, convolutional feature extraction,
-learned token embeddings, streaming training data, and inference inside a Rust
-application. The API is evolving in the 0.x series. The
+Use it for image classification, time-series models, token embeddings,
+attention and sequence-to-sequence models, streaming training data, and
+inference inside a Rust application. The API is evolving in the 0.x series. The
 [roadmap](docs/roadmap.md) separates available functionality from future work.
 
 ## Installation
@@ -99,7 +99,9 @@ the same architecture, call `load_weights("regressor.safetensors")`, switch to
 layers such as dropout; `no_grad` controls gradient recording.
 
 The [training guide](docs/training.md) covers custom models, optimizer choice,
-gradient accumulation and clipping, learning-rate changes, and saving weights.
+gradient accumulation and clipping, parameter groups, loss selection, mixed
+precision, and resumable training. The [sequence guide](docs/sequence-models.md)
+builds a recurrent classifier and masked Transformer models.
 
 ## Example: batch a dataset
 
@@ -141,10 +143,14 @@ checkpoint/resume combinations.
 |---|---|
 | Tensor math and gradients | `Tensor`, `Kind`, `no_grad`, and fallible tensor operations |
 | Dense models | `nn::Linear`, `Sequential`, ReLU, GELU, Dropout, and Flatten |
-| Spatial or sequence features | `nn::Conv1d`, `Conv2d`, and `Conv3d` |
-| Feature normalization | `nn::LayerNorm` |
+| Spatial features and upsampling | Conv1d/2d/3d, transposed convolution, max/average/adaptive pooling |
+| Feature normalization | LayerNorm, BatchNorm, InstanceNorm, and GroupNorm |
+| Recurrent models | RNN, LSTM with optional projections, and GRU with explicit state |
+| Attention and sequence models | MultiheadAttention, Transformer layers, encoder/decoder stacks |
 | Learned categorical or token features | `nn::Embedding` |
-| Model training | MSE, cross-entropy, Adam, AdamW, RMSprop, SGD, and gradient clipping |
+| Model training | Configurable regression/classification losses and seven optimizer families |
+| Training controls | Parameter groups, five schedulers, optimizer checkpoints, gradient clipping/scaling |
+| Mixed precision | CUDA autocast with strict device selection and unwind-safe scopes |
 | Input pipelines | Datasets, samplers, collation, bounded workers, streams, and checkpoints |
 | Weight persistence | SafeTensors with strict validation and explicit name mappings |
 | Model inspection | Named graph inputs, validation, summaries, and DOT diagrams |
@@ -177,7 +183,9 @@ availability. An explicit unavailable device returns an error. Consult the
 | Guide | Start here when you want to… |
 |---|---|
 | [Rust API reference](https://docs.rs/rusttorch) | Find types, methods, defaults, and Rust examples |
-| [Models and training](docs/training.md) | Build a custom model and control its training loop |
+| [Models and training](docs/training.md) | Build a classifier, choose losses, schedule updates and resume training |
+| [Sequence models](docs/sequence-models.md) | Train recurrent and Transformer models with state and masks |
+| [Checkpoint example](examples/training_checkpoint.rs) | Restore model, optimizer, scheduler and scaler together |
 | [Data pipelines](crates/rusttorch-data/README.md) | Load, transform, batch, and resume training data |
 | [Graph guide](docs/graph-system.md) | Inspect named inputs, branches, and execution order |
 | [Model interoperability](docs/model-interoperability.md) | Exchange weights with another model implementation |

@@ -333,3 +333,14 @@ fn undefined_tensors_are_rejected_without_metadata_panics() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn linear_initialization_uses_fan_in_uniform_before_bias() -> Result<()> {
+    let store = VarStore::new(Device::Cpu);
+    let layer = rusttorch::nn::LinearConfig::new(4, 128).build(&store.root())?;
+    assert!(layer.weight().abs().max().double_value(&[]) <= 0.5);
+    assert!(layer.bias().unwrap().abs().max().double_value(&[]) <= 0.5);
+    let empty = rusttorch::nn::LinearConfig::new(0, 2).build(&(store.root() / "empty"))?;
+    assert_eq!(Vec::<f32>::try_from(empty.bias().unwrap())?, [0., 0.]);
+    Ok(())
+}

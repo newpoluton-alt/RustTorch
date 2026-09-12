@@ -33,10 +33,10 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.manual_seed`
 - **RustTorch:** `rusttorch_core::manual_seed`, `rusttorch::manual_seed`
 - **Implementation:** Delegated to LibTorch
-- **Scope:** A seed can be delegated to LibTorch; deterministic behavior and cross-language stream identity are not yet verified by a focused test.
+- **Scope:** LibTorch seed delegation with CPU parity evidence for the tested convolution, embedding, transposed-convolution, recurrent, standalone attention and transformer-layer initializations; shared Linear initialization is exercised by those standalone sequence fixtures.
 - **Pinned source:** [`torch/random.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/random.py)
-- **Evidence:** —
-- **Notes:** rusttorch-core owns the direct function and the rusttorch facade preserves it. The function remains partial until executable evidence proves its documented contract.
+- **Evidence:** [`tests/python_parity.rs::bidirectional_python_parity`](../../tests/python_parity.rs), [`tests/nn_spatial.rs::spatial_layers_match_pinned_python_outputs_gradients_and_buffers`](../../tests/nn_spatial.rs), [`tests/nn_sequence.rs::sequence_python_parity`](../../tests/nn_sequence.rs)
+- **Notes:** rusttorch-core owns the function and rusttorch preserves it. Seeded fixtures run through scripts/run-python-parity.sh. These checks do not establish universal generator state, deterministic algorithms, or cross-backend stream identity. Full Transformer construction has a different allocation/random-consumption sequence; its loaded-state numerical parity does not imply identical initial weights for the same seed.
 
 ### `core.tensor`
 

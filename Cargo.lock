@@ -752,6 +752,7 @@ version = "0.2.0"
 dependencies = [
  "rusttorch-core",
  "rusttorch-data",
+ "serde",
  "serde_json",
  "tch",
 ]

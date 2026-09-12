@@ -18,6 +18,12 @@
 //! # Ok::<(), rusttorch::RustTorchError>(())
 //! ```
 
+pub use super::loss::{
+    CrossEntropyOptions, binary_cross_entropy, binary_cross_entropy_with_logits,
+    cross_entropy_with_options, huber_loss, l1_loss, mse_loss_with_reduction, nll_loss,
+    smooth_l1_loss,
+};
+
 use tch::{Reduction, Tensor};
 
 use crate::{Result, RustTorchError, device::ensure_device};
@@ -174,10 +180,7 @@ pub fn flatten(input: &Tensor, start_dim: i64, end_dim: i64) -> Result<Tensor> {
 /// # Ok::<(), rusttorch::RustTorchError>(())
 /// ```
 pub fn mse_loss(input: &Tensor, target: &Tensor) -> Result<Tensor> {
-    ensure_device("MSE target", target, input_device(input)?)?;
-    input
-        .f_mse_loss(target, Reduction::Mean)
-        .map_err(Into::into)
+    mse_loss_with_reduction(input, target, Reduction::Mean)
 }
 
 /// Computes the mean classification loss from unnormalized class scores.
@@ -196,10 +199,7 @@ pub fn mse_loss(input: &Tensor, target: &Tensor) -> Result<Tensor> {
 /// # Ok::<(), rusttorch::RustTorchError>(())
 /// ```
 pub fn cross_entropy(input: &Tensor, target: &Tensor) -> Result<Tensor> {
-    ensure_device("cross-entropy target", target, input_device(input)?)?;
-    input
-        .f_cross_entropy_loss::<&Tensor>(target, None, Reduction::Mean, -100, 0.0)
-        .map_err(Into::into)
+    cross_entropy_with_options(input, target, CrossEntropyOptions::default())
 }
 
 /// Applies a sequence convolution with weights `[out_channels, in_channels / groups, kernel]`.
@@ -524,7 +524,7 @@ fn invalid(field: &'static str, reason: &str) -> RustTorchError {
     }
 }
 
-fn input_device(input: &Tensor) -> Result<tch::Device> {
+pub(super) fn input_device(input: &Tensor) -> Result<tch::Device> {
     if input.defined() {
         Ok(input.device())
     } else {

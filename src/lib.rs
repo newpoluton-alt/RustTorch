@@ -13,8 +13,11 @@
 //! | --- | --- |
 //! | Transform numerical data or compute gradients | [`Tensor`], [`Kind`], [`no_grad`] |
 //! | Build a model from layers | [`nn::Sequential`], [`nn::Module`] |
+//! | Extract image features | [`nn::Conv2d`], [`nn::BatchNorm2d`], [`nn::AdaptiveAvgPool2d`] |
+//! | Model sequences or token relationships | [`nn::Lstm`], [`nn::MultiheadAttention`], [`nn::TransformerConfig`] |
 //! | Train a regressor or classifier | [`nn::functional`], [`optim::Adam`], [`optim::Sgd`] |
 //! | Batch samples or load data in workers | [`data::DataLoader`], [`data::TensorDataset`] |
+//! | Resume training or schedule updates | [`optim::OptimizerState`], [`optim::StepLr`], [`amp::GradScaler`] |
 //! | Save or restore model parameters | [`nn::Sequential::save_weights`], [`interop`] |
 //! | Inspect an explicit computation graph | [`graph`] |
 //!
@@ -123,6 +126,7 @@
 
 #![deny(missing_docs)]
 
+pub mod amp;
 pub mod data;
 pub mod device;
 pub mod error;
@@ -139,3 +143,7 @@ pub use rusttorch_core::{Device, Kind, Reduction, Tensor, manual_seed, no_grad, 
 #[cfg(doctest)]
 #[doc = include_str!("../docs/training.md")]
 mod training_guide {}
+
+#[cfg(doctest)]
+#[doc = include_str!("../docs/sequence-models.md")]
+mod sequence_guide {}

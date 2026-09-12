@@ -5,6 +5,28 @@ or graph-format stability.
 
 ## Unreleased
 
+- Add BatchNorm/InstanceNorm1d/2d/3d, GroupNorm, transposed convolution,
+  max/average/adaptive pools, seven activation layers, and generic registered
+  `SequentialBuilder::layer` composition. Persist normalization buffers.
+- Add RNN, LSTM with projections, GRU, masked multi-head attention, Transformer
+  encoder/decoder layers, stacks and full sequence-to-sequence models.
+- Add configurable regression and classification losses; optimizer parameter
+  groups and versioned named moment checkpoints; Adagrad, Adadelta and Adamax;
+  five learning-rate schedulers with serializable state.
+- Add CUDA autocast with panic restoration and a dense-gradient scaler with
+  nonfinite update skipping, accumulation, clipping and checkpoint support.
+- Add executable image/sequence training guides and a composite checkpoint
+  example that verifies the next update exactly after restoring all state.
+- Fix Linear initialization to draw weights before bias from the fan-in uniform
+  distribution. **Migration:** freshly initialized models now produce different
+  seeded parameters from 0.2.0. Existing saved weights keep their names/shapes
+  and load unchanged. See issue #10 and `docs/training.md` for training-state
+  format and supported optimizer options.
+- Use fallible tensor updates with explicit optimizer moments. Existing `step`
+  and `zero_grad` methods remain; use `try_step` and `try_zero_grad` for error
+  propagation. Move models to their final dtype/device before constructing an
+  optimizer. Checkpoints reject inconsistent live parameter/moment metadata.
+
 - Add fallible 1D/2D/3D convolution, layer normalization, and embedding layers
   with validated configuration, named parameters, and CPU forward/gradient tests.
 - Expose the existing parameter store and parameter paths through `rusttorch::nn`

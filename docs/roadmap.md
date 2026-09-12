@@ -14,10 +14,13 @@ verified. A symbol reexport or a matching name alone does not establish parity.
 ## Available foundations
 
 - Eager tensor operations and reverse-mode differentiation through LibTorch.
-- Dense models, convolution in one to three spatial dimensions, layer
-  normalization, embedding lookup, and common activation/dropout layers.
-- Adam, AdamW, RMSprop, SGD, scalar loss updates, gradient accumulation,
-  clipping, and learning-rate adjustment.
+- Dense, convolutional and transposed-convolution models; batch, instance, group
+  and layer normalization; spatial pooling; embeddings and activation layers.
+- RNN, LSTM, GRU, masked multi-head attention and Transformer encoder/decoder
+  layers, stacks and complete sequence-to-sequence models.
+- Configurable losses; Adam, AdamW, RMSprop, SGD, Adagrad, Adadelta and Adamax;
+  parameter groups, five schedulers, exact optimizer state restoration,
+  gradient accumulation/clipping, CUDA autocast and dense-gradient scaling.
 - Typed datasets, dataset adapters, local and distributed sampling, collation,
   bounded workers, deterministic transforms, sharded streams, and exact resume
   for the documented checkpoint configurations.
@@ -29,14 +32,17 @@ See [models and training](training.md) and the
 
 ## Implementation order
 
-Core models and training take priority. Each row represents a separate
-implementation milestone; completing one does not mark the entire framework
-complete.
+The first delivery covers the core contracts for workstreams 1 and 2, specified
+before implementation in the [delivery plan](superpowers/plans/2026-09-12-quarter-roadmap.md).
+This is **2 of 8 workstreams (25% by workstream count)**, not 25% of APIs,
+implementation effort, or complete PyTorch parity. Each workstream has a defined
+core scope and a remaining extension backlog. The exact tested scopes remain in
+the compatibility ledger.
 
 | Priority | Milestone | Completion requirements |
 |---|---|---|
-| 1 | Core model layers | Remaining normalization, pooling, convolution variants, activations, recurrent layers, attention, and transformers; forward/backward, defaults, train/eval, parameter/buffer state, and shape/error tests |
-| 2 | Training controls | Configurable losses, optimizer families/options and parameter groups, schedulers, optimizer checkpoint state, mixed precision and gradient scaling; multi-step parity and save/resume evidence |
+| 1 | Core model layers — core delivered in source | All eight model contracts have implementations, Rust examples, forward/backward and configuration checks, CPU numerical comparisons and parameter/buffer persistence evidence |
+| 2 | Training controls — core delivered in source | Configurable losses, seven optimizer families, parameter groups, five schedules, versioned state and exact resume; dense-gradient scaling and CUDA autocast API with hardware-conditional checks |
 | 3 | Complete API census | Every pinned documented public symbol and canonical ATen schema mapped to exactly one ledger disposition; deterministic refresh and offline CI validation |
 | 4 | Tensor and differentiation coverage | Indexing, views/aliasing, dtype/device conversion, reductions, linalg, FFT, special functions, random/distributions, sparse/quantized/nested layouts, forward AD, and custom gradients |
 | 5 | Distributed training | Process groups, collectives, distributed model/optimizer state, DDP/FSDP equivalents, failure handling, and multi-process numerical evidence |
@@ -44,7 +50,14 @@ complete.
 | 7 | Domain data packages | Vision, codecs, audio, text, and tabular pipelines following the approved shared data design; at least one real pipeline per advertised package |
 | 8 | Framework tools | Profiling, testing utilities, reproducibility controls, checkpoint/export integration, and evidence on every advertised backend |
 
-The census may proceed alongside core model work. Its committed synchronizer,
+Extensions to the first two workstreams remain: packed/nested recurrent inputs,
+recurrent cells, attention with different key/value feature widths, distributed
+normalization, specialized padding/pooling/activation families, closure-based
+and fused/capturable optimizers, additional schedules, and non-CUDA autocast dtype
+policies. CUDA execution evidence requires CUDA hardware; its absence is recorded
+as a skip. These extensions keep the corresponding broad ledger areas partial.
+
+The census is the next workstream. It may proceed alongside these extensions. Its committed synchronizer,
 full inventory, and one-to-one mapping are still pending; the current ledger
 is an area inventory, not an exhaustive list of all public symbols. Until the
 census exists, no claim of complete symbol coverage is justified.
@@ -55,7 +68,8 @@ census exists, no claim of complete symbol coverage is justified.
 |---|---|
 | [Workspace foundation](superpowers/plans/2026-08-31-data-workspace-foundation.md) | Core/data packages and facade paths exist; preserve their source compatibility |
 | [Complete DataLoader](superpowers/plans/2026-08-31-complete-data-loader.md) | Runtime tasks 1–13 have implementations and focused tests; task 14 has examples, repeated benchmarks, docs and CI lanes. Hardware-conditional evidence and documented unsupported checkpoint combinations remain scoped |
-| [Core models and documentation](superpowers/plans/2026-09-12-core-models-and-documentation.md) | Defines the present contribution and its review/validation criteria |
+| [Core models and documentation](superpowers/plans/2026-09-12-core-models-and-documentation.md) | Initial model and documentation foundation implemented |
+| [Quarter-roadmap delivery](superpowers/plans/2026-09-12-quarter-roadmap.md) | Defines the first two workstream contracts, evidence and remaining specialized variants |
 | [API census](superpowers/plans/2026-08-31-pytorch-api-census.md) | Pending semantic inventory tooling, pinned source refresh, complete mappings, and offline enforcement |
 | [Shared data ecosystem](superpowers/specs/2026-08-31-unified-data-ecosystem-design.md) | Loader foundation exists; optional modality packages and their integration remain pending |
 | [Graph compilation](graph-compilation-roadmap.md) | Eager graph execution exists; compilation and lowering remain pending |

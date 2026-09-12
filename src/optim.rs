@@ -32,108 +32,36 @@
 //! [`Optimizer::backward_step`] between microbatches would clear the accumulated
 //! gradients.
 
+//!
+//! # Resume and control training
+//!
+//! Assign parameter groups with [`crate::nn::ParameterPath::set_group`], then
+//! use [`Optimizer::set_group_learning_rate`] and [`Optimizer::set_group_weight_decay`]
+//! for feature extractors and heads that need different update settings. Use
+//! [`StepLr`], [`ExponentialLr`], [`MultiStepLr`], [`CosineAnnealingLr`] or
+//! [`ReduceLrOnPlateau`] after optimizer updates to change rates over time.
+//!
+//! Save [`Optimizer::state_dict`] at a completed update boundary together with
+//! model weights, the scheduler and [`crate::amp::GradScalerState`]. Rebuild the
+//! same architecture and optimizer family before [`Optimizer::load_state_dict`].
+//! The versioned state includes named moments and group configuration; it is
+//! independent of model weight storage. For fallible training loops use
+//! [`Optimizer::try_zero_grad`] and [`Optimizer::try_step`].
+
 use tch::{Tensor, nn::VarStore};
 
 use crate::{Result, RustTorchError};
 
+mod schedulers;
+mod stateful;
+pub use schedulers::{
+    CosineAnnealingLr, ExponentialLr, MultiStepLr, PlateauMode, ReduceLrOnPlateau, StepLr,
+    ThresholdMode,
+};
+use stateful::Algorithm;
+pub use stateful::{Optimizer, OptimizerState, ParameterGroup};
+
 const DEFAULT_LEARNING_RATE: f64 = 1e-3;
-
-/// Tracks model parameters and updates them using a configured optimization rule.
-///
-/// Construct this value with an optimizer builder such as [`Adam`] or [`Sgd`].
-#[derive(Debug)]
-pub struct Optimizer {
-    inner: tch::nn::Optimizer,
-}
-
-impl Optimizer {
-    /// Changes the learning rate for every parameter group without resetting moments.
-    ///
-    /// Call after an epoch to implement a learning-rate schedule, for example
-    /// `optimizer.set_learning_rate(0.001 * 0.9_f64.powi(epoch))?`.
-    /// Returns an error for negative or non-finite rates; zero freezes updates.
-    pub fn set_learning_rate(&mut self, learning_rate: f64) -> Result<()> {
-        validate_non_negative("learning_rate", learning_rate)?;
-        self.inner.set_lr(learning_rate);
-        Ok(())
-    }
-
-    /// Clips the combined L2 norm of existing gradients before [`Self::step`].
-    ///
-    /// Call `loss.backward()`, then this method, then `step()`. Calling
-    /// `backward_step()` instead would replace the clipped gradients.
-    /// Returns an error for negative or non-finite limits.
-    pub fn clip_grad_norm(&self, max: f64) -> Result<()> {
-        validate_non_negative("max_grad_norm", max)?;
-        let mut gradients: Vec<_> = self
-            .inner
-            .trainable_variables()
-            .iter()
-            .map(Tensor::grad)
-            .filter(Tensor::defined)
-            .collect();
-        if gradients.is_empty() {
-            return Ok(());
-        }
-        let norms = gradients
-            .iter()
-            .map(Tensor::f_norm)
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        let total = Tensor::f_stack(&norms, 0)?.f_norm()?.f_double_value(&[])?;
-        let coefficient = max / (total + 1e-6);
-        rusttorch_core::no_grad(|| -> Result<()> {
-            if coefficient < 1.0 {
-                for gradient in &mut gradients {
-                    let _ = gradient.f_mul_scalar_(coefficient)?;
-                }
-            }
-            Ok(())
-        })
-    }
-
-    /// Clamps each existing gradient element into `[-max, max]` before stepping.
-    ///
-    /// Returns an error for negative or non-finite limits. Parameters without
-    /// gradients are skipped, so calling this before backward is a no-op.
-    pub fn clip_grad_value(&self, max: f64) -> Result<()> {
-        validate_non_negative("max_grad_value", max)?;
-        rusttorch_core::no_grad(|| -> Result<()> {
-            for parameter in self.inner.trainable_variables() {
-                let mut gradient = parameter.grad();
-                if gradient.defined() {
-                    let _ = gradient.f_clamp_(-max, max)?;
-                }
-            }
-            Ok(())
-        })
-    }
-
-    /// Clears gradients for all tracked parameters.
-    pub fn zero_grad(&mut self) {
-        self.inner.zero_grad();
-    }
-
-    /// Applies one optimizer step using the current gradients.
-    pub fn step(&mut self) {
-        self.inner.step();
-    }
-
-    /// Clears gradients, backpropagates a scalar loss, and applies one optimizer step.
-    ///
-    /// The loss must be a defined scalar with shape `[]` and a gradient graph
-    /// connected to the tracked parameters. Loss functions with mean reduction
-    /// already produce this shape.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an undefined or non-scalar loss. Backend failures
-    /// during differentiation or parameter updates can panic.
-    pub fn backward_step(&mut self, loss: &Tensor) -> Result<()> {
-        validate_loss(loss)?;
-        self.inner.backward_step(loss);
-        Ok(())
-    }
-}
 
 /// Adaptive moment estimation for training with parameter-specific step sizes.
 ///
@@ -277,18 +205,21 @@ impl Adam {
         self
     }
 
-    /// Validates the configuration and builds a LibTorch Adam optimizer.
+    /// Validates the configuration and builds an Adam optimizer.
     pub fn build(self, var_store: &VarStore) -> Result<Optimizer> {
         self.validate()?;
-        let config = tch::nn::Adam {
-            beta1: self.beta1,
-            beta2: self.beta2,
-            wd: self.weight_decay,
-            eps: self.eps,
-            amsgrad: self.amsgrad,
-        };
-        let inner = tch::nn::OptimizerConfig::build(config, var_store, self.learning_rate)?;
-        Ok(Optimizer { inner })
+        Optimizer::new(
+            var_store,
+            Algorithm::Adam {
+                beta1: self.beta1,
+                beta2: self.beta2,
+                eps: self.eps,
+                amsgrad: self.amsgrad,
+                decoupled: false,
+            },
+            self.learning_rate,
+            self.weight_decay,
+        )
     }
 
     fn validate(self) -> Result<()> {
@@ -436,17 +367,19 @@ impl Sgd {
         self
     }
 
-    /// Validates the configuration and builds a LibTorch SGD optimizer.
+    /// Validates the configuration and builds an SGD optimizer.
     pub fn build(self, var_store: &VarStore) -> Result<Optimizer> {
         self.validate()?;
-        let config = tch::nn::Sgd {
-            momentum: self.momentum,
-            dampening: self.dampening,
-            wd: self.weight_decay,
-            nesterov: self.nesterov,
-        };
-        let inner = tch::nn::OptimizerConfig::build(config, var_store, self.learning_rate)?;
-        Ok(Optimizer { inner })
+        Optimizer::new(
+            var_store,
+            Algorithm::Sgd {
+                momentum: self.momentum,
+                dampening: self.dampening,
+                nesterov: self.nesterov,
+            },
+            self.learning_rate,
+            self.weight_decay,
+        )
     }
 
     fn validate(self) -> Result<()> {
@@ -540,19 +473,22 @@ impl AdamW {
     /// Attaches the optimizer to the store's trainable parameters.
     ///
     /// Returns an error for invalid or non-finite configuration, or if the
-    /// native optimizer cannot be constructed. This builder supports dense,
+    /// parameters or optimizer cannot be initialized. This builder supports dense,
     /// ordinary updates; it does not expose fused or differentiable updates.
     pub fn build(self, var_store: &VarStore) -> Result<Optimizer> {
         self.config.validate()?;
-        let config = tch::nn::AdamW {
-            beta1: self.config.beta1,
-            beta2: self.config.beta2,
-            wd: self.config.weight_decay,
-            eps: self.config.eps,
-            amsgrad: self.config.amsgrad,
-        };
-        let inner = tch::nn::OptimizerConfig::build(config, var_store, self.config.learning_rate)?;
-        Ok(Optimizer { inner })
+        Optimizer::new(
+            var_store,
+            Algorithm::Adam {
+                beta1: self.config.beta1,
+                beta2: self.config.beta2,
+                eps: self.config.eps,
+                amsgrad: self.config.amsgrad,
+                decoupled: true,
+            },
+            self.config.learning_rate,
+            self.config.weight_decay,
+        )
     }
 }
 
@@ -648,10 +584,10 @@ impl RmsProp {
         self
     }
 
-    /// Validates all settings and constructs a dense native RMSprop optimizer.
+    /// Validates all settings and constructs a dense RMSprop optimizer.
     ///
     /// Returns an error for negative or non-finite numerical settings, or a
-    /// native construction failure. Fused, capturable, differentiable and
+    /// parameter initialization failure. Fused, capturable, differentiable and
     /// sparse-gradient updates are outside this builder's contract.
     pub fn build(self, var_store: &VarStore) -> Result<Optimizer> {
         for (name, value) in [
@@ -663,15 +599,243 @@ impl RmsProp {
         ] {
             validate_non_negative(name, value)?;
         }
-        let config = tch::nn::RmsProp {
-            alpha: self.alpha,
-            eps: self.eps,
-            wd: self.weight_decay,
-            momentum: self.momentum,
-            centered: self.centered,
-        };
-        let inner = tch::nn::OptimizerConfig::build(config, var_store, self.learning_rate)?;
-        Ok(Optimizer { inner })
+        Optimizer::new(
+            var_store,
+            Algorithm::RmsProp {
+                alpha: self.alpha,
+                eps: self.eps,
+                momentum: self.momentum,
+                centered: self.centered,
+            },
+            self.learning_rate,
+            self.weight_decay,
+        )
+    }
+}
+
+/// Adagrad adapts each parameter's rate using accumulated squared gradients.
+///
+/// Defaults: learning rate `0.01`, no rate decay or weight decay, initial
+/// accumulator zero, and epsilon `1e-10`. This builder supports dense gradients.
+///
+/// ```
+/// # fn example(store: &rusttorch::nn::VarStore) -> rusttorch::Result<()> {
+/// let optimizer = rusttorch::optim::Adagrad::builder().learning_rate(0.05).build(store)?;
+/// # Ok(()) }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Adagrad {
+    learning_rate: f64,
+    lr_decay: f64,
+    weight_decay: f64,
+    initial_accumulator: f64,
+    eps: f64,
+}
+impl Default for Adagrad {
+    fn default() -> Self {
+        Self {
+            learning_rate: 0.01,
+            lr_decay: 0.,
+            weight_decay: 0.,
+            initial_accumulator: 0.,
+            eps: 1e-10,
+        }
+    }
+}
+impl Adagrad {
+    /// Creates a builder with the defaults described on this type.
+    #[must_use]
+    pub fn builder() -> Self {
+        Self::default()
+    }
+    /// Sets the nonnegative finite learning rate.
+    #[must_use]
+    pub const fn learning_rate(mut self, value: f64) -> Self {
+        self.learning_rate = value;
+        self
+    }
+    /// Sets learning-rate decay as `lr / (1 + (step - 1) * lr_decay)`.
+    #[must_use]
+    pub const fn lr_decay(mut self, value: f64) -> Self {
+        self.lr_decay = value;
+        self
+    }
+    /// Sets nonnegative coupled L2 weight decay.
+    #[must_use]
+    pub const fn weight_decay(mut self, value: f64) -> Self {
+        self.weight_decay = value;
+        self
+    }
+    /// Sets the nonnegative initial value of each squared-gradient accumulator.
+    #[must_use]
+    pub const fn initial_accumulator_value(mut self, value: f64) -> Self {
+        self.initial_accumulator = value;
+        self
+    }
+    /// Sets the nonnegative denominator stability term.
+    #[must_use]
+    pub const fn eps(mut self, value: f64) -> Self {
+        self.eps = value;
+        self
+    }
+    /// Validates configuration and attaches to the store's parameters.
+    pub fn build(self, store: &VarStore) -> Result<Optimizer> {
+        Optimizer::new(
+            store,
+            Algorithm::Adagrad {
+                lr_decay: self.lr_decay,
+                initial_accumulator: self.initial_accumulator,
+                eps: self.eps,
+            },
+            self.learning_rate,
+            self.weight_decay,
+        )
+    }
+}
+
+/// Adadelta scales updates using moving averages of gradients and prior updates.
+///
+/// Defaults: learning rate `1.0`, rho `0.9`, epsilon `1e-6`, no weight decay.
+/// All gradients must be dense.
+///
+/// ```
+/// # fn example(store: &rusttorch::nn::VarStore) -> rusttorch::Result<()> {
+/// let optimizer = rusttorch::optim::Adadelta::builder().rho(0.95).build(store)?;
+/// # Ok(()) }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Adadelta {
+    learning_rate: f64,
+    rho: f64,
+    eps: f64,
+    weight_decay: f64,
+}
+impl Default for Adadelta {
+    fn default() -> Self {
+        Self {
+            learning_rate: 1.,
+            rho: 0.9,
+            eps: 1e-6,
+            weight_decay: 0.,
+        }
+    }
+}
+impl Adadelta {
+    /// Creates a builder with the defaults described on this type.
+    #[must_use]
+    pub fn builder() -> Self {
+        Self::default()
+    }
+    /// Sets the nonnegative finite learning rate.
+    #[must_use]
+    pub const fn learning_rate(mut self, value: f64) -> Self {
+        self.learning_rate = value;
+        self
+    }
+    /// Sets the moving-average coefficient in `[0, 1]`.
+    #[must_use]
+    pub const fn rho(mut self, value: f64) -> Self {
+        self.rho = value;
+        self
+    }
+    /// Sets the nonnegative stability term.
+    #[must_use]
+    pub const fn eps(mut self, value: f64) -> Self {
+        self.eps = value;
+        self
+    }
+    /// Sets nonnegative coupled L2 weight decay.
+    #[must_use]
+    pub const fn weight_decay(mut self, value: f64) -> Self {
+        self.weight_decay = value;
+        self
+    }
+    /// Validates configuration and attaches to the store's parameters.
+    pub fn build(self, store: &VarStore) -> Result<Optimizer> {
+        Optimizer::new(
+            store,
+            Algorithm::Adadelta {
+                rho: self.rho,
+                eps: self.eps,
+            },
+            self.learning_rate,
+            self.weight_decay,
+        )
+    }
+}
+
+/// Adamax uses an exponentially weighted infinity norm to scale first moments.
+///
+/// Defaults: learning rate `0.002`, betas `(0.9, 0.999)`, epsilon `1e-8`,
+/// and no weight decay. All gradients must be dense.
+///
+/// ```
+/// # fn example(store: &rusttorch::nn::VarStore) -> rusttorch::Result<()> {
+/// let optimizer = rusttorch::optim::Adamax::builder().betas(0.8, 0.99).build(store)?;
+/// # Ok(()) }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Adamax {
+    learning_rate: f64,
+    beta1: f64,
+    beta2: f64,
+    eps: f64,
+    weight_decay: f64,
+}
+impl Default for Adamax {
+    fn default() -> Self {
+        Self {
+            learning_rate: 0.002,
+            beta1: 0.9,
+            beta2: 0.999,
+            eps: 1e-8,
+            weight_decay: 0.,
+        }
+    }
+}
+impl Adamax {
+    /// Creates a builder with the defaults described on this type.
+    #[must_use]
+    pub fn builder() -> Self {
+        Self::default()
+    }
+    /// Sets the nonnegative finite learning rate.
+    #[must_use]
+    pub const fn learning_rate(mut self, value: f64) -> Self {
+        self.learning_rate = value;
+        self
+    }
+    /// Sets the two decay rates, each finite and in `[0, 1)`.
+    #[must_use]
+    pub const fn betas(mut self, beta1: f64, beta2: f64) -> Self {
+        self.beta1 = beta1;
+        self.beta2 = beta2;
+        self
+    }
+    /// Sets the nonnegative stability term.
+    #[must_use]
+    pub const fn eps(mut self, value: f64) -> Self {
+        self.eps = value;
+        self
+    }
+    /// Sets nonnegative coupled L2 weight decay.
+    #[must_use]
+    pub const fn weight_decay(mut self, value: f64) -> Self {
+        self.weight_decay = value;
+        self
+    }
+    /// Validates configuration and attaches to the store's parameters.
+    pub fn build(self, store: &VarStore) -> Result<Optimizer> {
+        Optimizer::new(
+            store,
+            Algorithm::Adamax {
+                beta1: self.beta1,
+                beta2: self.beta2,
+                eps: self.eps,
+            },
+            self.learning_rate,
+            self.weight_decay,
+        )
     }
 }
 
