@@ -19,6 +19,9 @@ python "$RUSTTORCH_ROOT/tests/python_reference/sequence.py" "$RUSTTORCH_PYTHON_R
 python "$RUSTTORCH_ROOT/tests/python_reference/training.py" "$RUSTTORCH_PYTHON_REFERENCE_DIR"
 python "$RUSTTORCH_ROOT/tests/python_reference/tensor_workflows.py" "$RUSTTORCH_PYTHON_REFERENCE_DIR"
 python "$RUSTTORCH_ROOT/tests/python_reference/differentiation.py" "$RUSTTORCH_PYTHON_REFERENCE_DIR"
+python "$RUSTTORCH_ROOT/tests/python_reference/distributed.py" "$RUSTTORCH_PYTHON_REFERENCE_DIR"
+python "$RUSTTORCH_ROOT/crates/rusttorch-audio/tests/generate_reference.py" --check
 cargo test --locked --test python_parity --test nn_spatial --test nn_sequence \
     --test training_losses --test amp --test optim_state --test tensor_workflows \
-    --test autograd --test distributions -- --ignored --nocapture
+    --test autograd --test distributions --test distributed --test deployment \
+    --test framework_tools -- --ignored --nocapture

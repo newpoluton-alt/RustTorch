@@ -6,8 +6,8 @@
 project after adding the RustTorch library dependency:
 
 ```sh
-cargo install rusttorch-cli --version 0.3.0
-cargo add rusttorch@0.3
+cargo install rusttorch-cli --version 0.4.0
+cargo add rusttorch@0.4
 rusttorch setup --backend auto
 cargo run
 ```

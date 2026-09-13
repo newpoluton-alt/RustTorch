@@ -19,13 +19,13 @@ notes = "Numerical scaler evidence is CPU only; torch/amp/grad_scaler.py supplie
 [[api]]
 id = "audio"
 python_symbols = ["torch.utils.data.Dataset for audio samples"]
-rust_symbols = []
-status = "planned"
-implementation = "none"
-scope = "Audio decoding, resampling, feature extraction, and augmentation belong in an optional data package."
+rust_symbols = ["rusttorch::audio::Waveform", "rusttorch::audio::decode_audio", "rusttorch::audio::AudioFiles", "rusttorch::audio::PadAudio", "rusttorch::audio::SpectrogramConfig", "rusttorch::audio::mel_filter_bank", "rusttorch::audio::mask_axis"]
+status = "partial"
+implementation = "mixed"
+scope = "Optional rusttorch-audio CPU WAV/PCM and FLAC decoding, typed waveform rate/layout/time metadata, bounded worker loading and variable-length collation, Rubato sinc resampling, gain/noise/mixing/time shift, differentiable uncentered STFT power spectra, HTK triangular Mel features, natural-log orthonormal MFCCs and deterministic axis masking."
 source = "torch/utils/data/dataset.py"
-evidence = []
-notes = "Decoded typed samples will use the shared RustTorch data-loading core."
+evidence = ["crates/rusttorch-audio/tests/pipelines.rs::wav_decode_workers_and_padding_preserve_rates_and_lengths", "crates/rusttorch-audio/tests/pipelines.rs::spectral_features_retain_gradients_and_known_sine_peak", "crates/rusttorch-audio/tests/pipelines.rs::resampling_gain_shift_and_masks_have_explicit_behavior", "crates/rusttorch-audio/tests/pipelines.rs::audio_boundaries_reject_rate_shape_and_oversize", "crates/rusttorch-audio/tests/pipelines.rs::spectral_values_and_gradients_match_pinned_python", "crates/rusttorch-audio/tests/pipelines.rs::flac_decodes_the_same_samples_as_pcm_wav", "crates/rusttorch-audio/tests/pipelines.rs::mel_expansion_checks_output_shape_before_projection", "crates/rusttorch-audio/tests/pipelines.rs::padded_audio_limits_cover_records_duration_masks_and_lengths", "crates/rusttorch-audio/tests/pipelines.rs::audio_noise_and_downsampling_bound_host_payload_before_allocation"]
+notes = "The Dataset reference records typed DataLoader integration, not torchaudio equivalence. STFT, Mel, MFCC values and input gradients match the pinned CPU Python fixture via crates/rusttorch-audio/tests/generate_reference.py --check. CPU resampling rejects gradient-tracked inputs; callers must detach explicitly. Mel uses the documented HTK/no-area-normalization convention; centered padding, dB MFCC, pitch/time stretching, all codecs and accelerator evidence are not claimed."
 
 [[api]]
 id = "autograd.forward_ad"
@@ -432,7 +432,7 @@ implementation = "none"
 scope = "CPython frame capture, Dynamo guards, and Python graph-break semantics are not native RustTorch APIs."
 source = "torch/_dynamo/eval_frame.py"
 evidence = []
-notes = "Rust deployment may consume compatible artifacts later without claiming Python runtime parity."
+notes = "RustTorch can execute a separately scoped native TorchScript artifact without claiming Dynamo, Python runtime or AOTInductor parity."
 
 [[api]]
 id = "compiler.export"
@@ -443,18 +443,18 @@ implementation = "none"
 scope = "Python program capture, dynamic Python object handling, and Python-side export diagnostics are not native RustTorch APIs."
 source = "torch/export/__init__.py"
 evidence = []
-notes = "Capture is tracked separately from planned PT2 artifact interoperability."
+notes = "Python capture remains separate from implemented, version-pinned PT2 artifact interoperability."
 
 [[api]]
 id = "compiler.export.interop"
 python_symbols = ["torch.export.save", "torch.export.load"]
-rust_symbols = []
-status = "planned"
-implementation = "none"
-scope = "PT2 ExportedProgram archive import, validation, execution, and export are not implemented."
+rust_symbols = ["rusttorch::deployment::Model::load_pt2", "rusttorch::deployment::Model::save_pt2", "rusttorch::deployment::Model::run"]
+status = "partial"
+implementation = "mixed"
+scope = "Bounded CPU PT2 archive0/serialization6/export-schema8.20/ATen10/tree1 import and export for the documented functional operator subset, Float/Double/Int64/Bool tensor state, named parameters/buffers/constants, shared non-overlapping storage views, tensor calling trees and named dimension range/equality guards. CPU Float numerical round trips use the pinned exporter loader at batch2/3/8 and compare input and parameter gradients; all four dtypes have native round-trip evidence."
 source = "torch/export/__init__.py"
-evidence = []
-notes = "Artifact support must pin the archive version and supported operator set."
+evidence = ["tests/deployment.rs::python_pt2_onnx_and_torchscript_numerical_round_trips", "tests/deployment.rs::pt2_and_onnx_native_round_trips_preserve_values_and_guards", "tests/deployment.rs::state_aliases_survive_json_and_pt2_with_bounded_views", "tests/deployment.rs::tied_parameters_keep_one_gradient_leaf_and_symbol_guards_agree", "tests/deployment.rs::pt2_rejects_versions_pickle_mutation_truncated_storage_and_unsafe_paths", "tests/deployment.rs::all_portable_dtypes_and_operator_shapes_round_trip"]
+notes = "Pinned sources also include torch/_export/serde/{schema,serialize}.py, torch/export/pt2_archive/_package.py and torch/csrc/export/pt2_archive_constants.h. No Python capture, pickle, subclass/custom-object payloads, mutation, higher-order control flow, executable guard code, arbitrary symbolic expressions or AOTInductor binaries. State shared across weights/constants directories and internally overlapping state views are rejected. Interchange graphs execute eagerly through LibTorch; export shape rules are algebraic, not sampled compilation."
 
 [[api]]
 id = "compiler.fx"
@@ -799,37 +799,34 @@ notes = "A typed Vec<Tensor> replaces Python's dynamically sized tuple, indices 
 
 [[api]]
 id = "distributed.c10d"
-python_symbols = ["torch.distributed.init_process_group", "torch.distributed.ProcessGroup"]
-rust_symbols = []
-status = "planned"
-implementation = "none"
-scope = "Collectives, process groups, rendezvous, and distributed error handling are not exposed."
+python_symbols = ["torch.distributed.init_process_group", "torch.distributed.ProcessGroup", "torch.distributed.distributed_c10d.ProcessGroup", "torch.distributed.all_reduce", "torch.distributed.broadcast", "torch.distributed.reduce", "torch.distributed.all_gather", "torch.distributed.gather", "torch.distributed.scatter", "torch.distributed.reduce_scatter", "torch.distributed.all_to_all", "torch.distributed.barrier", "torch.distributed.send", "torch.distributed.recv"]
+rust_symbols = ["rusttorch::distributed::GroupOptions", "rusttorch::distributed::ProcessGroup", "rusttorch::distributed::ReduceOp"]
+status = "partial"
+implementation = "mixed"
+scope = "Blocking CPU TCP process groups with explicit rank/world/session rendezvous; barrier, broadcast, sum/mean/min/max/product all-reduce and reduce, equal-spec gather/all-gather/scatter/reduce-scatter/all-to-all, and tagged two-peer send/recv. Dense Float/Double/Int64 payloads, checked byte/shape limits, collective order/root/type agreement, finite communication deadlines and permanent failure on peer/protocol errors are implemented."
 source = "torch/distributed/distributed_c10d.py"
-evidence = []
-notes = "Future support must enumerate transports, operating systems, and failure semantics."
-
+evidence = ["tests/distributed.rs::multiprocess_collectives_and_point_to_point_preserve_rank_order", "tests/distributed.rs::mismatched_collectives_and_local_errors_poison_every_rank", "tests/distributed.rs::disconnected_and_stalled_workers_fail_with_bounded_cleanup", "tests/distributed.rs::configuration_and_untrusted_frames_fail_before_large_allocation", "tests/distributed.rs::cpu_collectives_ddp_and_shards_match_pinned_pytorch_gloo"]
+notes = "Transport and coordination are original safe Rust, with LibTorch tensor arithmetic; this is not a native c10d/Gloo/NCCL binding. Pinned CPU Gloo supplies numerical reference evidence. Sockets form a full mesh and rank zero coordinates collectives; no throughput or scaling claim. Trusted peers only, without encryption/authentication. Deadlines bound communication waits, not synchronous kernels/serialization. Async handles, accelerator transports, uneven split variants, Python global group registration and elastic membership remain absent."
 [[api]]
 id = "distributed.ddp"
-python_symbols = ["torch.nn.parallel.DistributedDataParallel"]
-rust_symbols = []
-status = "planned"
-implementation = "none"
-scope = "Distributed data parallel training, bucket scheduling, and state synchronization are not implemented."
+python_symbols = ["torch.nn.parallel.DistributedDataParallel", "torch.nn.parallel.distributed.DistributedDataParallel"]
+rust_symbols = ["rusttorch::distributed::DistributedDataParallel"]
+status = "partial"
+implementation = "mixed"
+scope = "Explicit replicated CPU training for fixed named Float/Double parameters and dense supported buffers: rank-zero initialization/buffer broadcasts, averaged gradients, delayed synchronization for accumulation, and coordinated backward/update. Parameter layout and optimizer configuration agreement are validated; globally unused gradients skip, differing used-parameter sets reject. Equal-size local mean-loss updates and accumulation match a global-batch reference."
 source = "torch/nn/parallel/distributed.py"
-evidence = []
-notes = "This depends on an independently verified process-group foundation."
-
+evidence = ["tests/distributed.rs::replicated_training_and_accumulation_match_global_batch", "tests/distributed.rs::mismatched_collectives_and_local_errors_poison_every_rank", "tests/distributed.rs::cpu_collectives_ddp_and_shards_match_pinned_pytorch_gloo"]
+notes = "Native CPU PyTorch DDP is numerically compared. Rust callers explicitly synchronize buffers and gradients; automatic backward hooks, bucket overlap, asynchronous work, join contexts, changing parameter registration, rank-dependent unused-parameter recovery, accelerator execution and synchronized batch normalization are not implemented. Unequal local batches require explicit loss weighting. A failure during final updates requires recreating the group and restoring a completed checkpoint."
 [[api]]
 id = "distributed.fsdp"
-python_symbols = ["torch.distributed.fsdp.FullyShardedDataParallel"]
-rust_symbols = []
-status = "planned"
-implementation = "none"
-scope = "Parameter sharding, resharding, mixed precision, and distributed checkpoint integration are not implemented."
+python_symbols = ["torch.distributed.fsdp.FullyShardedDataParallel", "torch.distributed.fsdp.fully_sharded_data_parallel.FullyShardedDataParallel"]
+rust_symbols = ["rusttorch::distributed::ShardedTrainer", "rusttorch::distributed::ShardedCheckpoint", "rusttorch::distributed::ConsolidatedCheckpoint"]
+status = "partial"
+implementation = "mixed"
+scope = "Functional CPU Float/Double training with actual persistent parameter, gradient and optimizer-moment shards: gather one full named parameter group for a scalar loss closure, mean-reduce-scatter gradients and update local shards with any of seven optimizer families. Versioned coordinated model/optimizer checkpoints include session/capture identities, exact same-world restore, full-state consolidation and parameter/moment repartitioning to a different world size."
 source = "torch/distributed/fsdp/fully_sharded_data_parallel.py"
-evidence = []
-notes = "FSDP follows process groups, distributed checkpointing, and memory benchmarks."
-
+evidence = ["tests/distributed.rs::sharded_training_and_exact_resume_cover_all_optimizer_families", "tests/distributed.rs::consolidated_checkpoint_reshards_parameters_and_moments_to_new_world_size", "tests/distributed.rs::corrupted_sharded_state_rejects_weights_optimizer_and_rank_metadata", "tests/distributed.rs::mismatched_collectives_and_local_errors_poison_every_rank", "tests/distributed.rs::cpu_collectives_ddp_and_shards_match_pinned_pytorch_gloo"]
+notes = "A single-group functional Rust equivalent is compared numerically with native CPU PyTorch FSDP; no complete FSDP API or memory/throughput benchmark claim. Full parameters coexist during forward/backward and full checkpoints temporarily materialize on all ranks. Automatic module conversion/hooks, layer-wise reshard/overlap, mixed precision, accelerator/mesh APIs, multiple optimizer groups and Python DCP state formats remain absent. Closures must use every parameter and release gathered tensors; buffers, input/loader/RNG/scheduler state and partial accumulation are application-owned. Same-world resume is exact; changed-world reductions may differ in floating-point order."
 [[api]]
 id = "distributions"
 python_symbols = ["torch.distributions.Distribution", "torch.distributions.Normal", "torch.distributions.Bernoulli", "torch.distributions.Categorical"]
@@ -864,6 +861,17 @@ evidence = []
 notes = "Rust interfaces require explicit ownership and mutation semantics."
 
 [[api]]
+id = "graph.conditional"
+python_symbols = ["torch.cond"]
+rust_symbols = ["rusttorch::deployment::Operator::If", "rusttorch::deployment::Model::run"]
+status = "partial"
+implementation = "mixed"
+scope = "Explicit scalar-Bool, single-output conditional subgraphs with matching input signatures, a shared result guard, only-selected-branch execution and gradient connectivity. CPU Float branch values and input gradients match pinned torch.cond for square versus doubled inputs. Portable JSON retains the branch definitions."
+source = "torch/_higher_order_ops/cond.py"
+evidence = ["tests/deployment.rs::conditional_executes_one_branch_and_preserves_selected_gradient", "tests/deployment.rs::python_pt2_onnx_and_torchscript_numerical_round_trips"]
+notes = "Rust explicit subgraphs replace Python callable capture. No loop capture, cond Python signature parity, multi-output branches, PT2/ONNX higher-order conversion or native conditional tracing. Selected result dtype/shape/ranges are validated at runtime."
+
+[[api]]
 id = "graph.executor"
 python_symbols = ["torch.fx.Interpreter", "torch.fx.interpreter.Interpreter"]
 rust_symbols = ["rusttorch::graph::EagerExecutor", "rusttorch::graph::GraphModule", "rusttorch::graph::GraphInputs", "rusttorch::graph::GraphOutputs"]
@@ -888,13 +896,13 @@ notes = "DOT generation returns text and does not invoke Graphviz."
 [[api]]
 id = "graph.ir"
 python_symbols = ["torch.fx.Graph", "torch.fx.Node", "torch.fx.node.Node"]
-rust_symbols = ["rusttorch::graph::Graph", "rusttorch::graph::GraphBuilder", "rusttorch::graph::Node", "rusttorch::graph::NodeId", "rusttorch::graph::ValueId", "rusttorch::graph::TensorSpec"]
+rust_symbols = ["rusttorch::graph::Graph", "rusttorch::graph::GraphBuilder", "rusttorch::graph::Node", "rusttorch::graph::NodeId", "rusttorch::graph::ValueId", "rusttorch::graph::TensorSpec", "rusttorch::deployment::Program", "rusttorch::deployment::Model", "rusttorch::deployment::ValueSpec", "rusttorch::deployment::Dimension", "rusttorch::deployment::Tree"]
 status = "partial"
 implementation = "rusttorch"
-scope = "The tested construction, validation, branching, named-value, topological-order, reachability, and tensor-spec behavior of RustTorch's typed DAG."
+scope = "The tested construction, validation, branching, named-value, topological-order, reachability, and tensor-spec behavior of RustTorch's typed DAG. A separate version-one portable functional program adds serialized graph/operator versions, explicit calling trees, state storage roles/aliases and input range/equality guards; the existing evaluation graph subset lowers with named state."
 source = "torch/fx/graph.py"
-evidence = ["tests/graph.rs::builder_rejects_a_value_from_another_graph", "tests/graph.rs::builder_rejects_duplicate_node_names", "tests/graph.rs::graph_without_an_output_is_rejected"]
-notes = "This is neither FX serialization nor full FX node and transformation parity."
+evidence = ["tests/graph.rs::builder_rejects_a_value_from_another_graph", "tests/graph.rs::builder_rejects_duplicate_node_names", "tests/graph.rs::graph_without_an_output_is_rejected", "tests/deployment.rs::portable_graph_guards_state_and_gradients_round_trip", "tests/deployment.rs::graph_module_lowering_reuses_named_state_and_evaluation_behavior"]
+notes = "Neither graph interface claims FX serialization or full FX node/transformation parity. Portable JSON is a RustTorch schema; PT2, ONNX and native JIT use separately evidenced rows."
 
 [[api]]
 id = "graph.ops"
@@ -1207,13 +1215,13 @@ notes = "Clipping is exposed on Optimizer rather than as a free tensor-list func
 [[api]]
 id = "onnx"
 python_symbols = ["torch.onnx.export"]
-rust_symbols = []
-status = "planned"
-implementation = "none"
-scope = "ONNX export, diagnostics, shape constraints, and verification are not implemented."
+rust_symbols = ["rusttorch::deployment::Model::load_onnx", "rusttorch::deployment::Model::save_onnx"]
+status = "partial"
+implementation = "mixed"
+scope = "CPU dense ONNX IR10/default-domain opset18 import/export for Identity, Relu, Sigmoid, Tanh, Add/Sub/Mul, MatMul, Transpose, Concat, axis1 Flatten, constant-shape Reshape, dense Constant and Gemm alpha/beta1 transA0/transB1. Linear lowers to Transpose/MatMul/Add. Official ONNX1.22 checker and reference evaluator verify classifier round trips at batch2/3/8; native tests cover all portable dtypes and the remaining operator shape workflow."
 source = "torch/onnx/__init__.py"
-evidence = []
-notes = "Future support must identify the opset and runtime verification matrix."
+evidence = ["tests/deployment.rs::python_pt2_onnx_and_torchscript_numerical_round_trips", "tests/deployment.rs::all_portable_dtypes_and_operator_shapes_round_trip", "tests/deployment.rs::onnx_rejects_malformed_shapes_unknown_fields_and_versions", "tests/deployment.rs::pt2_and_onnx_native_round_trips_preserve_values_and_guards"]
+notes = "This is explicit graph interchange, not Python capture or complete torch.onnx.export signature parity. ONNX schema provenance: onnx1.22.0 commit2bb50465112feca9003e1ed654d77f01ff1415ca, onnx/onnx.proto, Apache-2.0. Protobuf decoding uses prost0.14.4 with preflight field limits. Inputs/outputs use tensor metadata; RustTorch range guards and calling trees are versioned extra metadata, not automatic enforcement by other runtimes. Initializers are inference constants; parameter roles and shared state storage are not portable. External files, sparse/quantized tensors, custom domains/functions, training/device configuration and control flow are rejected."
 
 [[api]]
 id = "optim.adadelta"
@@ -1327,14 +1335,14 @@ notes = "The named Rust serde schema is not Python pickle or a torch.optim state
 
 [[api]]
 id = "profiler"
-python_symbols = ["torch.profiler.profile"]
-rust_symbols = []
-status = "planned"
-implementation = "none"
-scope = "Operator tracing, schedules, memory profiling, stack capture, and trace export are not exposed."
+python_symbols = ["torch.profiler.profile", "torch.profiler.profiler.profile", "torch.autograd.profiler.record_function", "torch.profiler.profile.export_chrome_trace"]
+rust_symbols = ["rusttorch::profiling::Profiler", "rusttorch::profiling::Profiler::span", "rusttorch::profiling::Profiler::record", "rusttorch::profiling::Profiler::chrome_trace"]
+status = "partial"
+implementation = "rusttorch"
+scope = "Bounded thread-safe explicit host-region timing with nested RAII spans, completion/error outcomes and Chrome Trace Event JSON. Capacity is reserved before user work; active spans prevent export/clear and label/capacity limits reject invalid input."
 source = "torch/profiler/profiler.py"
-evidence = []
-notes = "Future support must keep profiling overhead and backend availability explicit."
+evidence = ["tests/framework_tools.rs::profiles_are_bounded_thread_safe_and_export_only_completed_regions"]
+notes = "Rust application instrumentation and interchange format only. Native operator/kernel interception, accelerator events, schedules, allocation/stack capture and native profiler APIs are not implemented. No overhead or performance improvement claim."
 
 [[api]]
 id = "quantization"
@@ -1346,6 +1354,17 @@ scope = "Eager and graph quantization, observers, calibration, fake quantization
 source = "torch/ao/quantization/__init__.py"
 evidence = []
 notes = "Quantized tensor construction/dequantization has a separate narrowly tested core.tensor.quantization row. Model transformation, observers, calibration, fake quantization and quantized modules remain planned; pinned legacy primitive availability does not establish torch.ao.quantization coverage."
+
+[[api]]
+id = "reproducibility"
+python_symbols = ["torch.Generator", "torch.manual_seed", "torch.set_num_threads"]
+rust_symbols = ["rusttorch::reproducibility::RuntimeConfig", "rusttorch::reproducibility::TensorRng", "rusttorch::reproducibility::TensorRngState"]
+status = "partial"
+implementation = "mixed"
+scope = "Startup native seed/thread configuration plus separate serializable ChaCha12 task-local uniform and normal CPU generation followed by an explicit device copy. Version/shape/dtype/allocation checks happen before stream advancement; exact same-runtime resume and independence from global native reseeding are tested."
+source = "torch/random.py"
+evidence = ["tests/framework_tools.rs::local_noise_resumes_without_global_rng_and_rejects_limits_without_advancing", "tests/training_checkpoint.rs::atomic_checkpoint_reproduces_next_loader_noise_optimizer_and_schedule_update"]
+notes = "TensorRng is an original Rust stream, not torch.Generator/Philox state or sequence compatibility. Native seed configuration is process-global and intended at startup. No full deterministic-algorithm policy, native RNG state capture or cross-platform Box-Muller identity guarantee."
 
 [[api]]
 id = "runtime.setup"
@@ -1404,14 +1423,25 @@ notes = "This row covers explicitly registered model parameters/buffers, not arb
 
 [[api]]
 id = "serialization.torchscript"
-python_symbols = ["torch.jit.load", "torch.jit.ScriptModule"]
-rust_symbols = []
-status = "not_supported"
-implementation = "none"
-scope = "RustTorch does not expose TorchScript modules or convert TorchScript into eager modules or its graph IR."
+python_symbols = ["torch.jit.load", "torch.jit.save", "torch.jit.trace", "torch.jit.ScriptModule"]
+rust_symbols = ["rusttorch::deployment::Model::trace", "rusttorch::deployment::TracedModel::load", "rusttorch::deployment::TracedModel::save", "rusttorch::deployment::TracedModel::run"]
+status = "partial"
+implementation = "mixed"
+scope = "Actual LibTorch TorchScript execution and persistence through safe tch::CModule. RustTorch traces a supported branch-free single-output portable program with a frozen state copy and retains input dtype/device/shape/range guards in an adjacent versioned sidecar. CPU Float native and pinned Python-to-Rust/Rust-to-Python artifact round trips compare classifier inference."
 source = "torch/jit/__init__.py"
-evidence = []
-notes = "Applications may use tch::CModule directly outside the RustTorch contract."
+evidence = ["tests/deployment.rs::actual_torchscript_trace_executes_and_reloads_with_guards", "tests/deployment.rs::python_pt2_onnx_and_torchscript_numerical_round_trips", "tests/deployment.rs::conditional_executes_one_branch_and_preserves_selected_gradient"]
+notes = "Only trusted native artifacts may be loaded. No arbitrary Rust function capture, conditional tracing, multi-output trace creation, torch.compile/AOTInductor claim, ScriptModule-to-eager conversion or full Python JIT API parity. The sidecar must accompany its artifact; loading arbitrary native code is not a sandbox."
+
+[[api]]
+id = "serialization.training_checkpoint"
+python_symbols = ["Training checkpoint workflow with model, optimizer and application state"]
+rust_symbols = ["rusttorch::checkpoint::save", "rusttorch::checkpoint::TrainingCheckpoint", "rusttorch::checkpoint::CheckpointLimits"]
+status = "partial"
+implementation = "mixed"
+scope = "Bounded versioned three-member ZIP training snapshots containing named SafeTensors weights, typed optimizer state and application JSON. Same-directory hard-link publication refuses overwrite atomically; complete metadata/alias/store validation and tensor/optimizer allocation precede model updates. A full loader/local RNG/scheduler/scaler resume reproduces the next update exactly."
+source = "torch/serialization.py"
+evidence = ["tests/training_checkpoint.rs::atomic_checkpoint_reproduces_next_loader_noise_optimizer_and_schedule_update", "tests/training_checkpoint.rs::corrupt_mismatched_or_oversized_checkpoints_preserve_existing_models_and_files", "tests/training_checkpoint.rs::malformed_boolean_bytes_and_false_member_sizes_fail_before_native_restore"]
+notes = "Original Rust format, not torch.save pickle or activation checkpointing. Restore requires the exact model/optimizer store with contiguous compatible tensors. Application state must be validated before restore. Native failure during final device copies may partially update a model; use a fresh model to retain the old one. Same-filesystem hard-link support is required."
 
 [[api]]
 id = "sparse"
@@ -1438,35 +1468,57 @@ notes = "Native Tensor methods are used directly without redundant wrappers. Rem
 [[api]]
 id = "tabular"
 python_symbols = ["torch.utils.data.Dataset for tabular records"]
-rust_symbols = []
-status = "planned"
-implementation = "none"
-scope = "CSV, columnar, database, missing-value, categorical, and numerical preprocessing integrations are not included."
+rust_symbols = ["rusttorch::tabular::CsvRecords", "rusttorch::tabular::JsonLines", "rusttorch::tabular::FittedPreprocessor", "rusttorch::tabular::TabularDataset", "rusttorch::tabular::TabularBatch", "rusttorch::tabular::open_arrow", "rusttorch::tabular::open_parquet"]
+status = "partial"
+implementation = "mixed"
+scope = "Optional rusttorch-tabular bounded CSV and JSONL row iterators, immutable training-fitted mean imputation/population-standardization and sorted categorical IDs, validated versioned fitted-state JSON, typed worker batches, optional Arrow IPC file and Parquet row iteration with metadata/record-batch ceilings."
 source = "torch/utils/data/dataset.py"
-evidence = []
-notes = "Optional packages will map records into typed samples consumed by the shared loader."
+evidence = ["crates/rusttorch-tabular/tests/pipelines.rs::training_fit_is_immutable_and_worker_batches_match_jsonl", "crates/rusttorch-tabular/tests/pipelines.rs::quoted_csv_newlines_and_typed_json_cells_are_preserved", "crates/rusttorch-tabular/tests/pipelines.rs::invalid_states_records_and_limits_fail_once", "crates/rusttorch-tabular/tests/pipelines.rs::deserialized_schemas_preserve_constructor_invariants_and_wire_shape", "crates/rusttorch-tabular/tests/pipelines.rs::arrow_ipc_rows_equal_csv_and_enforce_batch_budget", "crates/rusttorch-tabular/tests/pipelines.rs::empty_arrow_batches_still_validate_column_names", "crates/rusttorch-tabular/tests/pipelines.rs::parquet_rows_equal_csv_and_metadata_limits_precede_decode"]
+notes = "CSV quoting/newlines and scalar JSON string/number/null values are supported. Columnar types are UTF8/LargeUTF8, Int32/Int64 and Float32/Float64 with nulls; default Parquet support is uncompressed. Optional features keep columnar dependencies out of basic CSV users. Native decoder scratch is not a process-RSS guarantee. Database connectors, nested/dictionary/date columns, arbitrary compression, online refitting and full external dataframe APIs are not claimed."
 
 [[api]]
 id = "testing"
 python_symbols = ["torch.testing.assert_close"]
-rust_symbols = []
-status = "planned"
-implementation = "none"
-scope = "Public tensor comparison, tolerance policy, generated utilities, and OpInfo-style coverage are not exposed."
-source = "torch/testing/__init__.py"
-evidence = []
-notes = "Internal tests are not a public torch.testing surface."
+rust_symbols = ["rusttorch::testing::compare", "rusttorch::testing::assert_close", "rusttorch::testing::CloseOptions"]
+status = "partial"
+implementation = "mixed"
+scope = "Dense tensor metadata validation and mismatch count/first-index diagnostics. Floating/complex values use explicit tolerances and optional equal-NaN behavior; integer/bool comparison is exact, including Int64 values beyond Float64 integer precision. Empty tensors and scalar coordinates are supported; optional cross-device copies are explicit."
+source = "torch/testing/_comparison.py"
+evidence = ["tests/framework_tools.rs::tensor_comparisons_check_metadata_nan_infinity_and_exact_integers", "tests/framework_tools.rs::pinned_python_comparisons_and_gradcheck_match"]
+notes = "CPU numerical fixtures match the documented tolerance cases. Rust returns a structured Result instead of Python assertion messages. Nested containers, sparse/quantized layouts, dtype-specific automatic tolerance tables and full complex-NaN parity are not claimed; no OpInfo framework."
+
+[[api]]
+id = "testing.gradcheck"
+python_symbols = ["torch.autograd.gradcheck"]
+rust_symbols = ["rusttorch::testing::gradcheck", "rusttorch::testing::GradcheckOptions"]
+status = "partial"
+implementation = "mixed"
+scope = "Bounded full-Jacobian central differences for finite deterministic nonempty dense CPU Float64 functions. Checks analytical/numerical derivative finiteness and metadata, supports noncontiguous inputs through an owned contiguous copy, preserves existing leaf gradients and rejects unrepresentable epsilon or excessive work."
+source = "torch/autograd/gradcheck.py"
+evidence = ["tests/framework_tools.rs::finite_differences_accept_correct_gradients_and_reject_surrogates_and_oversized_work", "tests/framework_tools.rs::gradient_check_rejects_matching_infinite_derivatives", "tests/framework_tools.rs::pinned_python_comparisons_and_gradcheck_match"]
+notes = "Pure functions are required. Complex/sparse/stochastic gradcheck, multiple inputs, backward/forward mode option matrices and gradgradcheck are not exposed."
 
 [[api]]
 id = "text"
 python_symbols = ["torch.utils.data.Dataset for text samples"]
-rust_symbols = []
-status = "planned"
-implementation = "none"
-scope = "Text decoding, tokenization, vocabulary management, packing, and augmentation are not included."
+rust_symbols = ["rusttorch::text::HfTokenizer", "rusttorch::text::TextDataset", "rusttorch::text::EncodedSequence", "rusttorch::text::TextCollator", "rusttorch::text::TokenBudgetConfig", "rusttorch::text::TokenBudgetSampler"]
+status = "partial"
+implementation = "mixed"
+scope = "Optional rusttorch-text local Hugging Face tokenization, bounded strings/sequences, explicit reject/right-truncation policy, fixed/longest padding, Int64 token/type/attention/special masks, worker DataLoader pipelines, distributed padded-token-cost batch sampling and validated epoch-aware sampler checkpoint restoration."
 source = "torch/utils/data/dataset.py"
-evidence = []
-notes = "Optional text packages will produce typed samples for the shared loader."
+evidence = ["crates/rusttorch-text/tests/pipelines.rs::tokenizer_to_worker_loader_produces_ids_masks_and_budget_batches", "crates/rusttorch-text/tests/pipelines.rs::padding_policies_and_limits_reject_invalid_sequences", "crates/rusttorch-text/tests/pipelines.rs::token_budget_resume_replays_only_remaining_complete_batches", "crates/rusttorch-text/tests/pipelines.rs::distributed_token_batches_preserve_disjoint_rank_indices", "crates/rusttorch-text/tests/pipelines.rs::empty_sequences_still_obey_batch_record_and_length_byte_limits"]
+notes = "The tokenizers crate supplies established tokenizer formats without implicit downloads. This is typed Rust data integration, not torchtext or all tokenizer/model equivalence. Padding IDs and post-special-token truncation policy are explicit. Sampler checkpoints do not promise replay of stochastic tokenizers. Equal rank sample counts may still form unequal numbers of token-budget batches; packed-sequence model kernels and text augmentation are not claimed."
+
+[[api]]
+id = "utils.benchmark"
+python_symbols = ["torch.utils.benchmark.Timer"]
+rust_symbols = ["rusttorch::profiling::benchmark", "rusttorch::profiling::BenchmarkOptions", "rusttorch::profiling::Measurement"]
+status = "partial"
+implementation = "rusttorch"
+scope = "Callable benchmark with bounded warmup/sample counts, explicit device synchronization before and after every invocation, retained output through completion, raw seconds and mean/median/population standard deviation/minimum/maximum statistics."
+source = "torch/utils/benchmark/utils/timer.py"
+evidence = ["tests/framework_tools.rs::benchmarks_warm_up_and_synchronize_each_completed_invocation"]
+notes = "Rust closure timing is the workflow equivalent; Python statement execution, automatic accelerator discovery, adaptive blocked autorange, callgrind and comparison-table tooling are not exposed. The caller owns synchronizing the actual backend."
 
 [[api]]
 id = "utils.checkpoint"
@@ -1482,21 +1534,21 @@ notes = "Future support must prove gradients and memory behavior."
 [[api]]
 id = "video"
 python_symbols = ["torch.utils.data.Dataset for video samples"]
-rust_symbols = []
-status = "planned"
-implementation = "none"
-scope = "Video decoding, frame sampling, temporal transforms, audio alignment, and batching are not included."
+rust_symbols = ["rusttorch::codec::MediaDecoder", "rusttorch::codec::MediaFrame", "rusttorch::codec::VideoFrame", "rusttorch::codec::AudioFrame", "rusttorch::codec::TimeBase", "rusttorch::codec::Timestamp", "rusttorch::codec::capabilities"]
+status = "partial"
+implementation = "mixed"
+scope = "Optional rusttorch-codec FFmpeg 8 CPU decoding of one selected video or mono/stereo audio stream from regular local files; owned RGB CHW frames and Float audio blocks, rational presentation time, checked seeking with pre-target frame removal, lazy typed batches, cancellation checks between native operations and finite input/output/duration limits."
 source = "torch/utils/data/dataset.py"
-evidence = []
-notes = "Optional media packages will decode typed samples for the shared loader."
+evidence = ["crates/rusttorch-codec/tests/pipelines.rs::rational_time_is_checked_and_exact", "crates/rusttorch-codec/tests/pipelines.rs::cpu_video_streams_batches_and_seeks_with_timestamps", "crates/rusttorch-codec/tests/pipelines.rs::native_audio_copies_checked_float_buffers", "crates/rusttorch-codec/tests/pipelines.rs::limits_and_missing_streams_fail_explicitly"]
+notes = "Choose explicit system or vcpkg linking; no bundled native binaries. Checked fixtures use FFV1 Matroska and PCM WAV. Allowed demuxers include Matroska/WebM, WAV, AVI, MOV/MP4, MP3 and FLAC, with actual codec availability reported from the selected native build. Network/playlist input, hardware decoding, arbitrary multichannel layouts, cross-stream synchronization and exact decoder checkpointing are outside scope. The same four tests also pass against the checksummed FFmpeg 8.1.2 dynamically linked LGPL-only profile from scripts/build-ffmpeg.py; this is Linux/macOS profile support, not Windows native runtime evidence."
 
 [[api]]
 id = "vision"
 python_symbols = ["torch.utils.data.Dataset for image samples"]
-rust_symbols = []
-status = "planned"
-implementation = "none"
-scope = "Image decoding, transforms, augmentation, detection targets, and vision datasets are not included."
+rust_symbols = ["rusttorch::vision::VisionSample", "rusttorch::vision::VisionBatch", "rusttorch::vision::decode_image", "rusttorch::vision::ImageFolder", "rusttorch::vision::Mnist", "rusttorch::vision::Cifar", "rusttorch::vision::CocoDetection"]
+status = "partial"
+implementation = "mixed"
+scope = "Optional rusttorch-vision bounded PNG/JPEG RGB CHW decoding; stable ImageFolder classes and worker loading; local uncompressed MNIST IDX, CIFAR-10/100 binary and COCO detection/keypoint samples; stacked or variable-size batches; resize/crop/flip updating images, XYXY boxes, keypoints and integer masks together."
 source = "torch/utils/data/dataset.py"
-evidence = []
-notes = "Optional vision packages will produce typed samples; torchvision is a separate upstream project."
+evidence = ["crates/rusttorch-vision/tests/pipelines.rs::imagefolder_workers_decode_classify_and_bound_payload", "crates/rusttorch-vision/tests/pipelines.rs::target_geometry_tracks_image_mask_and_keypoints", "crates/rusttorch-vision/tests/pipelines.rs::named_dataset_families_read_real_local_formats", "crates/rusttorch-vision/tests/pipelines.rs::malformed_and_oversized_images_fail_without_panics", "crates/rusttorch-vision/tests/pipelines.rs::jpeg_decodes_and_integer_masks_keep_large_category_ids", "crates/rusttorch-vision/tests/pipelines.rs::vision_sample_footprint_includes_classification_label", "crates/rusttorch-vision/tests/pipelines.rs::resize_limit_covers_image_and_integer_mask_together"]
+notes = "Original tiny format fixtures establish Rust dataset behavior. No torchvision API equivalence, implicit downloads, archive extraction, pretrained vision models, EXIF/color-profile adjustment, polygon/RLE segmentation, automatic left/right keypoint permutation or accelerator support evidence. Integer nearest-neighbor masks preserve category IDs without float conversion."

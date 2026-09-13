@@ -13,6 +13,7 @@ license.workspace = true
 publish = ["crates-io"]
 exclude = [
     "/.serena",
+    "/.superpowers",
     "/rustorch_codex_project_prompt.md",
     "/crates/rusttorch-cli",
     "/pyproject.toml",
@@ -30,7 +31,7 @@ default-members = ["."]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.88"
 repository = "https://github.com/newpoluton-alt/RustTorch"
@@ -44,13 +45,26 @@ rand_chacha = "0.3"
 crossbeam-channel = "0.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-rusttorch-core = { version = "=0.3.0", path = "crates/rusttorch-core", default-features = false }
-rusttorch-data = { version = "=0.3.0", path = "crates/rusttorch-data", default-features = false }
+rusttorch-core = { version = "=0.4.0", path = "crates/rusttorch-core", default-features = false }
+rusttorch-data = { version = "=0.4.0", path = "crates/rusttorch-data", default-features = false }
+rusttorch-vision = { version = "=0.4.0", path = "crates/rusttorch-vision", default-features = false }
+rusttorch-codec = { version = "=0.4.0", path = "crates/rusttorch-codec", default-features = false }
+rusttorch-audio = { version = "=0.4.0", path = "crates/rusttorch-audio", default-features = false }
+rusttorch-text = { version = "=0.4.0", path = "crates/rusttorch-text", default-features = false }
+rusttorch-tabular = { version = "=0.4.0", path = "crates/rusttorch-tabular", default-features = false }
 
 [features]
 default = ["download-libtorch"]
-download-libtorch = ["rusttorch-core/download-libtorch"]
-doc-only = ["rusttorch-core/doc-only"]
+download-libtorch = ["rusttorch-core/download-libtorch", "rusttorch-vision?/download-libtorch", "rusttorch-codec?/download-libtorch", "rusttorch-audio?/download-libtorch", "rusttorch-text?/download-libtorch", "rusttorch-tabular?/download-libtorch"]
+doc-only = ["rusttorch-core/doc-only", "rusttorch-vision?/doc-only", "rusttorch-codec?/doc-only", "rusttorch-audio?/doc-only", "rusttorch-text?/doc-only", "rusttorch-tabular?/doc-only"]
+vision = ["dep:rusttorch-vision"]
+codec = ["dep:rusttorch-codec", "rusttorch-codec/system"]
+codec-vcpkg = ["dep:rusttorch-codec", "rusttorch-codec/vcpkg"]
+audio = ["dep:rusttorch-audio"]
+text = ["dep:rusttorch-text"]
+tabular = ["dep:rusttorch-tabular"]
+columnar = ["tabular", "rusttorch-tabular/parquet"]
+full = ["vision", "codec", "audio", "rusttorch-audio/codec", "text", "tabular", "columnar"]
 
 [dependencies]
 rusttorch-core.workspace = true
@@ -58,7 +72,18 @@ rusttorch-data.workspace = true
 tch.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }
+rand.workspace = true
+rand_chacha.workspace = true
+zip = { version = "=0.6.6", default-features = false, features = ["deflate"] }
+prost = "=0.14.4"
+safetensors = "=0.3.3"
+thiserror.workspace = true
+rusttorch-vision = { workspace = true, optional = true }
+rusttorch-codec = { workspace = true, optional = true }
+rusttorch-audio = { workspace = true, optional = true }
+rusttorch-text = { workspace = true, optional = true }
+rusttorch-tabular = { workspace = true, optional = true }
 
 [package.metadata.docs.rs]
 no-default-features = true
-features = ["doc-only"]
+features = ["doc-only", "full"]

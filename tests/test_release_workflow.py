@@ -16,6 +16,11 @@ WORKFLOW = ROOT / ".github/workflows/release.yml"
 PACKAGE_MANIFESTS = (
     ("rusttorch-core", Path("crates/rusttorch-core/Cargo.toml")),
     ("rusttorch-data", Path("crates/rusttorch-data/Cargo.toml")),
+    ("rusttorch-codec", Path("crates/rusttorch-codec/Cargo.toml")),
+    ("rusttorch-vision", Path("crates/rusttorch-vision/Cargo.toml")),
+    ("rusttorch-audio", Path("crates/rusttorch-audio/Cargo.toml")),
+    ("rusttorch-text", Path("crates/rusttorch-text/Cargo.toml")),
+    ("rusttorch-tabular", Path("crates/rusttorch-tabular/Cargo.toml")),
     ("rusttorch-cli", Path("crates/rusttorch-cli/Cargo.toml")),
     ("rusttorch", Path("Cargo.toml")),
 )
@@ -123,6 +128,11 @@ class ReleasePreflightTests(unittest.TestCase):
             "# Changelog\n\n## Unreleased\n\n## 0.1.0 - 2026-08-30\n\n- Initial release.\n",
         )
         self.write("scripts/check-compatibility.py", "raise SystemExit(0)\n")
+        for package in ("rusttorch-codec", "rusttorch-vision", "rusttorch-audio", "rusttorch-text", "rusttorch-tabular"):
+            self.write(f"crates/{package}/Cargo.toml", f'[package]\nname = "{package}"\nversion.workspace = true\n')
+            with (self.root / "Cargo.lock").open("a") as lock:
+                lock.write(f'\n[[package]]\nname = "{package}"\nversion = "0.1.0"\n')
+
 
     def assert_invalid(self, message: str) -> None:
         with self.assertRaisesRegex(self.release.ReleaseError, message):
@@ -286,6 +296,11 @@ class ReleaseSubjectTests(unittest.TestCase):
         self.archives = {
             "rusttorch-core-0.1.0.crate": LIBRARY_ARCHIVE,
             "rusttorch-data-0.1.0.crate": CLI_ARCHIVE,
+            "rusttorch-codec-0.1.0.crate": LIBRARY_ARCHIVE,
+            "rusttorch-vision-0.1.0.crate": LIBRARY_ARCHIVE,
+            "rusttorch-audio-0.1.0.crate": LIBRARY_ARCHIVE,
+            "rusttorch-text-0.1.0.crate": LIBRARY_ARCHIVE,
+            "rusttorch-tabular-0.1.0.crate": LIBRARY_ARCHIVE,
             "rusttorch-cli-0.1.0.crate": CLI_ARCHIVE,
             "rusttorch-0.1.0.crate": LIBRARY_ARCHIVE,
         }
@@ -340,15 +355,15 @@ class ReleaseSubjectTests(unittest.TestCase):
 
     def test_subject_generation_rejects_unsafe_archive_contents(self) -> None:
         archive_path = self.dist / "rusttorch-0.1.0.crate"
-        with tarfile.open(archive_path, "w:gz") as archive:
-            data = b"native"
-            member = tarfile.TarInfo("rusttorch-0.1.0/.venv/libtorch.so")
-            member.size = len(data)
-            archive.addfile(member, io.BytesIO(data))
-        with self.assertRaisesRegex(self.release.ReleaseError, "unsafe"):
-            self.release.write_subjects(
-                self.dist, "0.1.0", self.root / "subjects.txt"
-            )
+        for filename in (".venv/libtorch.so", "libavcodec.a", "avcodec.lib", "libavcodec.so.62", "avcodec.DLL"):
+            with self.subTest(filename=filename):
+                with tarfile.open(archive_path, "w:gz") as archive:
+                    data = b"native"
+                    member = tarfile.TarInfo(f"rusttorch-0.1.0/{filename}")
+                    member.size = len(data)
+                    archive.addfile(member, io.BytesIO(data))
+                with self.assertRaisesRegex(self.release.ReleaseError, "unsafe"):
+                    self.release.write_subjects(self.dist, "0.1.0", self.root / "subjects.txt")
 
     def test_subject_generation_rejects_invalid_or_empty_archives(self) -> None:
         archive_path = self.dist / "rusttorch-0.1.0.crate"
@@ -599,7 +614,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("sha256sum --check subjects.txt", release)
         self.assertIn("base64 -w 0 subjects.txt", release)
         self.assertIn('test "$actual_base64" = "$EXPECTED_BASE64_SUBJECTS"', release)
-        self.assertIn('test "$(find . -mindepth 1 -maxdepth 1 | wc -l)" -eq 5', release)
+        self.assertIn('test "$(find . -mindepth 1 -maxdepth 1 | wc -l)" -eq 10', release)
         for package, _ in PACKAGE_MANIFESTS:
             self.assertIn(
                 f'test -f "{package}-$VERSION.crate" && test ! -L "{package}-$VERSION.crate"',
@@ -616,6 +631,11 @@ class ReleaseWorkflowTests(unittest.TestCase):
             'gh release upload "$GITHUB_REF_NAME" '
             '"dist/rusttorch-core-$VERSION.crate" '
             '"dist/rusttorch-data-$VERSION.crate" '
+            '"dist/rusttorch-codec-$VERSION.crate" '
+            '"dist/rusttorch-vision-$VERSION.crate" '
+            '"dist/rusttorch-audio-$VERSION.crate" '
+            '"dist/rusttorch-text-$VERSION.crate" '
+            '"dist/rusttorch-tabular-$VERSION.crate" '
             '"dist/rusttorch-cli-$VERSION.crate" '
             '"dist/rusttorch-$VERSION.crate" --clobber'
         )

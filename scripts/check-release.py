@@ -19,12 +19,17 @@ TAG_PATTERN = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 PACKAGE_MANIFESTS = (
     ("rusttorch-core", Path("crates/rusttorch-core/Cargo.toml")),
     ("rusttorch-data", Path("crates/rusttorch-data/Cargo.toml")),
+    ("rusttorch-codec", Path("crates/rusttorch-codec/Cargo.toml")),
+    ("rusttorch-vision", Path("crates/rusttorch-vision/Cargo.toml")),
+    ("rusttorch-audio", Path("crates/rusttorch-audio/Cargo.toml")),
+    ("rusttorch-text", Path("crates/rusttorch-text/Cargo.toml")),
+    ("rusttorch-tabular", Path("crates/rusttorch-tabular/Cargo.toml")),
     ("rusttorch-cli", Path("crates/rusttorch-cli/Cargo.toml")),
     ("rusttorch", Path("Cargo.toml")),
 )
 FORBIDDEN_ARCHIVE_PARTS = {".venv", "target", "__pycache__", "libtorch"}
 FORBIDDEN_ARCHIVE_FILES = {"pyproject.toml", "uv.lock"}
-FORBIDDEN_ARCHIVE_SUFFIXES = {".dll", ".dylib", ".pyc", ".pyo", ".so"}
+FORBIDDEN_ARCHIVE_SUFFIXES = {".a", ".lib", ".dll", ".dylib", ".pyc", ".pyo", ".so"}
 
 
 class ReleaseError(ValueError):
@@ -189,6 +194,7 @@ def _validate_archive(path: Path, package_root: str) -> None:
             any(part in FORBIDDEN_ARCHIVE_PARTS for part in relative_parts)
             or relative_name in FORBIDDEN_ARCHIVE_FILES
             or PurePosixPath(relative_name).suffix.lower() in FORBIDDEN_ARCHIVE_SUFFIXES
+            or re.search(r"\.so(?:\.[0-9]+)+$", relative_name, re.IGNORECASE)
         ):
             raise ReleaseError(f"unsafe archive member {member.name!r} in {path.name!r}")
         regular_files += member.isfile()

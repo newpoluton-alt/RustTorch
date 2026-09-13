@@ -83,10 +83,20 @@ jobs:
           cargo package --workspace --locked
           test -f "target/package/rusttorch-core-$VERSION.crate"
           test -f "target/package/rusttorch-data-$VERSION.crate"
+          test -f "target/package/rusttorch-codec-$VERSION.crate"
+          test -f "target/package/rusttorch-vision-$VERSION.crate"
+          test -f "target/package/rusttorch-audio-$VERSION.crate"
+          test -f "target/package/rusttorch-text-$VERSION.crate"
+          test -f "target/package/rusttorch-tabular-$VERSION.crate"
           test -f "target/package/rusttorch-cli-$VERSION.crate"
           test -f "target/package/rusttorch-$VERSION.crate"
           cp "target/package/rusttorch-core-$VERSION.crate" "dist/rusttorch-core-$VERSION.crate"
           cp "target/package/rusttorch-data-$VERSION.crate" "dist/rusttorch-data-$VERSION.crate"
+          cp "target/package/rusttorch-codec-$VERSION.crate" "dist/rusttorch-codec-$VERSION.crate"
+          cp "target/package/rusttorch-vision-$VERSION.crate" "dist/rusttorch-vision-$VERSION.crate"
+          cp "target/package/rusttorch-audio-$VERSION.crate" "dist/rusttorch-audio-$VERSION.crate"
+          cp "target/package/rusttorch-text-$VERSION.crate" "dist/rusttorch-text-$VERSION.crate"
+          cp "target/package/rusttorch-tabular-$VERSION.crate" "dist/rusttorch-tabular-$VERSION.crate"
           cp "target/package/rusttorch-cli-$VERSION.crate" "dist/rusttorch-cli-$VERSION.crate"
           cp "target/package/rusttorch-$VERSION.crate" "dist/rusttorch-$VERSION.crate"
 
@@ -106,6 +116,11 @@ jobs:
           path: |
             dist/rusttorch-core-${{ steps.preflight.outputs.version }}.crate
             dist/rusttorch-data-${{ steps.preflight.outputs.version }}.crate
+            dist/rusttorch-codec-${{ steps.preflight.outputs.version }}.crate
+            dist/rusttorch-vision-${{ steps.preflight.outputs.version }}.crate
+            dist/rusttorch-audio-${{ steps.preflight.outputs.version }}.crate
+            dist/rusttorch-text-${{ steps.preflight.outputs.version }}.crate
+            dist/rusttorch-tabular-${{ steps.preflight.outputs.version }}.crate
             dist/rusttorch-cli-${{ steps.preflight.outputs.version }}.crate
             dist/rusttorch-${{ steps.preflight.outputs.version }}.crate
             dist/subjects.txt
@@ -151,15 +166,21 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          test "$(find . -mindepth 1 -maxdepth 1 | wc -l)" -eq 5
+          test "$(find . -mindepth 1 -maxdepth 1 | wc -l)" -eq 10
           test -f "rusttorch-core-$VERSION.crate" && test ! -L "rusttorch-core-$VERSION.crate"
           test -f "rusttorch-data-$VERSION.crate" && test ! -L "rusttorch-data-$VERSION.crate"
+          test -f "rusttorch-codec-$VERSION.crate" && test ! -L "rusttorch-codec-$VERSION.crate"
+          test -f "rusttorch-vision-$VERSION.crate" && test ! -L "rusttorch-vision-$VERSION.crate"
+          test -f "rusttorch-audio-$VERSION.crate" && test ! -L "rusttorch-audio-$VERSION.crate"
+          test -f "rusttorch-text-$VERSION.crate" && test ! -L "rusttorch-text-$VERSION.crate"
+          test -f "rusttorch-tabular-$VERSION.crate" && test ! -L "rusttorch-tabular-$VERSION.crate"
           test -f "rusttorch-cli-$VERSION.crate" && test ! -L "rusttorch-cli-$VERSION.crate"
           test -f "rusttorch-$VERSION.crate" && test ! -L "rusttorch-$VERSION.crate"
           test -f subjects.txt && test ! -L subjects.txt
           actual_files="$(find . -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort)"
           expected_files="$(printf '%s\n' subjects.txt \
             "rusttorch-core-$VERSION.crate" "rusttorch-data-$VERSION.crate" \
+            "rusttorch-codec-$VERSION.crate" "rusttorch-vision-$VERSION.crate" "rusttorch-audio-$VERSION.crate" "rusttorch-text-$VERSION.crate" "rusttorch-tabular-$VERSION.crate" \
             "rusttorch-cli-$VERSION.crate" "rusttorch-$VERSION.crate" | sort)"
           test "$actual_files" = "$expected_files"
           sha256sum --check subjects.txt
@@ -178,11 +199,18 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" \
             "dist/rusttorch-core-$VERSION.crate" \
             "dist/rusttorch-data-$VERSION.crate" \
+            "dist/rusttorch-codec-$VERSION.crate" \
+            "dist/rusttorch-vision-$VERSION.crate" \
+            "dist/rusttorch-audio-$VERSION.crate" \
+            "dist/rusttorch-text-$VERSION.crate" \
+            "dist/rusttorch-tabular-$VERSION.crate" \
             "dist/rusttorch-cli-$VERSION.crate" \
             "dist/rusttorch-$VERSION.crate" --clobber
           actual_assets="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)"
           expected_assets="$(printf '%s\n' "rusttorch-core-$VERSION.crate" \
-            "rusttorch-data-$VERSION.crate" "rusttorch-cli-$VERSION.crate" \
+            "rusttorch-data-$VERSION.crate" \
+            "rusttorch-codec-$VERSION.crate" "rusttorch-vision-$VERSION.crate" "rusttorch-audio-$VERSION.crate" "rusttorch-text-$VERSION.crate" "rusttorch-tabular-$VERSION.crate" \
+            "rusttorch-cli-$VERSION.crate" \
             "rusttorch-$VERSION.crate" "rusttorch-$VERSION.intoto.jsonl" | sort)"
           test "$actual_assets" = "$expected_assets"
           gh release edit "$GITHUB_REF_NAME" --draft=false

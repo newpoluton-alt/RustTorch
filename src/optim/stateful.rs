@@ -343,6 +343,36 @@ impl Optimizer {
         Ok(optimizer)
     }
 
+    pub(crate) fn distributed_configuration(&mut self) -> Result<Vec<u8>> {
+        self.sync_parameters()?;
+        let parameters = self
+            .parameters
+            .iter()
+            .map(|(name, p)| {
+                (
+                    name,
+                    p.tensor.size(),
+                    format!("{:?}", p.tensor.kind()),
+                    p.group,
+                    p.step,
+                )
+            })
+            .collect::<Vec<_>>();
+        serde_json::to_vec(&(
+            &self.algorithm,
+            self.default_learning_rate,
+            self.default_weight_decay,
+            self.completed_steps,
+            &self.groups,
+            parameters,
+        ))
+        .map_err(|e| invalid(&format!("cannot encode optimizer configuration: {e}")))
+    }
+
+    pub(crate) fn belongs_to(&self, store: &VarStore) -> bool {
+        Arc::ptr_eq(&self.variables, &store.variables_)
+    }
+
     pub(crate) fn identity(&self) -> u64 {
         self.id
     }
@@ -707,6 +737,15 @@ impl Optimizer {
     /// the builder settings. Device placement follows the current model.
     /// Validation or allocation failure changes no moments, settings or weights.
     pub fn load_state_dict(&mut self, state: &OptimizerState) -> Result<()> {
+        let prepared = self.prepare_state_dict(state)?;
+        self.apply_prepared_state(prepared);
+        Ok(())
+    }
+
+    pub(crate) fn prepare_state_dict(
+        &mut self,
+        state: &OptimizerState,
+    ) -> Result<PreparedOptimizerState> {
         self.sync_parameters()?;
         if state.schema_version != SCHEMA || !self.algorithm.same_family(&state.algorithm) {
             return Err(invalid("optimizer checkpoint schema or algorithm mismatch"));
@@ -780,20 +819,35 @@ impl Optimizer {
             }
             restored.insert(name.clone(), slots);
         }
-        for (name, slots) in restored {
+        Ok(PreparedOptimizerState {
+            restored,
+            steps: state
+                .parameters
+                .iter()
+                .map(|(name, saved)| (name.clone(), saved.step))
+                .collect(),
+            groups,
+            algorithm: state.algorithm.clone(),
+            default_learning_rate: state.default_learning_rate,
+            default_weight_decay: state.default_weight_decay,
+            completed_steps: state.completed_steps,
+        })
+    }
+
+    pub(crate) fn apply_prepared_state(&mut self, prepared: PreparedOptimizerState) {
+        for (name, slots) in prepared.restored {
             let parameter = self
                 .parameters
                 .get_mut(&name)
-                .expect("validated checkpoint name");
+                .expect("prepared optimizer parameter exists");
             parameter.slots = slots;
-            parameter.step = state.parameters[&name].step;
+            parameter.step = prepared.steps[&name];
         }
-        self.groups = groups;
-        self.algorithm = state.algorithm.clone();
-        self.default_learning_rate = state.default_learning_rate;
-        self.default_weight_decay = state.default_weight_decay;
-        self.completed_steps = state.completed_steps;
-        Ok(())
+        self.groups = prepared.groups;
+        self.algorithm = prepared.algorithm;
+        self.default_learning_rate = prepared.default_learning_rate;
+        self.default_weight_decay = prepared.default_weight_decay;
+        self.completed_steps = prepared.completed_steps;
     }
 }
 
@@ -1009,4 +1063,186 @@ pub(super) fn invalid(reason: &str) -> RustTorchError {
         field: "optimizer state",
         reason: reason.to_owned(),
     }
+}
+
+// Prepared state owns all allocations; application only assigns validated values.
+pub(crate) struct PreparedOptimizerState {
+    restored: BTreeMap<String, BTreeMap<String, Tensor>>,
+    steps: BTreeMap<String, u64>,
+    groups: BTreeMap<usize, ParameterGroup>,
+    algorithm: Algorithm,
+    default_learning_rate: f64,
+    default_weight_decay: f64,
+    completed_steps: u64,
+}
+
+impl OptimizerState {
+    fn validate_portable(&self) -> Result<()> {
+        if self.schema_version != SCHEMA || self.completed_steps == u64::MAX {
+            return Err(invalid("invalid optimizer state schema or step"));
+        }
+        self.algorithm.validate()?;
+        validate_non_negative("learning_rate", self.default_learning_rate)?;
+        validate_non_negative("weight_decay", self.default_weight_decay)?;
+        let mut names = BTreeSet::new();
+        let mut ids = BTreeSet::new();
+        for group in &self.groups {
+            validate_non_negative("learning_rate", group.learning_rate)?;
+            validate_non_negative("weight_decay", group.weight_decay)?;
+            if !ids.insert(group.id) || group.parameters.windows(2).any(|pair| pair[0] >= pair[1]) {
+                return Err(invalid(
+                    "duplicate optimizer group or unordered parameter names",
+                ));
+            }
+            for name in &group.parameters {
+                let p = self
+                    .parameters
+                    .get(name)
+                    .ok_or_else(|| invalid("optimizer group names a missing parameter"))?;
+                if p.group != group.id || !names.insert(name) {
+                    return Err(invalid("optimizer parameter group mismatch"));
+                }
+            }
+        }
+        if names.len() != self.parameters.len() {
+            return Err(invalid("optimizer parameter is absent from groups"));
+        }
+        for p in self.parameters.values() {
+            elements(&p.shape)?;
+            if p.step > self.completed_steps || p.step == u64::MAX {
+                return Err(invalid("invalid optimizer parameter step"));
+            }
+            let expected: BTreeSet<_> = if p.step == 0 {
+                BTreeSet::new()
+            } else {
+                self.algorithm.slots().iter().copied().collect()
+            };
+            if p.slots.keys().map(String::as_str).collect::<BTreeSet<_>>() != expected {
+                return Err(invalid("optimizer slot names mismatch"));
+            }
+            for slot in p.slots.values() {
+                slot.validate(&p.shape, p.dtype)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn parameter_specs(&self) -> Result<BTreeMap<String, (Vec<i64>, Kind)>> {
+        self.validate_portable()?;
+        Ok(self
+            .parameters
+            .iter()
+            .map(|(name, p)| (name.clone(), (p.shape.clone(), p.dtype.kind())))
+            .collect())
+    }
+
+    pub(crate) fn shard(&self, rank: usize, world_size: usize) -> Result<Self> {
+        self.validate_portable()?;
+        if world_size == 0 || rank >= world_size {
+            return Err(invalid("invalid optimizer shard rank/world size"));
+        }
+        let mut result = self.clone();
+        for p in result.parameters.values_mut() {
+            let count = elements(&p.shape)?;
+            let chunk = count.div_ceil(world_size);
+            let start = rank
+                .checked_mul(chunk)
+                .ok_or_else(|| invalid("optimizer shard offset overflow"))?
+                .min(count);
+            let end = start.saturating_add(chunk).min(count);
+            let width = p.dtype.kind().elt_size_in_bytes();
+            for slot in p.slots.values_mut() {
+                let mut bytes = vec![
+                    0;
+                    chunk.checked_mul(width).ok_or_else(|| invalid(
+                        "optimizer shard byte count overflow"
+                    ))?
+                ];
+                bytes[..(end - start) * width]
+                    .copy_from_slice(&slot.bytes[start * width..end * width]);
+                slot.bytes = bytes;
+                slot.shape = vec![
+                    i64::try_from(chunk).map_err(|_| invalid("optimizer shard shape overflow"))?,
+                ];
+            }
+            p.shape =
+                vec![i64::try_from(chunk).map_err(|_| invalid("optimizer shard shape overflow"))?];
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn consolidate_shards(
+        states: &[Self],
+        parameter_shapes: &BTreeMap<String, Vec<i64>>,
+    ) -> Result<Self> {
+        let first = states
+            .first()
+            .ok_or_else(|| invalid("optimizer shard set is empty"))?;
+        for state in states {
+            state.validate_portable()?;
+            if state.algorithm != first.algorithm
+                || state.default_learning_rate != first.default_learning_rate
+                || state.default_weight_decay != first.default_weight_decay
+                || state.completed_steps != first.completed_steps
+                || state.groups != first.groups
+                || state.parameters.keys().ne(first.parameters.keys())
+            {
+                return Err(invalid("optimizer shard configuration or steps differ"));
+            }
+        }
+        if parameter_shapes.keys().ne(first.parameters.keys()) {
+            return Err(invalid("optimizer shard names differ from model"));
+        }
+        let mut result = first.clone();
+        for (name, p) in &mut result.parameters {
+            let shape = &parameter_shapes[name];
+            let count = elements(shape)?;
+            let chunk = count.div_ceil(states.len());
+            let chunk_i64 =
+                i64::try_from(chunk).map_err(|_| invalid("optimizer shard size overflow"))?;
+            for state in states {
+                let value = &state.parameters[name];
+                if value.shape != [chunk_i64]
+                    || value.dtype != p.dtype
+                    || value.group != p.group
+                    || value.step != p.step
+                    || value.slots.keys().ne(p.slots.keys())
+                {
+                    return Err(invalid("optimizer shard parameter metadata differs"));
+                }
+            }
+            for (slot_name, slot) in &mut p.slots {
+                let width = p.dtype.kind().elt_size_in_bytes();
+                let length = count
+                    .checked_mul(width)
+                    .ok_or_else(|| invalid("optimizer checkpoint byte count overflow"))?;
+                let mut bytes = Vec::new();
+                bytes
+                    .try_reserve_exact(length)
+                    .map_err(|_| invalid("cannot allocate consolidated optimizer state"))?;
+                for state in states {
+                    let source = &state.parameters[name].slots[slot_name].bytes;
+                    let remaining = length - bytes.len();
+                    bytes.extend_from_slice(&source[..remaining.min(source.len())]);
+                }
+                slot.bytes = bytes;
+                slot.shape = shape.clone();
+            }
+            p.shape = shape.clone();
+        }
+        result.validate_portable()?;
+        Ok(result)
+    }
+}
+
+fn elements(shape: &[i64]) -> Result<usize> {
+    if shape.len() > 64 {
+        return Err(invalid("optimizer tensor rank exceeds limit"));
+    }
+    shape
+        .iter()
+        .try_fold(1usize, |n, &d| {
+            usize::try_from(d).ok().and_then(|d| n.checked_mul(d))
+        })
+        .ok_or_else(|| invalid("optimizer tensor dimensions are negative or overflow"))
 }

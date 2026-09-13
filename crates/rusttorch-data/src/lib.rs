@@ -142,6 +142,7 @@ mod checkpoint;
 mod collate;
 mod dataset;
 mod error;
+mod limits;
 mod loader;
 mod memory;
 mod pin_memory;
@@ -171,6 +172,7 @@ pub use dataset::{
     Subset, TensorDataset, TransactionalMap, chain_datasets, random_split,
 };
 pub use error::{LoaderError, PipelineError};
+pub use limits::ResourceLimits;
 pub use loader::{
     AutoBatch, BuilderDatasetMarker, CheckpointPlan, DataLoaderBuilder, ExplicitBatches,
     LoaderIter, LoaderPlan, LoaderPlanConfiguration, NoBatch, OwnedDataLoader,

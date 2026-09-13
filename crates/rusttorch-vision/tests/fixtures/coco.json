@@ -1,0 +1,1 @@
+{"images":[{"id":1,"file_name":"rgb.png","width":2,"height":2}],"annotations":[{"image_id":1,"category_id":4,"bbox":[0,0,1,2],"keypoints":[1,1,2]}]}

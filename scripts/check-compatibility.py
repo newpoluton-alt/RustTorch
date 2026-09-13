@@ -436,7 +436,7 @@ def load_inventory_counts(root: Path, ledger: dict[str, Any]) -> dict[str, int]:
 def generated_documents(root: Path, ledger: dict[str, Any], inventory_counts: dict[str, int] | None = None) -> dict[Path, str]:
     """Return every generated compatibility document and its contents."""
 
-    return {
+    documents = {
         root / "docs" / "api-coverage.md": render_markdown(ledger, inventory_counts=inventory_counts),
         root / "crates" / "rusttorch-core" / "COMPATIBILITY.md": render_markdown(
             ledger,
@@ -453,6 +453,15 @@ def generated_documents(root: Path, ledger: dict[str, Any], inventory_counts: di
             inventory_counts=inventory_counts,
         ),
     }
+    for domain, prefixes in {
+        "vision": ("vision",), "codec": ("codec", "video"),
+        "audio": ("audio",), "text": ("text",), "tabular": ("tabular",),
+    }.items():
+        documents[root / "crates" / f"rusttorch-{domain}" / "COMPATIBILITY.md"] = render_markdown(
+            ledger, title=f"rusttorch-{domain} compatibility", row_prefixes=prefixes,
+            relative_root="../..", inventory_counts=inventory_counts,
+        )
+    return documents
 
 
 def _atomic_write(path: Path, contents: str) -> None:

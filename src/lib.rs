@@ -22,10 +22,30 @@
 //! | Resume training or schedule updates | [`optim::OptimizerState`], [`optim::StepLr`], [`amp::GradScaler`] |
 //! | Save or restore model parameters | [`nn::Sequential::save_weights`], [`interop`] |
 //! | Inspect an explicit computation graph | [`graph`] |
+//! | Train across CPU processes or shard large parameter groups | [`distributed`], [`tutorials::distributed`] |
+//! | Exchange PT2/ONNX models or run a compiled TorchScript artifact | [`deployment`], [`tutorials::deployment`] |
+//! | Check custom gradients, time training regions or resume an experiment | [`testing`], [`profiling`], [`checkpoint`], [`tutorials::tools`] |
 //!
 //! Complete recipes are collected in [`tutorials`], including image classifiers,
 //! sequence models, numerical analysis and probability models. Each recipe
 //! explains the expected shapes and when to use the API.
+//!
+//! # Load images, audio, text, media or records
+//!
+//! Enable the matching optional feature in your application's `Cargo.toml`:
+//!
+//! ```toml
+//! [dependencies]
+//! rusttorch = { version = "0.4", features = ["vision", "audio", "text", "columnar"] }
+//! ```
+//!
+//! `vision` loads images and typed annotations; `audio` turns waveforms into
+//! spectral features; `text` creates padded token batches; `tabular` transforms
+//! CSV/JSONL records with training-set statistics. `columnar` additionally reads
+//! Arrow IPC and Parquet. `codec` decodes timestamped media using an installed
+//! FFmpeg 8 runtime. Each package uses the shared [`data`] loader and finite
+//! [`data::ResourceLimits`]. The [domain data guide](tutorials::domains) shows
+//! which package and batch representation to choose.
 //!
 //! # Work with tensors
 //!
@@ -134,15 +154,37 @@
 
 pub mod amp;
 pub mod autograd;
+pub mod checkpoint;
 pub mod data;
+pub mod deployment;
 pub mod device;
+pub mod distributed;
 pub mod distributions;
 pub mod error;
 pub mod graph;
 pub mod interop;
 pub mod nn;
 pub mod optim;
+pub mod profiling;
+pub mod reproducibility;
 pub mod tensor;
+pub mod testing;
+
+#[cfg(feature = "audio")]
+#[doc(inline)]
+pub use rusttorch_audio as audio;
+#[cfg(any(feature = "codec", feature = "codec-vcpkg"))]
+#[doc(inline)]
+pub use rusttorch_codec as codec;
+#[cfg(feature = "tabular")]
+#[doc(inline)]
+pub use rusttorch_tabular as tabular;
+#[cfg(feature = "text")]
+#[doc(inline)]
+pub use rusttorch_text as text;
+#[cfg(feature = "vision")]
+#[doc(inline)]
+pub use rusttorch_vision as vision;
 
 pub use device::{DeviceCapabilities, DeviceSpec, available_devices, resolve_device};
 pub use error::{Result, RustTorchError};
@@ -156,6 +198,9 @@ pub use tch::IndexOp;
 /// for model training, [`tutorials::tensors`] for numerical data, or [`tutorials::differentiation`]
 /// for sensitivity and probability models.
 pub mod tutorials {
+    /// Choose domain packages and connect their typed samples to data loaders.
+    #[doc = include_str!("../docs/domain-data.md")]
+    pub mod domains {}
     #[doc = include_str!("../docs/training.md")]
     pub mod training {}
     #[doc = include_str!("../docs/sequence-models.md")]
@@ -164,4 +209,10 @@ pub mod tutorials {
     pub mod tensors {}
     #[doc = include_str!("../docs/differentiation.md")]
     pub mod differentiation {}
+    #[doc = include_str!("../docs/framework-tools.md")]
+    pub mod tools {}
+    #[doc = include_str!("../docs/distributed-training.md")]
+    pub mod distributed {}
+    #[doc = include_str!("../docs/deployment.md")]
+    pub mod deployment {}
 }

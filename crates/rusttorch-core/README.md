@@ -9,7 +9,7 @@ also need layers and optimizers.
 
 ```toml
 [dependencies]
-rusttorch-core = { version = "0.3", features = ["download-libtorch"] }
+rusttorch-core = { version = "0.4", features = ["download-libtorch"] }
 ```
 
 ## Features

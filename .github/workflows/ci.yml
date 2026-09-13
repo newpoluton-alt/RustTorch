@@ -101,6 +101,14 @@ jobs:
           torch_lib="$(.venv/bin/python -c 'from pathlib import Path; import torch; print(Path(torch.__file__).resolve().parent / "lib")')"
           echo "LD_LIBRARY_PATH=${torch_lib}" >> "$GITHUB_ENV"
 
+      - name: Build and audit the pinned LGPL FFmpeg runtime
+        run: |
+          python3 scripts/build-ffmpeg.py --prefix "$RUNNER_TEMP/rusttorch-ffmpeg"
+          echo "FFMPEG_LIBS_DIR=$RUNNER_TEMP/rusttorch-ffmpeg/lib" >> "$GITHUB_ENV"
+          echo "FFMPEG_INCLUDE_DIR=$RUNNER_TEMP/rusttorch-ffmpeg/include" >> "$GITHUB_ENV"
+          echo "FFMPEG_LINK_MODE=dynamic" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/rusttorch-ffmpeg/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+
       - name: Run Python policy tests
         run: .venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
 
@@ -114,7 +122,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Check workspace
-        run: cargo check --workspace --all-targets --locked
+        run: cargo check --workspace --all-targets --locked --features rusttorch/full
 
       - name: Check rusttorch-data feature combinations
         run: |
@@ -124,13 +132,13 @@ jobs:
           cargo check -p rusttorch-data --all-targets --locked --all-features
 
       - name: Lint workspace
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked --features rusttorch/full -- -D warnings
 
       - name: Test workspace
-        run: cargo test --workspace --all-targets --locked
+        run: cargo test --workspace --all-targets --locked --features rusttorch/full
 
       - name: Test documentation examples
-        run: cargo test --workspace --doc --locked
+        run: cargo test --workspace --doc --locked --features rusttorch/full
 
       - name: Run training checkpoint example
         run: cargo run --example training_checkpoint --locked
@@ -138,10 +146,10 @@ jobs:
       - name: Enforce Python parity
         run: scripts/run-python-parity.sh
 
-      - name: Build rusttorch documentation
+      - name: Build workspace documentation
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc -p rusttorch --no-deps --locked
+        run: cargo doc --workspace --no-deps --locked --features rusttorch/full
 
       - name: Build rusttorch-cli documentation
         env:
@@ -163,22 +171,40 @@ jobs:
           --features doc-only
 
       - name: Check docs.rs configuration
+        env:
+          DOCS_RS: "1"
         run: >-
           cargo check -p rusttorch --all-targets --locked --no-default-features
-          --features doc-only
+          --features doc-only,full
 
       - name: Build docs.rs documentation
         env:
+          DOCS_RS: "1"
           RUSTDOCFLAGS: -D warnings
         run: >-
           cargo doc -p rusttorch --no-deps --locked --no-default-features
-          --features doc-only
+          --features doc-only,full
 
       - name: Inspect rusttorch-core package
         run: cargo package -p rusttorch-core --locked --list | tee "$RUNNER_TEMP/rusttorch-core-package-files.txt"
 
       - name: Inspect rusttorch-data package
         run: cargo package -p rusttorch-data --locked --list | tee "$RUNNER_TEMP/rusttorch-data-package-files.txt"
+
+      - name: Inspect rusttorch-codec package
+        run: cargo package -p rusttorch-codec --locked --list | tee "$RUNNER_TEMP/rusttorch-codec-package-files.txt"
+
+      - name: Inspect rusttorch-vision package
+        run: cargo package -p rusttorch-vision --locked --list | tee "$RUNNER_TEMP/rusttorch-vision-package-files.txt"
+
+      - name: Inspect rusttorch-audio package
+        run: cargo package -p rusttorch-audio --locked --list | tee "$RUNNER_TEMP/rusttorch-audio-package-files.txt"
+
+      - name: Inspect rusttorch-text package
+        run: cargo package -p rusttorch-text --locked --list | tee "$RUNNER_TEMP/rusttorch-text-package-files.txt"
+
+      - name: Inspect rusttorch-tabular package
+        run: cargo package -p rusttorch-tabular --locked --list | tee "$RUNNER_TEMP/rusttorch-tabular-package-files.txt"
 
       - name: Inspect rusttorch package
         run: cargo package -p rusttorch --locked --list | tee "$RUNNER_TEMP/rusttorch-package-files.txt"
@@ -191,6 +217,11 @@ jobs:
           if grep -E '(^|/)(\.venv|target|__pycache__|libtorch)(/|$)|(^|/)(pyproject\.toml|uv\.lock)$|\.(pyc|pyo|so|dylib|dll)$' \
             "$RUNNER_TEMP/rusttorch-core-package-files.txt" \
             "$RUNNER_TEMP/rusttorch-data-package-files.txt" \
+            "$RUNNER_TEMP/rusttorch-codec-package-files.txt" \
+            "$RUNNER_TEMP/rusttorch-vision-package-files.txt" \
+            "$RUNNER_TEMP/rusttorch-audio-package-files.txt" \
+            "$RUNNER_TEMP/rusttorch-text-package-files.txt" \
+            "$RUNNER_TEMP/rusttorch-tabular-package-files.txt" \
             "$RUNNER_TEMP/rusttorch-package-files.txt" \
             "$RUNNER_TEMP/rusttorch-cli-package-files.txt"; then
             echo "error: package contains Python tooling or a generated/native environment artifact" >&2
@@ -210,6 +241,11 @@ jobs:
         package:
           - rusttorch-core
           - rusttorch-data
+          - rusttorch-codec
+          - rusttorch-vision
+          - rusttorch-audio
+          - rusttorch-text
+          - rusttorch-tabular
           - rusttorch
           - rusttorch-cli
     steps:
@@ -229,6 +265,12 @@ jobs:
         run: >-
           cargo check -p ${{ matrix.package }} --all-targets --locked
           --no-default-features --features doc-only
+
+      - name: Check all optional library features on the MSRV
+        if: matrix.package == 'rusttorch'
+        env:
+          DOCS_RS: "1"
+        run: cargo check -p rusttorch --all-targets --locked --no-default-features --features doc-only,full
 
       - name: Check CLI package on the MSRV
         if: matrix.package == 'rusttorch-cli'
@@ -329,7 +371,7 @@ jobs:
         run: cargo test -p rusttorch-data --tests --locked
 
       - name: Test RustTorch runtime on this platform
-        run: cargo test -p rusttorch --all-targets --locked
+        run: cargo test --workspace --all-targets --locked --features rusttorch/vision,rusttorch/audio,rusttorch/text,rusttorch/columnar
 
       - name: Run loader examples
         run: |

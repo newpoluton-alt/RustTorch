@@ -1,0 +1,29 @@
+[package]
+name = "rusttorch-text"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Typed text pipelines for RustTorch"
+readme = "README.md"
+documentation = "https://docs.rs/rusttorch-text"
+publish = ["crates-io"]
+
+[features]
+default = []
+download-libtorch = ["rusttorch-core/download-libtorch"]
+doc-only = ["rusttorch-core/doc-only"]
+
+[dependencies]
+rusttorch-core.workspace = true
+rusttorch-data.workspace = true
+thiserror.workspace = true
+tch.workspace = true
+serde.workspace = true
+tokenizers = { version = "=0.23.2", default-features = false, features = ["fancy-regex"] }
+serde_json.workspace = true
+
+[package.metadata.docs.rs]
+no-default-features = true
+features = ["doc-only"]
