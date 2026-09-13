@@ -514,6 +514,8 @@ class CompatibilityScriptTests(unittest.TestCase):
         (self.root / "docs").mkdir()
         (self.root / "crates" / "rusttorch-core").mkdir(parents=True)
         (self.root / "crates" / "rusttorch-data").mkdir(parents=True)
+        for domain in ("vision", "codec", "audio", "text", "tabular"):
+            (self.root / "crates" / f"rusttorch-{domain}").mkdir(parents=True)
         shutil.copyfile(SCRIPT, self.root / "scripts" / SCRIPT.name)
         shutil.copyfile(ROOT / "scripts/sync-pytorch-inventory.py", self.root / "scripts/sync-pytorch-inventory.py")
         shutil.copyfile(ROOT / "compat/pytorch_reference.toml", self.root / "compat/pytorch_reference.toml")
@@ -539,29 +541,10 @@ class CompatibilityScriptTests(unittest.TestCase):
 
     def test_cli_check_accepts_current_generated_bytes(self) -> None:
         self.cli_root()
-        (self.root / "docs" / "api-coverage.md").write_text(
-            CHECKER.render_markdown(self.ledger(), inventory_counts={"nn.linear": 2}), encoding="utf-8"
-        )
-        (self.root / "crates" / "rusttorch-core" / "COMPATIBILITY.md").write_text(
-            CHECKER.render_markdown(
-                self.ledger(),
-                inventory_counts={"nn.linear": 2},
-                title="rusttorch-core compatibility",
-                row_prefixes=("autograd.", "core."),
-                relative_root="../..",
-            ),
-            encoding="utf-8",
-        )
-        (self.root / "crates" / "rusttorch-data" / "COMPATIBILITY.md").write_text(
-            CHECKER.render_markdown(
-                self.ledger(),
-                inventory_counts={"nn.linear": 2},
-                title="rusttorch-data compatibility",
-                row_prefixes=("data.",),
-                relative_root="../..",
-            ),
-            encoding="utf-8",
-        )
+        for path, contents in CHECKER.generated_documents(
+            self.root, self.ledger(), {"nn.linear": 2}
+        ).items():
+            path.write_text(contents, encoding="utf-8")
         result = self.run_cli("--check")
         self.assertEqual(result.returncode, 0, result.stderr)
 

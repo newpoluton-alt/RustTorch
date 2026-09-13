@@ -137,7 +137,7 @@ class PythonLockCheckerTests(unittest.TestCase):
     def test_documentation_pins_and_transitive_graph_fail_closed(self) -> None:
         manifest = self.root / "pyproject.toml"
         original = manifest.read_text()
-        for pin in ("sphinx==9.1.0", "myst-parser==5.1.0", "pyyaml==6.0.3", "myst-nb==1.4.0"):
+        for pin in ("sphinx==9.1.0", "myst-parser==5.1.0", "pyyaml==6.0.3", "myst-nb==1.4.0", "onnx==1.22.0"):
             with self.subTest(pin=pin):
                 manifest.write_text(original.replace(pin, pin.split("==")[0]))
                 self.assert_rejected(self.run_checker("--root", str(self.root), cwd=self.root))
@@ -147,6 +147,8 @@ class PythonLockCheckerTests(unittest.TestCase):
         for original_text, replacement in (
             ('name = "docutils"\nversion = "0.22.4"', 'name = "docutils"\nversion = "0.22.5"'),
             ('{ name = "myst-parser" },', '{ name = "unlocked-parser" },'),
+            ('name = "onnx"\nversion = "1.22.0"', 'name = "onnx"\nversion = "1.22.1"'),
+            ('{ name = "ml-dtypes" },', '{ name = "unlocked-dtype" },'),
             ('name = "pyyaml"\nversion = "6.0.3"\nsource = { registry = "https://pypi.org/simple" }', 'name = "pyyaml"\nversion = "6.0.3"\nsource = { registry = "https://evil.example/simple" }'),
         ):
             self.assertIn(original_text, contents)

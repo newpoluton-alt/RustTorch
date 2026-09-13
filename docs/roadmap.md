@@ -35,14 +35,14 @@ See [models and training](training.md) and the
 
 ## Implementation order
 
-The first delivery covers the core contracts for workstreams 1 and 2; the
-0.3.0 delivery adds the API census and the scoped tensor/differentiation contracts
-for workstreams 3 and 4. Together these are **4 of 8 workstreams (50% by scoped
-workstream count)**. This is not 50% of APIs, effort, or complete framework parity.
-Each delivery has a finite acceptance contract and a separate extension backlog:
-[models/training plan](superpowers/plans/2026-09-12-quarter-roadmap.md) and
-[census/tensor plan](superpowers/plans/2026-09-12-census-tensor-docs.md).
-The canonical ledger records the exact numerical evidence and limitations.
+The 0.4.0 implementation completes the remaining four scoped workstreams,
+following the model/training delivery and 0.3.0 census/tensor delivery. All
+**8 of 8 core workstream contracts now have implementations and executable
+acceptance evidence**. This measures the finite delivery contracts, not full
+PyTorch API parity, total engineering effort or every extension. Publication
+and final integration gates are recorded in the
+[remaining-workstreams plan](superpowers/plans/2026-09-13-remaining-roadmap.md).
+The canonical ledger continues to mark broader incomplete families as partial.
 
 | Priority | Milestone | Completion requirements |
 |---|---|---|
@@ -50,10 +50,10 @@ The canonical ledger records the exact numerical evidence and limitations.
 | 2 | Training controls — core delivered in source | Configurable losses, seven optimizer families, parameter groups, five schedules, versioned state and exact resume; dense-gradient scaling and CUDA autocast API with hardware-conditional checks |
 | 3 | Complete API census — core delivered in source | Every pinned documented public symbol and canonical ATen schema mapped to exactly one ledger disposition; deterministic refresh and offline CI validation |
 | 4 | Tensor and differentiation — core delivered in source | Tested indexing, views/aliasing, conversion/reductions, linalg/FFT/special workflows, three distributions, validated sparse/quantized boundaries and functional higher derivatives; native forward AD, general custom callbacks and nested support remain extensions |
-| 5 | Distributed training | Process groups, collectives, distributed model/optimizer state, DDP/FSDP equivalents, failure handling, and multi-process numerical evidence |
-| 6 | Compilation and deployment | Versioned graph/operator schemas, guards, control flow, PT2/ONNX interoperability, supported artifact execution, and numerical round trips |
-| 7 | Domain data packages | Vision, codecs, audio, text, and tabular pipelines following the approved shared data design; at least one real pipeline per advertised package |
-| 8 | Framework tools | Profiling, testing utilities, reproducibility controls, checkpoint/export integration, and evidence on every advertised backend |
+| 5 | Distributed training — core delivered in source | Process groups, collectives, distributed model/optimizer state, DDP/FSDP equivalents, failure handling, and multi-process numerical evidence |
+| 6 | Compilation and deployment — core delivered in source | Versioned graph/operator schemas, guards, control flow, PT2/ONNX interoperability, supported artifact execution, and numerical round trips |
+| 7 | Domain data packages — core delivered in source | Vision, codecs, audio, text, and tabular pipelines following the approved shared data design; at least one real pipeline per advertised package |
+| 8 | Framework tools — core delivered in source | Profiling, testing utilities, reproducibility controls, checkpoint/export integration, and evidence on every advertised backend |
 
 Extensions to the first two workstreams remain: packed/nested recurrent inputs,
 recurrent cells, attention with different key/value feature widths, distributed
@@ -78,6 +78,25 @@ presence alone never promotes it to supported. See the
 [tensor guide](tensor-workflows.md) and
 [differentiation/probability guide](differentiation.md).
 
+Distributed extensions remain: accelerator collectives, native NCCL/Gloo bindings,
+automatic backward hooks, communication overlap, multi-group/layer-wise sharding,
+mesh APIs and Python distributed-checkpoint formats. CPU TCP groups and explicit
+functional sharding have real multiprocess/resharding evidence; no scaling or
+complete DDP/FSDP API claim follows from that core delivery.
+
+Deployment extensions remain: arbitrary capture, AOTInductor, complete ONNX/ATen
+operator coverage, custom operators and unsupported PT2/tree/schema versions.
+TorchScript compilation runs real artifacts; the portable executor and selected
+conditional branch gradient behavior have their own precise contracts.
+
+Domain extensions remain format-specific: more annotations/transforms/codecs,
+compressed Parquet, database adapters, additional tokenizer workflows and native
+platform profiles. Profiling currently times explicit host regions; automatic
+kernel/memory capture and full framework testing catalogs remain extensions.
+Read [distributed training](distributed-training.md), [deployment](deployment.md),
+[domain data](domain-data.md) and [framework tools](framework-tools.md) for working
+Rust recipes and exact boundaries.
+
 ## Plans and evidence
 
 | Plan | Status and next action |
@@ -88,9 +107,10 @@ presence alone never promotes it to supported. See the
 | [Quarter-roadmap delivery](superpowers/plans/2026-09-12-quarter-roadmap.md) | Defines the first two workstream contracts, evidence and remaining specialized variants |
 | [API census](superpowers/plans/2026-08-31-pytorch-api-census.md) | Semantic inventory, canonical schemas, complete dispositions, deterministic refresh and offline enforcement delivered; refresh the complete snapshot when changing the pin |
 | [Census, tensors and documentation](superpowers/plans/2026-09-12-census-tensor-docs.md) | Defines second-delivery contracts, executable examples, numerical evidence and remaining extensions |
-| [Shared data ecosystem](superpowers/specs/2026-08-31-unified-data-ecosystem-design.md) | Loader foundation exists; optional modality packages and their integration remain pending |
-| [Graph compilation](graph-compilation-roadmap.md) | Eager graph execution exists; compilation and lowering remain pending |
-| [PT2 interoperability](torch-export-roadmap.md) | Archive import, schema validation, operator mapping, and round trips remain pending |
+| [Remaining four workstreams](superpowers/plans/2026-09-13-remaining-roadmap.md) | Distributed, deployment, five domain packages and framework tools implemented; final checks, integration and publication tracked explicitly |
+| [Shared data ecosystem](superpowers/specs/2026-08-31-unified-data-ecosystem-design.md) | Five optional domain packages use shared loader/collation/resource contracts; native FFmpeg and portable feature tests cover the documented pipeline profiles |
+| [Graph compilation](graph-compilation-roadmap.md) | Evaluation graph lowering, guarded portable execution and actual TorchScript compilation exist; general program capture and AOTInductor remain extensions |
+| [PT2 interoperability](torch-export-roadmap.md) | Pinned archive/schema validation, bounded state and operator mapping, control flow and forward/gradient round trips delivered for the documented subset |
 
 Older plan checkboxes describe the original implementation procedure. This
 index and the executable compatibility ledger distinguish shipped source from

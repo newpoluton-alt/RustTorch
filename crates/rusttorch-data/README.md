@@ -12,8 +12,8 @@ Use this package directly when you only need the data layer.
 
 ```toml
 [dependencies]
-rusttorch-data = { version = "0.3", features = ["download-libtorch"] }
-rusttorch-core = "0.3"
+rusttorch-data = { version = "0.4", features = ["download-libtorch"] }
+rusttorch-core = "0.4"
 ```
 
 `rusttorch-core` supplies `Tensor`, `Kind` and `Device` for tensor pipelines.
@@ -149,7 +149,7 @@ importing the data and core crates separately:
 
 ```toml
 [dependencies]
-rusttorch = { version = "0.3", features = ["download-libtorch"] }
+rusttorch = { version = "0.4", features = ["download-libtorch"] }
 ```
 
 The default collator turns `(Tensor, i64)` samples into `(Tensor, Tensor)`

@@ -1,0 +1,30 @@
+[package]
+name = "rusttorch-codec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Typed codec pipelines for RustTorch"
+readme = "README.md"
+documentation = "https://docs.rs/rusttorch-codec"
+publish = ["crates-io"]
+
+[features]
+default = []
+download-libtorch = ["rusttorch-core/download-libtorch"]
+doc-only = ["rusttorch-core/doc-only"]
+system = ["dep:rsmpeg", "rsmpeg/link_system_ffmpeg"]
+vcpkg = ["dep:rsmpeg", "rsmpeg/link_vcpkg_ffmpeg"]
+
+[dependencies]
+rusttorch-core.workspace = true
+rusttorch-data.workspace = true
+thiserror.workspace = true
+tch.workspace = true
+serde.workspace = true
+rsmpeg = { version = "=0.18.0", default-features = false, features = ["ffmpeg8"], optional = true }
+
+[package.metadata.docs.rs]
+no-default-features = true
+features = ["doc-only", "system"]

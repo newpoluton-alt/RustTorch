@@ -1,33 +1,32 @@
-# Graph compilation roadmap
+# Graph compilation and deployment
 
-## Current boundary
+The [deployment guide](deployment.md) provides executable Rust examples and
+format selection. The original `graph` executor remains eager. Its supported
+evaluation subset lowers through `deployment::Model::from_graph` into a
+version-one portable tensor program with named state, calling trees, dtype/device
+guards, shared symbolic dimensions and inclusive ranges.
 
-The MVP executes eager Rust code and explicit Graph IR through normal
-`tch::Tensor` calls. LibTorch creates and runs the dynamic autograd graph.
-Graph IR supplies static connectivity and metadata; it does not differentiate
-or compile operations.
+Portable conditional programs execute only the chosen branch and retain
+autograd. A supported branch-free single-output program can be traced into a
+real LibTorch TorchScript module, saved, loaded and executed with retained
+guards. The artifact freezes state. Tracing rejects conditionals and does not
+capture arbitrary Rust branches or Python bytecode. No performance claim is made.
 
-TorchDynamo observes Python bytecode and Python runtime behavior, so it cannot
-directly trace arbitrary Rust functions. RustTorch therefore does not advertise
-`torch.compile` compatibility and does not route eager users through a fake
-compiler abstraction.
+PT2 and ONNX import/export use explicit versioned operator subsets. Export
+applies algebraic shape rules and rejects unrepresentable symbolic expressions.
+State storage bounds and aliases are validated before tensor construction.
+Imported interchange graphs execute through tensor operations independently of
+native TorchScript tracing.
 
-## Work needed for compilation
+Remaining backend work includes:
 
-1. Stabilize an internal operator schema and explicit graph version.
-2. Add shape/range constraints and runtime guards without recreating the full
-   PyTorch symbolic-shape engine.
-3. Represent supported control flow explicitly rather than tracing Rust
-   branches implicitly.
-4. Define operator decomposition into a versioned ATen-oriented subset.
-5. Preserve parameter/buffer identity, aliasing, dtype, device, and autograd
-   boundaries through lowering.
-6. Add executor-specific validation and parity tests for CPU, CUDA, and MPS.
+- Native lowering of conditional/loop graphs and wider operator decompositions.
+- Richer symbolic expressions, stride guards and mutation/alias semantics.
+- AOTInductor binary execution and platform/toolchain compatibility validation.
+- Additional interchange versions and larger streamed artifacts.
+- Numerical/backend evidence for newly advertised CUDA or MPS capabilities.
 
-Possible targets are PyTorch Export-like IR, AOTInductor artifacts, ONNX, or a
-future Rust-native compiler. Each target needs an honest capability check;
-unsupported operations stay eager or fail explicitly.
-
-PT2 integration begins with a read-only importer for a small versioned operator
-subset, followed by round-trip and numerical parity. No timeline or compiled
-executor is promised by the MVP.
+TorchDynamo observes Python bytecode and runtime semantics. It is not Rust
+function capture; `torch.compile` parity is not claimed. `tests/deployment.rs`
+records the delivered graph, artifact, guard, conditional and malformed-input
+contracts, including reference-runtime numerical round trips.

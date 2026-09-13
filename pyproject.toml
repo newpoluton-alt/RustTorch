@@ -12,6 +12,7 @@ dependencies = [
 dev = [
     "myst-nb==1.4.0",
     "myst-parser==5.1.0",
+    "onnx==1.22.0",
     "pyyaml==6.0.3",
     "sphinx==9.1.0",
 ]

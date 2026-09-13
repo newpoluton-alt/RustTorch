@@ -1,0 +1,36 @@
+[package]
+name = "rusttorch-audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Typed audio pipelines for RustTorch"
+readme = "README.md"
+documentation = "https://docs.rs/rusttorch-audio"
+publish = ["crates-io"]
+
+[features]
+default = []
+download-libtorch = ["rusttorch-core/download-libtorch"]
+doc-only = ["rusttorch-core/doc-only"]
+codec = ["dep:rusttorch-codec"]
+
+[dependencies]
+rusttorch-core.workspace = true
+rusttorch-data.workspace = true
+thiserror.workspace = true
+tch.workspace = true
+serde.workspace = true
+symphonia = { version = "=0.6.1", default-features = false, features = ["wav", "pcm", "flac"] }
+rubato = { version = "=5.0.0", default-features = false }
+audioadapter-buffers = "=5.1.0"
+rand.workspace = true
+rusttorch-codec = { workspace = true, optional = true }
+
+[package.metadata.docs.rs]
+no-default-features = true
+features = ["doc-only", "codec"]
+
+[dev-dependencies]
+serde_json.workspace = true

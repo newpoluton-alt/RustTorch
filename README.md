@@ -27,13 +27,13 @@ inference inside a Rust application. The API is evolving in the 0.x series. The
 
 ## Installation
 
-Install the 0.3 release from crates.io. Rust 1.88 or newer is required:
+Install the 0.4 release from crates.io. Rust 1.88 or newer is required:
 
 ```sh
-cargo install rusttorch-cli --version 0.3.0
+cargo install rusttorch-cli --version 0.4.0
 cargo new rusttorch-demo
 cd rusttorch-demo
-cargo add rusttorch@0.3
+cargo add rusttorch@0.4
 rusttorch setup --backend auto
 ```
 
@@ -43,7 +43,7 @@ or `--backend cuda-12.6` for the managed CUDA distribution on a supported host.
 See [platform setup](docs/platform-support.md) for prerequisites and runtime
 library paths.
 
-These examples use the 0.3 API. For an older application, see the
+These examples use the 0.4 API. For an older application, see the
 [0.2 documentation](https://docs.rs/rusttorch/0.2.0). To use a development
 checkout, run `cargo add rusttorch --path /absolute/path/to/RustTorch`.
 
@@ -157,8 +157,25 @@ and enable `doc-only`. **`doc-only` cannot run a model.**
 
 ```toml
 [dependencies]
-rusttorch = { version = "0.3", default-features = false, features = ["doc-only"] }
+rusttorch = { version = "0.4", default-features = false, features = ["doc-only"] }
 ```
+
+Optional features enable data formats without changing existing tensor/model imports:
+
+| Feature | Use case | Facade API |
+|---|---|---|
+| `vision` | Images, annotations, classification and detection batches | `rusttorch::vision` |
+| `audio` | WAV/FLAC, resampling, spectral/Mel/MFCC features | `rusttorch::audio` |
+| `text` | Local tokenizer files, padded masks and token-budget batches | `rusttorch::text` |
+| `tabular` | CSV/JSONL with immutable fitted preprocessing | `rusttorch::tabular` |
+| `columnar` | Add Arrow IPC/Parquet to tabular pipelines | `rusttorch::tabular` |
+| `codec` | Timestamped CPU audio/video from installed FFmpeg 8 | `rusttorch::codec` |
+| `full` | All of the above, including native codec linking | All domain APIs |
+
+For example, `cargo add rusttorch@0.4 --features vision,text` enables image and
+text pipelines. Each package also works directly with `rusttorch-data` and
+`rusttorch-core`. Follow the [domain guide](docs/domain-data.md) for complete
+examples, supported formats, finite input limits and native linking choices.
 
 ## Native runtime
 
@@ -184,6 +201,10 @@ availability. An explicit unavailable device returns an error. Consult the
 | [Models and training](docs/training.md) | Build a classifier, choose losses, schedule updates and resume training |
 | [Sequence models](docs/sequence-models.md) | Train recurrent and Transformer models with state and masks |
 | [Checkpoint example](examples/training_checkpoint.rs) | Restore model, optimizer, scheduler and scaler together |
+| [Distributed training](docs/distributed-training.md) | Synchronize CPU processes and train with rank-local parameter/optimizer shards |
+| [Deployment](docs/deployment.md) | Import/export PT2 and ONNX or compile and execute TorchScript artifacts |
+| [Framework tools](docs/framework-tools.md) | Check gradients, benchmark, export traces and atomically save a complete training boundary |
+| [Domain data](docs/domain-data.md) | Load image annotations, audio features, padded tokens, timestamped media and fitted tabular records |
 | [Data pipelines](crates/rusttorch-data/README.md) | Load, transform, batch, and resume training data |
 | [Graph guide](docs/graph-system.md) | Inspect named inputs, branches, and execution order |
 | [Model interoperability](docs/model-interoperability.md) | Exchange weights with another model implementation |

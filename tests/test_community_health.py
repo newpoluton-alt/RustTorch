@@ -39,6 +39,11 @@ APPROVED_CI_ACTIONS = {
 WORKSPACE_PACKAGES = (
     "rusttorch-core",
     "rusttorch-data",
+    "rusttorch-codec",
+    "rusttorch-vision",
+    "rusttorch-audio",
+    "rusttorch-text",
+    "rusttorch-tabular",
     "rusttorch",
     "rusttorch-cli",
 )
@@ -46,6 +51,11 @@ PUBLISHABLE_PACKAGE_READMES = (
     "README.md",
     "crates/rusttorch-core/README.md",
     "crates/rusttorch-data/README.md",
+    "crates/rusttorch-codec/README.md",
+    "crates/rusttorch-vision/README.md",
+    "crates/rusttorch-audio/README.md",
+    "crates/rusttorch-text/README.md",
+    "crates/rusttorch-tabular/README.md",
     "crates/rusttorch-cli/README.md",
 )
 
@@ -359,6 +369,11 @@ class CommunityHealthTests(unittest.TestCase):
             ("Cargo.toml", "src/lib.rs"),
             ("crates/rusttorch-core/Cargo.toml", "crates/rusttorch-core/src/lib.rs"),
             ("crates/rusttorch-data/Cargo.toml", "crates/rusttorch-data/src/lib.rs"),
+            ("crates/rusttorch-codec/Cargo.toml", "crates/rusttorch-codec/src/lib.rs"),
+            ("crates/rusttorch-vision/Cargo.toml", "crates/rusttorch-vision/src/lib.rs"),
+            ("crates/rusttorch-audio/Cargo.toml", "crates/rusttorch-audio/src/lib.rs"),
+            ("crates/rusttorch-text/Cargo.toml", "crates/rusttorch-text/src/lib.rs"),
+            ("crates/rusttorch-tabular/Cargo.toml", "crates/rusttorch-tabular/src/lib.rs"),
         ):
             with self.subTest(manifest=manifest):
                 package = tomllib.loads(self.read(manifest))["package"]
@@ -379,6 +394,13 @@ class CommunityHealthTests(unittest.TestCase):
                 self.assertIn("download-libtorch", text)
                 self.assertIn("doc-only", text)
                 self.assertIn("2.13.0", text)
+
+    def test_each_published_package_includes_original_license_texts(self) -> None:
+        for readme in PUBLISHABLE_PACKAGE_READMES:
+            for license_name in ("LICENSE-MIT", "LICENSE-APACHE"):
+                with self.subTest(package=readme, license=license_name):
+                    package_license = ROOT / Path(readme).parent / license_name
+                    self.assertEqual(package_license.read_bytes(), (ROOT / license_name).read_bytes())
 
     def test_release_installation_matches_workspace_version(self) -> None:
         root_readme = self.read("README.md")
@@ -832,6 +854,24 @@ class CommunityHealthTests(unittest.TestCase):
                 self.assertNotEqual(mutation, text)
                 with self.assertRaises(AssertionError):
                     self.assert_workspace_package_policy(mutation)
+
+    def test_domain_runtime_and_docs_features_remain_release_gates(self) -> None:
+        text = self.read(".github/workflows/ci.yml")
+        quality = text.split("  quality:\n", 1)[1].split("\n  msrv:", 1)[0]
+        for command in (
+            'python3 scripts/build-ffmpeg.py --prefix "$RUNNER_TEMP/rusttorch-ffmpeg"',
+            "cargo clippy --workspace --all-targets --locked --features rusttorch/full -- -D warnings",
+            "cargo test --workspace --all-targets --locked --features rusttorch/full",
+            "cargo test --workspace --doc --locked --features rusttorch/full",
+            "--features doc-only,full",
+        ):
+            self.assertIn(command, quality)
+        self.assertIn('DOCS_RS: "1"', quality)
+        self.assertIn("FFMPEG_LINK_MODE=dynamic", quality)
+        platform = text.split("  loader-platform:\n", 1)[1].split("\n  loader-stress:", 1)[0]
+        self.assertIn("--features rusttorch/vision,rusttorch/audio,rusttorch/text,rusttorch/columnar", platform)
+        metadata = tomllib.loads(self.read("Cargo.toml"))["package"]["metadata"]["docs"]["rs"]
+        self.assertEqual(metadata["features"], ["doc-only", "full"])
 
     def test_required_ci_result_handles_pr_only_skips_explicitly(self) -> None:
         text = self.read(".github/workflows/ci.yml")

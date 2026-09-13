@@ -42,9 +42,9 @@ python3 scripts/check-dco.py --base origin/main --head HEAD
 python3 scripts/check-compatibility.py --check
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 cargo fmt --all -- --check
-cargo check --workspace --all-targets
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --all-targets
+cargo check --workspace --all-targets --features rusttorch/full
+cargo clippy --workspace --all-targets --features rusttorch/full -- -D warnings
+cargo test --workspace --all-targets --features rusttorch/full
 scripts/run-python-parity.sh
 RUSTDOCFLAGS="-D warnings" cargo doc -p rusttorch --no-deps
 RUSTDOCFLAGS="-D warnings" cargo doc -p rusttorch-cli --no-deps
@@ -56,16 +56,22 @@ cargo package -p rusttorch --locked
 cargo package -p rusttorch-cli --locked
 ```
 
+The `full` feature includes native media decoding. Build the audited FFmpeg
+profile with `python3 scripts/build-ffmpeg.py --prefix /new/path/ffmpeg`, or
+configure existing FFmpeg 8 headers/shared libraries as explained in
+[domain data](docs/domain-data.md). CI runs the audited profile plus all optional
+features; portable platform lanes cover vision, audio, text and columnar data.
+
 The PyTorch CPU portion of the current lock contains CPython 3.14 wheels for
 Linux x86_64, AArch64, and s390x; macOS arm64; and Windows x86_64. CI executes
 the locked Python and parity environment only on Ubuntu x86_64. Resolving a
 wheel is not backend test evidence. The lock has no PyTorch wheel for
 Intel macOS or Windows ARM64.
 
-Before publishing, all four workspace crates must share a stable version with
+Before publishing, all nine workspace crates must share a stable version with
 one release entry in `CHANGELOG.md`. Follow [the release sequence](docs/releasing.md):
-validate a reviewed commit on `main`, publish core, data, CLI and facade, then
-create the matching immutable tag after all four registry versions are public.
+validate a reviewed commit on `main`, publish core, data, codec, vision, audio, text, tabular, CLI and facade, then
+create the matching immutable tag after all nine registry versions are public.
 
 The parity gate exercises PyTorch-visible defaults, initialization, gradients,
 optimizers, state naming, and serialization. Run `scripts/check-backends.sh`

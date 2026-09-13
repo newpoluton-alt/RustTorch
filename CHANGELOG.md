@@ -5,6 +5,32 @@ or graph-format stability.
 
 ## Unreleased
 
+## 0.4.0 - 2026-09-13
+
+- Add bounded CPU TCP process groups, collectives and point-to-point messages;
+  explicit replicated gradient synchronization; functional training with real
+  parameter, gradient and optimizer shards; coordinated resume/consolidation
+  and world-size resharding, checked against native CPU Gloo/DDP/FSDP references.
+- Add validated portable model graphs with shape guards and conditional
+  branches; pinned PT2 and ONNX IR 10/opset 18 import/export; real TorchScript
+  compilation, artifact execution and cross-language numerical round trips.
+- Add optional `rusttorch-vision`, `rusttorch-codec`, `rusttorch-audio`,
+  `rusttorch-text` and `rusttorch-tabular` packages. Image/annotation transforms,
+  timestamped media, spectral features, token-budget batches and fitted
+  CSV/JSONL/Arrow/Parquet records share the existing loader and resource limits.
+- Add tensor comparison diagnostics, bounded finite-difference gradient checks,
+  user-region Chrome traces, synchronized benchmark statistics and serializable
+  task-local tensor RNG. Add atomic, non-overwriting training checkpoints for
+  model/optimizer and typed application state, with exact next-update tests.
+- Publish practical distributed, deployment, domain-data and framework-tool
+  tutorials in GitHub and Rustdoc; include all optional APIs on docs.rs. Expand
+  nine-crate release provenance, Rust 1.88 and portable/native feature checks.
+- Preserve existing facade imports and DataLoader semantics. **Migration:**
+  the new domain APIs are opt-in; `codec` requires installed FFmpeg 8 development
+  libraries. New versioned Rust checkpoint and portable graph schemas are
+  separate from Python pickle. Existing SafeTensors model weights retain their
+  names and shapes. See the guides for supported operators and format limits.
+
 ## 0.3.0 - 2026-09-12
 
 - Add tensor workflows for indexing, alias-aware reshaping, standardization,

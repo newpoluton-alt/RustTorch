@@ -12,7 +12,8 @@ rusttorch -------------------------------> tch
 
 `rusttorch-core` owns shared runtime, device, tensor, and error contracts.
 `rusttorch-data` owns datasets, samplers, batching, and loading. The
-`rusttorch` facade re-exports both packages so existing facade imports remain
+five optional domain packages depend on core/data (audio optionally uses codec).
+The `rusttorch` facade re-exports these packages so existing facade imports remain
 source-compatible; extracting package ownership does not expand the supported
 API scope.
 
@@ -65,7 +66,7 @@ state; numerical work remains in `tch`/LibTorch.
 ## Explicit graph path
 
 Graph IR is optional for callers who need named connectivity, validation,
-inspection, transformation, or a future compilation boundary. It is a
+inspection, transformation, or a portable deployment boundary. It is a
 backend-independent DAG, not an autograd engine. `EagerExecutor` traverses a
 validated topological order and dispatches the same tensor operations used by
 eager modules. Branches and residual edges therefore remain visible to
@@ -80,7 +81,17 @@ LibTorch autograd.
 - `data`: fallible map and sharded-stream loading, bounded workers, collation,
   pinning, distributed sampling, and typed checkpoint state.
 - `interop`: state naming, explicit mappings, SafeTensors, and format policy.
+- `distributed`: bounded CPU process coordination, explicit gradient synchronization
+  and functional parameter/gradient/optimizer sharding.
+- `deployment`: versioned portable graph/state validation, PT2/ONNX interchange,
+  graph lowering and native TorchScript artifact compilation/execution.
+- `testing`, `profiling`, `reproducibility`: diagnostic comparisons, explicit
+  timing and task-local random streams.
+- `checkpoint`: bounded typed training snapshots and atomic publication.
+- Optional vision/codec/audio/text/tabular crates: domain decoding/transforms
+  producing typed samples for the existing loader.
 - `error`: structured failures at recoverable boundaries.
 
-No second tensor store, parameter store, kernel layer, native bridge, or
-differentiation system belongs in the MVP.
+Tensor storage, kernels and differentiation remain owned by LibTorch. The
+codec package has a small audited native boundary for FFmpeg audio; its tensor
+outputs own copied samples and never borrow decoder memory.
