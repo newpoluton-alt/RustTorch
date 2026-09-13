@@ -442,8 +442,15 @@ fn portable_execution_matches_cpu_on_available_accelerators() -> Result<()> {
     let reference = dense()?;
     let input = x().set_requires_grad(true);
     let expected = reference.run(&[input.shallow_clone()])?.remove(0);
+    let exact = Tensor::from_slice(&[29_f32, 0., 65., 0.]).reshape([2, 2]);
+    assert!(expected.equal(&exact), "CPU fixture changed: {expected:?}");
     expected.sum(Kind::Float).backward();
     let caps = rusttorch::available_devices();
+    let values = |tensor: &Tensor| -> Result<Vec<f32>> {
+        Ok(Vec::<f32>::try_from(
+            &tensor.f_to_device(Device::Cpu)?.f_reshape([-1])?,
+        )?)
+    };
     for (name, device, available) in [
         ("CUDA", Device::Cuda(0), caps.cuda),
         ("MPS", Device::Mps, caps.mps),
@@ -456,23 +463,90 @@ fn portable_execution_matches_cpu_on_available_accelerators() -> Result<()> {
         model.to_device(device)?;
         let input = x().to_device(device).set_requires_grad(true);
         let output = model.run(&[input.shallow_clone()])?.remove(0);
+        let before_backward = output.f_to_device(Device::Cpu)?;
+        if !before_backward.allclose(&expected, 1e-4, 1e-4, false) {
+            let direct = input
+                .f_linear(
+                    &model.state()["head.weight"],
+                    Some(&model.state()["head.bias"]),
+                )?
+                .f_relu()?
+                .f_mul(&model.state()["scale"])?;
+            eprintln!(
+                "{name} before backward: model={:?}, direct native={:?}",
+                values(&before_backward)?,
+                values(&direct)?
+            );
+        }
         output.sum(Kind::Float).backward();
+        let actual = output.f_to_device(Device::Cpu)?;
+        if !actual.allclose(&expected, 1e-4, 1e-4, false)
+            || !before_backward.allclose(&expected, 1e-4, 1e-4, false)
+        {
+            // Capture direct backend and decomposed results only on failure;
+            // these extra synchronizations must not mask the original result.
+            let state = model.state();
+            let weight = &state["head.weight"];
+            let bias = &state["head.bias"];
+            let scale = &state["scale"];
+            let direct_linear = input.f_linear(weight, Some(bias))?;
+            let decomposed = input.f_matmul(&weight.f_transpose(0, 1)?)?.f_add(bias)?;
+            eprintln!(
+                "{name} input={:?}, weight={:?}, bias={:?}, scale={:?}",
+                values(&input)?,
+                values(weight)?,
+                values(bias)?,
+                values(scale)?
+            );
+            eprintln!(
+                "{name} direct linear={:?}, matmul+bias={:?}",
+                values(&direct_linear)?,
+                values(&decomposed)?
+            );
+            eprintln!(
+                "{name} direct score={:?}, decomposed score={:?}",
+                values(&direct_linear.f_relu()?.f_mul(scale)?)?,
+                values(&decomposed.f_relu()?.f_mul(scale)?)?
+            );
+            #[cfg(target_os = "macos")]
+            for property in ["machdep.cpu.brand_string", "hw.model"] {
+                if let Ok(info) = std::process::Command::new("sysctl")
+                    .args(["-n", property])
+                    .output()
+                {
+                    eprintln!(
+                        "{property}: {}",
+                        String::from_utf8_lossy(&info.stdout).trim()
+                    );
+                }
+            }
+        }
         assert!(
-            output
-                .to_device(Device::Cpu)
-                .allclose(&expected, 1e-4, 1e-4, false)
+            actual.allclose(&expected, 1e-4, 1e-4, false)
+                && before_backward.allclose(&expected, 1e-4, 1e-4, false),
+            "{name} score mismatch: before backward={:?}, after backward={:?}, expected={:?}",
+            values(&before_backward)?,
+            values(&actual)?,
+            values(&expected)?
         );
-        assert!(input.grad().to_device(Device::Cpu).allclose(
-            &Tensor::from_slice(&[2_f32, 4., 6., 2., 4., 6.]).reshape([2, 3]),
-            1e-4,
-            1e-4,
-            false
-        ));
+        let input_gradient = input.grad().f_to_device(Device::Cpu)?;
+        let expected_input_gradient =
+            Tensor::from_slice(&[2_f32, 4., 6., 2., 4., 6.]).reshape([2, 3]);
         assert!(
-            model.state()["head.weight"]
-                .grad()
-                .to_device(Device::Cpu)
-                .allclose(&reference.state()["head.weight"].grad(), 1e-4, 1e-4, false)
+            input_gradient.allclose(&expected_input_gradient, 1e-4, 1e-4, false),
+            "{name} input gradient mismatch: actual={:?}, expected={:?}",
+            values(&input_gradient)?,
+            values(&expected_input_gradient)?
+        );
+        let weight_gradient = model.state()["head.weight"]
+            .grad()
+            .f_to_device(Device::Cpu)?;
+        let expected_weight_gradient = reference.state()["head.weight"].grad();
+        assert!(
+            weight_gradient.allclose(&expected_weight_gradient, 1e-4, 1e-4, false),
+            "{name} weight gradient mismatch: actual={:?}, expected={:?}",
+            values(&weight_gradient)?,
+            values(&expected_weight_gradient)?
         );
     }
     Ok(())
