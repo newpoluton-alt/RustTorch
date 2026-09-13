@@ -133,3 +133,9 @@ or Python bytecode capture are separate extensions, not aliases for this executo
   pass (facade about 916 KiB compressed; domain archives about 23–28 KiB before
   adding original license texts). Final repository CI, registry publication
   and live docs checks remain gates below. Versioned docs are never claimed updated merely from a source commit.
+- Windows and Linux CI pass the expanded runtime and DataLoader regression.
+  Mac CI exposed native MPS bias omission on virtual M1 hardware; the shared
+  affine correction passes local exact dtype/layout/gradient, attention,
+  deployment and existing backend checks. Required CI must validate the fix.
+- Final documentation review corrected two links that broke when guides were
+  included in Rustdoc and updated the stale umbrella codec coverage entry.

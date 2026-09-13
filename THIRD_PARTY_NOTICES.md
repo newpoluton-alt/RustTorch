@@ -133,6 +133,13 @@ Python fixtures independently generate values, gradients, initialization and
 multi-step training references. Existing `serde`/`serde_json` dependencies provide
 versioned state encoding; `float_roundtrip` preserves configuration on JSON restore.
 
+The MPS affine correction is an original composition of matrix multiplication
+and addition. Its behavioral reference is the pinned
+`aten/src/ATen/native/mps/operations/Linear.mm` and the upstream
+[biased-linear report](https://github.com/pytorch/pytorch/issues/188438).
+RustTorch's CI reproduces the missing bias on Apple M1 virtual hardware; no
+upstream implementation code is copied by this correction.
+
 The tensor/differentiation extension follows the same full commit
 `cf30153c4c131c8164ee7798e5022d810682e2cb`: `torch/autograd/functional.py`,
 `torch/autograd/__init__.py`, `torch/distributions/{normal,bernoulli,categorical,utils}.py`,

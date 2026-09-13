@@ -15,8 +15,16 @@ large allocation, or Python runtime invocation.
 
 `DeviceSpec::Mps` is strict: unavailable MPS and unsupported operations are
 errors, not silent CPU fallback. Model parameters, inputs, outputs, and
-gradients remain on MPS unless movement is explicit. RustTorch has no
-dedicated persistent-buffer API.
+gradients remain on MPS unless movement is explicit.
+
+RustTorch's linear layers, attention projections and portable models apply
+MPS affine bias separately from matrix multiplication. This preserves the
+bias on affected Apple M1 virtual machines running macOS 26 and keeps both
+operations and their gradients on the GPU. Direct native tensor calls and
+previously saved TorchScript artifacts retain their linked runtime's behavior;
+use RustTorch's layer or functional API when constructing these operations.
+See the [recorded backend evidence](backend-parity.md) for the reproduced failure
+and the scope of the correction.
 
 Conditional tests cover tensor creation, eager and graph forward/backward,
 Linear, ReLU, GELU, residual Add, cross-entropy, MSE, Adam, SGD, SafeTensors,

@@ -81,7 +81,7 @@ normalization statistics into synchronized batch normalization.
 For map datasets, use `DistributedSampler` with this group's `world_size()` and
 `rank()`. Give all workers the same shuffle seed and epoch. The sampler pads or
 truncates the index sequence according to its configuration so workers can make
-the same number of updates. See the [DataLoader guide](../crates/rusttorch-data/README.md)
+the same number of updates. See the [DataLoader guide](https://docs.rs/rusttorch-data/0.4.0/rusttorch_data/)
 for dataset construction and epoch handling.
 
 ## Accumulate several microbatches

@@ -77,6 +77,37 @@ pub fn linear(input: &Tensor, weight: &Tensor, bias: Option<&Tensor>) -> Result<
             });
         }
     }
+    linear_backend(input, weight, bias)
+}
+
+// PyTorch 2.13's fused three-source MPS linear can ignore bias on macOS 26
+// virtual M1 hardware (pytorch/pytorch#188438). Keep the affine operation on
+// device but encode its matrix product and bias addition separately. All
+// callers share this path; their public validation and other native cases stay intact.
+pub(crate) fn linear_backend(
+    input: &Tensor,
+    weight: &Tensor,
+    bias: Option<&Tensor>,
+) -> Result<Tensor> {
+    if let Some(bias) = bias
+        && input.defined()
+        && weight.defined()
+        && bias.defined()
+        && input.device() == tch::Device::Mps
+        && weight.device() == input.device()
+        && bias.device() == input.device()
+        && matches!(
+            input.kind(),
+            tch::Kind::Float | tch::Kind::Half | tch::Kind::BFloat16
+        )
+        && weight.kind() == input.kind()
+        && bias.kind() == input.kind()
+        && input.dim() > 0
+        && weight.dim() == 2
+        && bias.size() == [weight.size()[0]]
+    {
+        return Ok(input.f_matmul(&weight.f_transpose(0, 1)?)?.f_add(bias)?);
+    }
     input.f_linear(weight, bias).map_err(Into::into)
 }
 

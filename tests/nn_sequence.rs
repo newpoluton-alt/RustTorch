@@ -871,3 +871,79 @@ fn sequence_python_parity() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn biased_attention_projections_match_cpu_outputs_and_gradients_on_mps() -> Result<()> {
+    if !rusttorch::available_devices().mps {
+        eprintln!("skipped MPS attention projection regression: unavailable hardware");
+        return Ok(());
+    }
+    let config = MultiheadAttentionConfig::new(2, 1).batch_first(true);
+    let cpu_store = VarStore::new(Device::Cpu);
+    let cpu = config.build(&cpu_store.root())?;
+    // Every projection has nonzero bias, including narrowed q/k/v views.
+    no_grad(|| -> Result<()> {
+        for (name, mut parameter) in cpu_store.variables() {
+            let values =
+                (Tensor::arange(parameter.numel() as i64, (Kind::Float, Device::Cpu)) * 0.03 + 0.1)
+                    .reshape(parameter.size());
+            parameter.f_copy_(&values)?;
+            assert!(parameter.abs().min().double_value(&[]) > 0., "{name}");
+        }
+        Ok(())
+    })?;
+    let mps_store = VarStore::new(Device::Mps);
+    let mps = config.build(&mps_store.root())?;
+    no_grad(|| -> Result<()> {
+        for (name, mut parameter) in mps_store.variables() {
+            parameter.f_copy_(&cpu_store.variables()[&name])?;
+        }
+        Ok(())
+    })?;
+    let cpu_input = (Tensor::arange(8, (Kind::Float, Device::Cpu)) * 0.1)
+        .reshape([2, 2, 2])
+        .set_requires_grad(true);
+    let mps_input = cpu_input
+        .detach()
+        .to_device(Device::Mps)
+        .set_requires_grad(true);
+    let (expected, expected_weights) = cpu.forward_t(
+        &cpu_input,
+        &cpu_input,
+        &cpu_input,
+        AttentionMask::default(),
+        false,
+    )?;
+    let (actual, weights) = mps.forward_t(
+        &mps_input,
+        &mps_input,
+        &mps_input,
+        AttentionMask::default(),
+        false,
+    )?;
+    expected.square().sum(Kind::Float).f_backward()?;
+    actual.square().sum(Kind::Float).f_backward()?;
+    close(
+        &actual.to_device(Device::Cpu),
+        &expected,
+        "MPS attention output",
+    );
+    close(
+        &weights.to_device(Device::Cpu),
+        &expected_weights,
+        "MPS attention weights",
+    );
+    close(
+        &mps_input.grad().to_device(Device::Cpu),
+        &cpu_input.grad(),
+        "MPS attention input gradient",
+    );
+    for (name, parameter) in mps_store.variables() {
+        close(
+            &parameter.grad().to_device(Device::Cpu),
+            &cpu_store.variables()[&name].grad(),
+            &format!("MPS {name} gradient"),
+        );
+    }
+    Ok(())
+}

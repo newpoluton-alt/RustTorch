@@ -37,3 +37,26 @@ host hardware access also passed all four CPU/MPS test cases: eager execution,
 residual graphs, Adam/SGD updates, and weight transfer. CUDA was unavailable and
 skipped. These MPS results do not establish accelerator parity for the newly
 added layer and optimizer families.
+
+The 0.4.0 deployment regression exposed a native biased-linear failure on
+GitHub's macOS 26.6.2 Apple M1 (Virtual), `VirtualMac2,1`, with LibTorch 2.13.0.
+For a fixed two-row classifier, both the portable executor and a direct native
+linear call produced `[28, 0, 64, 0]` instead of `[29, 0, 65, 0]`: the native
+operation omitted its bias. Separate matrix multiplication and addition
+produced the exact expected values on that runner. The
+[diagnostic CI run](https://github.com/newpoluton-alt/RustTorch/actions/runs/34774599653)
+records inputs, state, intermediate values and hardware. This agrees with the
+[upstream MPS biased-linear report](https://github.com/pytorch/pytorch/issues/188438).
+
+RustTorch routes its functional/layer, attention-projection and portable-executor
+affine operations through one MPS correction using existing fallible tensor
+operations. The correction preserves autograd and device placement; comparison
+tolerances are unchanged. Native recurrent kernels, raw re-exported tensor
+operations and previously saved TorchScript artifacts have separate runtime
+behavior and are not intercepted by this correction.
+
+On the local Apple M4 host, the correction passes exact Float/Half/BFloat16
+affine outputs and input/weight/bias gradients for vector, matrix, batched and
+strided inputs. A Float attention fixture checks all projection gradients
+against CPU. The existing four eager/graph/optimizer/weight-transfer backend
+tests and the portable classifier regression also pass. CUDA remains unavailable.
