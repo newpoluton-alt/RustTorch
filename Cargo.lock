@@ -1750,7 +1750,7 @@ version = "0.4.0"
 dependencies = [
  "prost",
  "rand 0.8.8",
- "rand_chacha 0.3.1",
+ "rand_chacha 0.9.0",
  "rusttorch-audio",
  "rusttorch-codec",
  "rusttorch-core",
@@ -1817,7 +1817,7 @@ version = "0.4.0"
 dependencies = [
  "crossbeam-channel",
  "rand 0.8.8",
- "rand_chacha 0.3.1",
+ "rand_chacha 0.9.0",
  "rusttorch-core",
  "serde",
  "serde_json",
