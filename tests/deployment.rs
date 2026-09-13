@@ -464,63 +464,8 @@ fn portable_execution_matches_cpu_on_available_accelerators() -> Result<()> {
         let input = x().to_device(device).set_requires_grad(true);
         let output = model.run(&[input.shallow_clone()])?.remove(0);
         let before_backward = output.f_to_device(Device::Cpu)?;
-        if !before_backward.allclose(&expected, 1e-4, 1e-4, false) {
-            let direct = input
-                .f_linear(
-                    &model.state()["head.weight"],
-                    Some(&model.state()["head.bias"]),
-                )?
-                .f_relu()?
-                .f_mul(&model.state()["scale"])?;
-            eprintln!(
-                "{name} before backward: model={:?}, direct native={:?}",
-                values(&before_backward)?,
-                values(&direct)?
-            );
-        }
         output.sum(Kind::Float).backward();
         let actual = output.f_to_device(Device::Cpu)?;
-        if !actual.allclose(&expected, 1e-4, 1e-4, false)
-            || !before_backward.allclose(&expected, 1e-4, 1e-4, false)
-        {
-            // Capture direct backend and decomposed results only on failure;
-            // these extra synchronizations must not mask the original result.
-            let state = model.state();
-            let weight = &state["head.weight"];
-            let bias = &state["head.bias"];
-            let scale = &state["scale"];
-            let direct_linear = input.f_linear(weight, Some(bias))?;
-            let decomposed = input.f_matmul(&weight.f_transpose(0, 1)?)?.f_add(bias)?;
-            eprintln!(
-                "{name} input={:?}, weight={:?}, bias={:?}, scale={:?}",
-                values(&input)?,
-                values(weight)?,
-                values(bias)?,
-                values(scale)?
-            );
-            eprintln!(
-                "{name} direct linear={:?}, matmul+bias={:?}",
-                values(&direct_linear)?,
-                values(&decomposed)?
-            );
-            eprintln!(
-                "{name} direct score={:?}, decomposed score={:?}",
-                values(&direct_linear.f_relu()?.f_mul(scale)?)?,
-                values(&decomposed.f_relu()?.f_mul(scale)?)?
-            );
-            #[cfg(target_os = "macos")]
-            for property in ["machdep.cpu.brand_string", "hw.model"] {
-                if let Ok(info) = std::process::Command::new("sysctl")
-                    .args(["-n", property])
-                    .output()
-                {
-                    eprintln!(
-                        "{property}: {}",
-                        String::from_utf8_lossy(&info.stdout).trim()
-                    );
-                }
-            }
-        }
         assert!(
             actual.allclose(&expected, 1e-4, 1e-4, false)
                 && before_backward.allclose(&expected, 1e-4, 1e-4, false),
@@ -542,6 +487,14 @@ fn portable_execution_matches_cpu_on_available_accelerators() -> Result<()> {
             .grad()
             .f_to_device(Device::Cpu)?;
         let expected_weight_gradient = reference.state()["head.weight"].grad();
+        let bias_gradient = model.state()["head.bias"].grad().f_to_device(Device::Cpu)?;
+        let expected_bias_gradient = Tensor::from_slice(&[4_f32, 0.]);
+        assert!(
+            bias_gradient.allclose(&expected_bias_gradient, 1e-4, 1e-4, false),
+            "{name} bias gradient mismatch: actual={:?}, expected={:?}",
+            values(&bias_gradient)?,
+            values(&expected_bias_gradient)?
+        );
         assert!(
             weight_gradient.allclose(&expected_weight_gradient, 1e-4, 1e-4, false),
             "{name} weight gradient mismatch: actual={:?}, expected={:?}",

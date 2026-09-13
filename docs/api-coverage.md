@@ -245,8 +245,8 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **Pinned inventory:** 3 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Biased and bias-free forward behavior, parameter shapes/names, gradients, deterministic values, the short constructor, and weight-before-bias initialization uniformly within +/-1/sqrt(in\_features), including zero-input-feature bias initialization.
 - **Pinned source:** [`torch/nn/modules/linear.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/linear.py)
-- **Evidence:** [`tests/eager.rs::linear_bias_and_no_bias_have_expected_shapes_and_values`](../tests/eager.rs), [`tests/eager.rs::gradients_flow_through_linear`](../tests/eager.rs), [`tests/eager.rs::short_linear_constructor_uses_bias`](../tests/eager.rs), [`tests/nn_layers.rs::invalid_parameter_dtype_returns_errors_without_poisoning_the_store`](../tests/nn_layers.rs), [`tests/nn_layers.rs::undefined_tensors_are_rejected_without_metadata_panics`](../tests/nn_layers.rs), [`tests/nn_layers.rs::linear_initialization_uses_fan_in_uniform_before_bias`](../tests/nn_layers.rs), [`tests/nn_sequence.rs::sequence_python_parity`](../tests/nn_sequence.rs)
-- **Notes:** Rust configuration replaces Python keyword arguments; kernels delegate to LibTorch. CPU standalone attention and transformer-layer fixtures exercise the seeded shared Linear initializer. This does not claim identical full Transformer initialization streams or every dtype/backend combination.
+- **Evidence:** [`tests/eager.rs::linear_bias_and_no_bias_have_expected_shapes_and_values`](../tests/eager.rs), [`tests/eager.rs::gradients_flow_through_linear`](../tests/eager.rs), [`tests/eager.rs::short_linear_constructor_uses_bias`](../tests/eager.rs), [`tests/nn_layers.rs::invalid_parameter_dtype_returns_errors_without_poisoning_the_store`](../tests/nn_layers.rs), [`tests/nn_layers.rs::undefined_tensors_are_rejected_without_metadata_panics`](../tests/nn_layers.rs), [`tests/nn_layers.rs::linear_initialization_uses_fan_in_uniform_before_bias`](../tests/nn_layers.rs), [`tests/nn_sequence.rs::sequence_python_parity`](../tests/nn_sequence.rs), [`tests/nn_layers.rs::biased_linear_preserves_values_and_all_gradients_across_ranks_and_devices`](../tests/nn_layers.rs), [`tests/deployment.rs::portable_execution_matches_cpu_on_available_accelerators`](../tests/deployment.rs)
+- **Notes:** Rust configuration replaces Python keyword arguments; kernels delegate to LibTorch. CPU standalone attention and transformer-layer fixtures exercise the seeded shared Linear initializer. This does not claim identical full Transformer initialization streams or every dtype/backend combination. RustTorch-owned MPS Float/Half/BFloat16 affine paths use separate matmul and bias addition to avoid the macOS 26 virtual-M1 fused-linear bias defect. Analytic values and input/weight/bias gradients cover vector, matrix, batched and strided inputs through functional/layer paths; portable execution also checks fixed classifier values and gradients. Raw native tensor methods and existing native artifacts retain runtime behavior.
 
 ### `nn.relu`
 
@@ -315,6 +315,17 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **Pinned source:** [`torch/autograd/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/autograd/__init__.py)
 - **Evidence:** [`tests/eager.rs::gradients_accumulate_across_eager_residual_branches`](../tests/eager.rs), [`tests/eager.rs::no_grad_and_detach_stop_gradient_recording`](../tests/eager.rs)
 - **Notes:** rusttorch-core owns these direct reexports and the rusttorch facade preserves them; LibTorch owns autograd, while hooks, custom Function, forward AD, and the rest of the Python surface remain outside this claim.
+
+### `codec`
+
+- **PyTorch:** `torch.utils.data.Dataset for encoded media`
+- **RustTorch:** `rusttorch::vision::decode_image`, `rusttorch::audio::decode_audio`, `rusttorch::codec::MediaDecoder`, `rusttorch::codec::MediaFrame`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Optional domain packages decode bounded local PNG/JPEG images, WAV/PCM and FLAC audio, and selected FFmpeg CPU audio/video streams into owned typed samples for the shared Dataset and fallible-iterator batching interfaces.
+- **Pinned source:** [`torch/utils/data/dataset.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataset.py)
+- **Evidence:** [`crates/rusttorch-vision/tests/pipelines.rs::imagefolder_workers_decode_classify_and_bound_payload`](../crates/rusttorch-vision/tests/pipelines.rs), [`crates/rusttorch-audio/tests/pipelines.rs::wav_decode_workers_and_padding_preserve_rates_and_lengths`](../crates/rusttorch-audio/tests/pipelines.rs), [`crates/rusttorch-audio/tests/pipelines.rs::flac_decodes_the_same_samples_as_pcm_wav`](../crates/rusttorch-audio/tests/pipelines.rs), [`crates/rusttorch-codec/tests/pipelines.rs::cpu_video_streams_batches_and_seeks_with_timestamps`](../crates/rusttorch-codec/tests/pipelines.rs), [`crates/rusttorch-codec/tests/pipelines.rs::native_audio_copies_checked_float_buffers`](../crates/rusttorch-codec/tests/pipelines.rs)
+- **Notes:** Umbrella decoding integration row; vision, audio and video specify the exact format, transform and native-backend contracts. Core/data remain format-agnostic and decoding dependencies are opt-in. No universal codec registry, implicit downloads, hardware decoding or full external media-library parity. Native FFmpeg availability and licensing follow the explicitly selected system/vcpkg build.
 
 ### `compiler.export.interop`
 
@@ -588,8 +599,8 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **Pinned inventory:** 3 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Dense equal-width self/cross multihead attention with batched sequence-first, batch-first and unbatched layouts; optional projection bias; training dropout; boolean/additive attention and padding masks; explicit causal restrictions; head-averaged or per-head weights; and a no-weights path. CPU fixtures cover initialized parameters, outputs and input/parameter gradients.
 - **Pinned source:** [`torch/nn/modules/activation.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/activation.py)
-- **Evidence:** [`tests/nn_sequence.rs::attention_masks_block_future_and_padding_tokens_with_gradients`](../tests/nn_sequence.rs), [`tests/nn_sequence.rs::attention_scales_queries_before_half_precision_dot_products`](../tests/nn_sequence.rs), [`tests/nn_sequence.rs::attention_validation_and_dropout_cover_cross_attention_and_unbatched_inputs`](../tests/nn_sequence.rs), [`tests/nn_sequence.rs::sequence_python_parity`](../tests/nn_sequence.rs)
-- **Notes:** Separate kdim/vdim, appended bias/zero tokens, nested tensors, cached keys, grouped-query attention and kernel-selection controls are not exposed. The no-weights path delegates to native scaled-dot-product attention; there is no standalone RustTorch functional scaled\_dot\_product\_attention wrapper. Boolean true means blocked for AttentionMask, and causal=true explicitly constructs restrictions rather than acting only as a kernel hint. Fully blocked rows produce NaN returned softmax maps; the no-weights path contributes zero before output projection. CPU evidence does not establish accelerator or full dtype parity.
+- **Evidence:** [`tests/nn_sequence.rs::attention_masks_block_future_and_padding_tokens_with_gradients`](../tests/nn_sequence.rs), [`tests/nn_sequence.rs::attention_scales_queries_before_half_precision_dot_products`](../tests/nn_sequence.rs), [`tests/nn_sequence.rs::attention_validation_and_dropout_cover_cross_attention_and_unbatched_inputs`](../tests/nn_sequence.rs), [`tests/nn_sequence.rs::sequence_python_parity`](../tests/nn_sequence.rs), [`tests/nn_sequence.rs::biased_attention_projections_match_cpu_outputs_and_gradients_on_mps`](../tests/nn_sequence.rs)
+- **Notes:** Separate kdim/vdim, appended bias/zero tokens, nested tensors, cached keys, grouped-query attention and kernel-selection controls are not exposed. The no-weights path delegates to native scaled-dot-product attention; there is no standalone RustTorch functional scaled\_dot\_product\_attention wrapper. Boolean true means blocked for AttentionMask, and causal=true explicitly constructs restrictions rather than acting only as a kernel hint. Fully blocked rows produce NaN returned softmax maps; the no-weights path contributes zero before output projection. CPU evidence does not establish accelerator or full dtype parity. A conditional MPS Float fixture with nonzero biases checks batch-first self-attention outputs, weights and input/all-parameter gradients against CPU; it is narrow projection evidence, not a complete accelerator matrix.
 
 ### `nn.convolution`
 
@@ -1417,17 +1428,6 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **Pinned source:** [`torch/utils/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/__init__.py)
 - **Evidence:** —
 - **Notes:** This is an explicit disposition for the exact IDs in compat/pytorch\_inventory\_map.toml. Membership does not imply implementation, complete family coverage, or a compatibility percentage.
-
-### `codec`
-
-- **PyTorch:** `torch.utils.data.Dataset for encoded media`
-- **RustTorch:** —
-- **Implementation:** Not implemented
-- **Pinned inventory:** 0 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
-- **Scope:** General image, audio, and video codec integration is not included in the core crate.
-- **Pinned source:** [`torch/utils/data/dataset.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataset.py)
-- **Evidence:** —
-- **Notes:** Optional format packages will turn encoded records into typed loader samples.
 
 ### `func`
 

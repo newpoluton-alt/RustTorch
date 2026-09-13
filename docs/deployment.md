@@ -86,6 +86,12 @@ checked before execution. `Model::new` copies state into owned CPU storage.
 Call `to_device(Device::Cuda(0))` or `to_device(Device::Mps)` when that backend
 is available, then supply inputs on the same device. CPU is the numerical
 interchange reference; hardware-specific evidence is recorded separately.
+For MPS affine operations, RustTorch uses separate matrix multiplication and
+bias addition while retaining GPU outputs and gradients. This avoids the
+biased-linear defect on affected Mac runtimes. Imported native TorchScript
+artifacts keep their own operator graph; check the
+[MPS guide](https://github.com/newpoluton-alt/RustTorch/blob/main/docs/mps-support.md)
+when choosing an execution path.
 
 ## Retain structured inputs and outputs
 

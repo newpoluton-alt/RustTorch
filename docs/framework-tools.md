@@ -189,6 +189,6 @@ The archive reader enforces finite byte/tensor limits, validates CRCs, rejects
 unknown members and never extracts or executes files. Application JSON remains
 typed, so `#[serde(deny_unknown_fields)]` is useful for your own schema.
 
-After training, use the [deployment guide](deployment.md) to produce an inference
+After training, use the [deployment guide](https://docs.rs/rusttorch/0.4.0/rusttorch/tutorials/deployment/) to produce an inference
 artifact. Keep a training checkpoint for continuation and choose PT2, ONNX or
 TorchScript according to the receiving application's supported operations.

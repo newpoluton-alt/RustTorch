@@ -10,6 +10,17 @@ No entries.
 
 ## Partial
 
+### `codec`
+
+- **PyTorch:** `torch.utils.data.Dataset for encoded media`
+- **RustTorch:** `rusttorch::vision::decode_image`, `rusttorch::audio::decode_audio`, `rusttorch::codec::MediaDecoder`, `rusttorch::codec::MediaFrame`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 0 identities ([exact mapping](../../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Optional domain packages decode bounded local PNG/JPEG images, WAV/PCM and FLAC audio, and selected FFmpeg CPU audio/video streams into owned typed samples for the shared Dataset and fallible-iterator batching interfaces.
+- **Pinned source:** [`torch/utils/data/dataset.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataset.py)
+- **Evidence:** [`crates/rusttorch-vision/tests/pipelines.rs::imagefolder_workers_decode_classify_and_bound_payload`](../../crates/rusttorch-vision/tests/pipelines.rs), [`crates/rusttorch-audio/tests/pipelines.rs::wav_decode_workers_and_padding_preserve_rates_and_lengths`](../../crates/rusttorch-audio/tests/pipelines.rs), [`crates/rusttorch-audio/tests/pipelines.rs::flac_decodes_the_same_samples_as_pcm_wav`](../../crates/rusttorch-audio/tests/pipelines.rs), [`crates/rusttorch-codec/tests/pipelines.rs::cpu_video_streams_batches_and_seeks_with_timestamps`](../../crates/rusttorch-codec/tests/pipelines.rs), [`crates/rusttorch-codec/tests/pipelines.rs::native_audio_copies_checked_float_buffers`](../../crates/rusttorch-codec/tests/pipelines.rs)
+- **Notes:** Umbrella decoding integration row; vision, audio and video specify the exact format, transform and native-backend contracts. Core/data remain format-agnostic and decoding dependencies are opt-in. No universal codec registry, implicit downloads, hardware decoding or full external media-library parity. Native FFmpeg availability and licensing follow the explicitly selected system/vcpkg build.
+
 ### `video`
 
 - **PyTorch:** `torch.utils.data.Dataset for video samples`
@@ -23,16 +34,7 @@ No entries.
 
 ## Planned
 
-### `codec`
-
-- **PyTorch:** `torch.utils.data.Dataset for encoded media`
-- **RustTorch:** —
-- **Implementation:** Not implemented
-- **Pinned inventory:** 0 identities ([exact mapping](../../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
-- **Scope:** General image, audio, and video codec integration is not included in the core crate.
-- **Pinned source:** [`torch/utils/data/dataset.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/utils/data/dataset.py)
-- **Evidence:** —
-- **Notes:** Optional format packages will turn encoded records into typed loader samples.
+No entries.
 
 ## Python-only
 

@@ -344,3 +344,86 @@ fn linear_initialization_uses_fan_in_uniform_before_bias() -> Result<()> {
     assert_eq!(Vec::<f32>::try_from(empty.bias().unwrap())?, [0., 0.]);
     Ok(())
 }
+
+#[test]
+fn biased_linear_preserves_values_and_all_gradients_across_ranks_and_devices() -> Result<()> {
+    let mut devices = vec![Device::Cpu];
+    let caps = rusttorch::available_devices();
+    if caps.mps {
+        devices.push(Device::Mps);
+    } else {
+        eprintln!("skipped MPS biased linear regression: unavailable hardware");
+    }
+    for device in devices {
+        for kind in [Kind::Float, Kind::Half, Kind::BFloat16] {
+            for (shape, strided) in [
+                (vec![3], false),
+                (vec![2, 3], false),
+                (vec![2, 1, 3], false),
+                (vec![2, 3], true),
+            ] {
+                for via_layer in [false, true] {
+                    let mut store = VarStore::new(device);
+                    store.set_kind(kind);
+                    let layer = rusttorch::nn::LinearConfig::new(3, 2).build(&store.root())?;
+                    assign(layer.weight(), &[1., 0., 0., 0., 1., 0.])?;
+                    assign(layer.bias().unwrap(), &[0.5, 1.])?;
+                    let count = shape.iter().product::<i64>();
+                    let mut input = Tensor::arange_start(1, count + 1, (Kind::Float, Device::Cpu))
+                        .reshape(&shape)
+                        .to_kind(kind)
+                        .to_device(device);
+                    if strided {
+                        input = input.transpose(0, 1).contiguous().transpose(0, 1);
+                        assert!(!input.is_contiguous());
+                    }
+                    let input = input.set_requires_grad(true);
+                    let output = if via_layer {
+                        layer.forward(&input)?
+                    } else {
+                        functional::linear(&input, layer.weight(), layer.bias())?
+                    };
+                    output.square().sum(kind).f_backward()?;
+                    let (expected, input_grad, weight_grad, bias_grad): (
+                        &[f32],
+                        &[f32],
+                        &[f32],
+                        &[f32],
+                    ) = if count == 3 {
+                        (
+                            &[1.5, 3.],
+                            &[3., 6., 0.],
+                            &[3., 6., 9., 6., 12., 18.],
+                            &[3., 6.],
+                        )
+                    } else {
+                        (
+                            &[1.5, 3., 4.5, 6.],
+                            &[3., 6., 0., 9., 12., 0.],
+                            &[39., 51., 63., 54., 72., 90.],
+                            &[12., 18.],
+                        )
+                    };
+                    for (name, actual, expected) in [
+                        ("output", output, expected),
+                        ("input gradient", input.grad(), input_grad),
+                        ("weight gradient", layer.weight().grad(), weight_grad),
+                        ("bias gradient", layer.bias().unwrap().grad(), bias_grad),
+                    ] {
+                        let actual = Vec::<f32>::try_from(
+                            &actual
+                                .to_device(Device::Cpu)
+                                .to_kind(Kind::Float)
+                                .reshape([-1]),
+                        )?;
+                        assert_eq!(
+                            actual, expected,
+                            "{device:?} {kind:?} {shape:?} strided={strided} layer={via_layer} {name}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}

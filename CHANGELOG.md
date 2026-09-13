@@ -25,6 +25,9 @@ or graph-format stability.
 - Publish practical distributed, deployment, domain-data and framework-tool
   tutorials in GitHub and Rustdoc; include all optional APIs on docs.rs. Expand
   nine-crate release provenance, Rust 1.88 and portable/native feature checks.
+- Preserve affine biases on affected macOS MPS runtimes by using separate
+  matrix multiplication and bias addition in RustTorch layers, attention
+  projections and portable deployment. Outputs and gradients remain on MPS.
 - Preserve existing facade imports and DataLoader semantics. **Migration:**
   the new domain APIs are opt-in; `codec` requires installed FFmpeg 8 development
   libraries. New versioned Rust checkpoint and portable graph schemas are

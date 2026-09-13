@@ -726,7 +726,7 @@ impl MultiheadAttention {
                 .as_ref()
                 .map(|b| b.f_narrow(0, index * width, width))
                 .transpose()?;
-            Ok(x.f_linear(&weight, bias.as_ref())?
+            Ok(functional::linear_backend(x, &weight, bias.as_ref())?
                 .f_reshape([batch, time, heads, head_width])?
                 .f_transpose(1, 2)?)
         };

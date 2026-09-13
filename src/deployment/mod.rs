@@ -1021,7 +1021,9 @@ fn evaluate(
             Operator::Subtract => x[0].f_sub(x[1])?,
             Operator::Multiply => x[0].f_mul(x[1])?,
             Operator::Matmul => x[0].f_matmul(x[1])?,
-            Operator::Linear => x[0].f_linear(x[1], x.get(2).copied())?,
+            Operator::Linear => {
+                crate::nn::functional::linear_backend(x[0], x[1], x.get(2).copied())?
+            }
             Operator::Reshape(shape) => x[0].f_reshape(shape)?,
             Operator::Flatten { start, end } => x[0].f_flatten(*start, *end)?,
             Operator::Transpose { dim0, dim1 } => x[0].f_transpose(*dim0, *dim1)?,
