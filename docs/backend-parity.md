@@ -60,3 +60,8 @@ affine outputs and input/weight/bias gradients for vector, matrix, batched and
 strided inputs. A Float attention fixture checks all projection gradients
 against CPU. The existing four eager/graph/optimizer/weight-transfer backend
 tests and the portable classifier regression also pass. CUDA remains unavailable.
+
+The corrected [required CI run](https://github.com/newpoluton-alt/RustTorch/actions/runs/34775260509)
+also passes on the affected macOS virtual-M1 runner, including these affine,
+attention and deployment regressions. Linux and Windows runtime lanes pass;
+CUDA checks on hosts without CUDA remain explicit skips.
