@@ -99,15 +99,15 @@ or Python bytecode capture are separate extensions, not aliases for this executo
   all nine synchronized packages without weakening existing gates.
 - [x] Pass full formatting/checks/Clippy/tests/doctests, pinned numerical parity,
   MSRV, backend probes, dependency policy and clean package builds.
-- [ ] DCO-signed commits, contribution PR, green required CI and integration to main.
-- [ ] Publish the synchronized release, verify registry versions, immutable tag,
+- [x] DCO-signed commits, contribution PR, green required CI and integration to main.
+- [x] Publish the synchronized release, verify registry versions, immutable tag,
   complete provenance assets and actual docs.rs guide/example pages.
 
 ## Progress record
 
 - Issue registered and clean feature branch created from released main.
 - Independent distributed, deployment and domain investigations completed.
-- Implementations assigned with disjoint file ownership; integration work ongoing.
+- Implementations independently reviewed and integrated through PR #19.
 
 ### 0.4.0 integration evidence
 
@@ -129,13 +129,25 @@ or Python bytecode capture are separate extensions, not aliases for this executo
   passes. CPU and MPS probes work; CUDA is unavailable and remains a skip.
 - Python lock now includes ONNX 1.22.0 checker tooling; complete artifact/graph
   policy and all 12,462 explicit inventory dispositions validate offline.
-- All nine source archive inventories and full native archive verification
-  pass (facade about 916 KiB compressed; domain archives about 23–28 KiB before
-  adding original license texts). Final repository CI, registry publication
-  and live docs checks remain gates below. Versioned docs are never claimed updated merely from a source commit.
+- All nine clean source archive builds and inventories pass. Every published
+  registry checksum matches its reviewed archive from main commit
+  `f75d766825e1d5efab5aca4498368c7f18069483` (about 1.28 MiB total compressed).
 - Windows and Linux CI pass the expanded runtime and DataLoader regression.
   Mac CI exposed native MPS bias omission on virtual M1 hardware; the shared
   affine correction passes local exact dtype/layout/gradient, attention,
-  deployment and existing backend checks. Required CI must validate the fix.
+  deployment and existing backend checks. The corrected virtual-M1 Mac job,
+  Windows job and complete required CI pass on both the PR and merged main.
 - Final documentation review corrected two links that broke when guides were
   included in Rustdoc and updated the stale umbrella codec coverage entry.
+- All 37 live registry/documentation checks pass: nine published versions,
+  eight library landing pages, CLI README, both latest aliases, eight tutorials,
+  standalone/facade loader, builder, stream and exact-resume examples.
+- [Implementation PR #19](https://github.com/newpoluton-alt/RustTorch/pull/19),
+  [required PR CI](https://github.com/newpoluton-alt/RustTorch/actions/runs/34775260509)
+  and [main CI](https://github.com/newpoluton-alt/RustTorch/actions/runs/34775748210)
+  record integration. Immutable tag `v0.4.0` identifies the published source.
+- The [release provenance workflow](https://github.com/newpoluton-alt/RustTorch/actions/runs/34776013198)
+  published [0.4.0](https://github.com/newpoluton-alt/RustTorch/releases/tag/v0.4.0)
+  with exactly nine crate archives and one provenance file. All downloaded
+  archives match their registry checksums and pass `slsa-verifier` 2.7.1
+  verification for the repository, immutable tag and recorded release commit.
