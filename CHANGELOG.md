@@ -5,6 +5,9 @@ or graph-format stability.
 
 ## Unreleased
 
+- Update the pinned uv setup action in CI and release builds to retry transient
+  manifest-fetch failures; preserve uv 0.12.3 and disabled dependency caching.
+
 ## 0.4.0 - 2026-09-13
 
 - Add bounded CPU TCP process groups, collectives and point-to-point messages;
