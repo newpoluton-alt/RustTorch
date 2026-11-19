@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import html
 import importlib.util
+import json
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -423,14 +424,58 @@ def render_markdown(
     return "\n".join(lines).rstrip() + "\n"
 
 
-def load_inventory_counts(root: Path, ledger: dict[str, Any]) -> dict[str, int]:
-    """Validate the committed inventory without importing torch or using a network."""
-    spec = importlib.util.spec_from_file_location("pytorch_inventory", root / "scripts/sync-pytorch-inventory.py")
+def load_script(root: Path, filename: str):
+    spec = importlib.util.spec_from_file_location(Path(filename).stem, root / "scripts" / filename)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    _, mapping = module.load_snapshot(root, ledger)
-    return dict(module.inventory_counts(mapping))
+    return module
+
+
+def gap_report(ledger, mapping, routes, cases):
+    """Index open questions by exact identity or case/device. Groups can overlap."""
+    rows = {row["id"]: row for row in ledger["api"]}
+    frontends = []
+    python_dependencies = {case["inventory_id"] for case in cases if case["profile"] == "python_interop"}
+    for ident, target in mapping.items():
+        row = rows[target]
+        if row["status"] == "python_only" or routes[ident] == "python_interop":
+            python_dependencies.add(ident)
+        if ident.startswith("python:") and row["status"] == "planned" and not row["rust_symbols"]:
+            frontends.append(ident)
+
+    failed = []
+    untested = []
+    for case in cases:
+        for device, status in case["devices"].items():
+            if status == "fail":
+                failed.append(f"{case['id']}/{device}")
+            elif status == "untested":
+                untested.append(f"{case['id']}/{device}")
+    measured_ids = {case["inventory_id"] for case in cases}
+    return {
+        "missing_binding": sorted(key for key, route in routes.items() if route == "unresolved"),
+        "missing_frontend": sorted(frontends),
+        "behavior_failure": sorted(failed),
+        "untested_hardware": sorted(untested),
+        "python_dependency": sorted(python_dependencies),
+        "without_behavior_case": sorted(mapping.keys() - measured_ids),
+    }
+
+
+def load_conformance(root: Path, ledger):
+    """Validate the snapshot, implementation routes and behavior observations offline."""
+    census = load_script(root, "sync-pytorch-inventory.py")
+    inventory, mapping = census.load_snapshot(root, ledger)
+    routes = load_script(root, "pytorch_bindings.py").load_bindings(root, inventory, mapping, ledger)
+    with (root / "compat/pytorch_behavior.toml").open("rb") as file:
+        behavior = tomllib.load(file)
+    errors = load_script(root, "pytorch_behavior.py").validate_behavior(
+        root, behavior, inventory, mapping["mapping"], _validate_evidence
+    )
+    if errors:
+        raise ValueError("; ".join(errors))
+    return dict(census.inventory_counts(mapping)), gap_report(ledger, mapping["mapping"], routes, behavior["case"])
 
 
 def generated_documents(root: Path, ledger: dict[str, Any], inventory_counts: dict[str, int] | None = None) -> dict[Path, str]:
@@ -490,6 +535,7 @@ def _parser() -> argparse.ArgumentParser:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--check", action="store_true", help="validate the ledger and generated page")
     mode.add_argument("--write", action="store_true", help="write the generated page")
+    mode.add_argument("--gaps", action="store_true", help="emit the validated gap report as JSON")
     return parser
 
 
@@ -512,10 +558,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        counts = load_inventory_counts(root, ledger)
+        counts, gaps = load_conformance(root, ledger)
     except (OSError, ValueError, KeyError, TypeError) as error:
-        print(f"error: pinned inventory: {error}", file=sys.stderr)
+        print(f"error: conformance records: {error}", file=sys.stderr)
         return 1
+    if arguments.gaps:
+        print(json.dumps(gaps, indent=2, sort_keys=True))
+        return 0
+
     documents = generated_documents(root, ledger, counts)
     if arguments.write:
         for path, expected in documents.items():
