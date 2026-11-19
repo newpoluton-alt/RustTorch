@@ -5,6 +5,10 @@ or graph-format stability.
 
 ## Unreleased
 
+- Restore the calling thread's gradient mode when a `no_grad` closure unwinds,
+  including nested inference within a training loop. Use `with_grad` to
+  compute an input gradient inside that inference scope.
+
 - Update the pinned uv setup action in CI and release builds to retry transient
   manifest-fetch failures; preserve uv 0.12.3 and disabled dependency caching.
 

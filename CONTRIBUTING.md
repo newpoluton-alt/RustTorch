@@ -52,9 +52,15 @@ cargo check -p rusttorch --all-targets --no-default-features --features tch/doc-
 RUSTDOCFLAGS="-D warnings" cargo doc -p rusttorch --no-deps --no-default-features --features tch/doc-only
 cargo package -p rusttorch --locked --list
 cargo package -p rusttorch-cli --locked --list
-cargo package -p rusttorch --locked
-cargo package -p rusttorch-cli --locked
+cargo package --workspace --locked
 ```
+
+Use Cargo 1.90 or newer for workspace packaging. This is the same check
+that CI uses. Cargo stages and verifies all nine archives together so the
+facade builds against the core and domain crates from the same checkout.
+An individual `cargo package -p rusttorch --locked` resolves its dependencies
+from the registry. Use that command to verify the facade against published
+dependencies once their matching versions are available.
 
 The `full` feature includes native media decoding. Build the audited FFmpeg
 profile with `python3 scripts/build-ffmpeg.py --prefix /new/path/ffmpeg`, or

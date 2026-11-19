@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -528,6 +529,58 @@ class CompatibilityScriptTests(unittest.TestCase):
         (self.root / "compat" / "pytorch_api.toml").write_text(
             VALID_LEDGER_TOML, encoding="utf-8"
         )
+        for module in ("pytorch_bindings.py", "pytorch_behavior.py"):
+            shutil.copyfile(ROOT / "scripts" / module, self.root / "scripts" / module)
+        trace = "inventory_id\trust_symbol\tffi_symbol\tdispatcher\n"
+        (self.root / "compat/pytorch_tch_dispatch.tsv").write_text(trace)
+        def digest(text):
+            return hashlib.sha256(text.encode()).hexdigest()
+        (self.root / "compat/pytorch_bindings.toml").write_text(f'''format_version = 1
+pytorch_commit = "{fixture['pytorch_commit']}"
+tch_version = "0.26.0"
+tch_commit = "4227b89b72059b0651ff83a38637693574e0a2d6"
+trace_sha256 = "{digest(trace)}"
+capabilities_sha256 = "{digest('capability:device:meta' + chr(10))}"
+
+[unresolved.aten]
+ids_sha256 = "{digest('aten:aten::linear' + chr(10))}"
+reason = "Untraced."
+
+[unresolved.python]
+ids_sha256 = "{digest('python:torch.nn.Linear' + chr(10))}"
+reason = "Unreviewed."
+
+[[capability]]
+family = "device"
+values = ["meta"]
+ledger = "nn.linear"
+source = "torch/headeronly/core/DeviceType.h"
+route = "unresolved"
+limitations = "No native device encoding."
+''')
+        (self.root / "tests/ref.py").write_text("def test_linear():\n    pass\n")
+        (self.root / "docs/linear.md").touch()
+        (self.root / "compat/pytorch_behavior.toml").write_text(f'''format_version = 1
+pytorch_commit = "{fixture['pytorch_commit']}"
+observations = []
+
+[[case]]
+id = "linear.forward"
+inventory_id = "python:torch.nn.Linear"
+ledger = "nn.linear"
+profile = "native"
+dtype = "float32"
+layout = "strided"
+options = "With bias"
+implementation_sources = ["Cargo.toml"]
+expected = "Affine transform"
+observe = {{ metadata = ["shape"], values = {{ output = 1 }} }}
+tolerance = {{ rtol = 0.0, atol = 0.0 }}
+rust_test = "tests/eager.rs::linear_bias_and_no_bias_have_expected_shapes_and_values"
+reference_test = "tests/ref.py::test_linear"
+documentation = "docs/linear.md"
+devices = {{ cpu = "untested", mps = "untested", cuda = "untested" }}
+''')
         return self.root
 
     def run_cli(self, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -538,6 +591,33 @@ class CompatibilityScriptTests(unittest.TestCase):
             capture_output=True,
             check=False,
         )
+
+    def test_gap_report_is_deterministic_and_preserves_untested_results(self) -> None:
+        self.cli_root()
+        first = self.run_cli("--gaps")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        report = json.loads(first.stdout)
+        self.assertIn("aten:aten::linear", report["missing_binding"])
+        self.assertEqual(report["untested_hardware"], ["linear.forward/cpu", "linear.forward/cuda", "linear.forward/mps"])
+        self.assertEqual(report["behavior_failure"], [])
+        self.assertEqual(first.stdout, self.run_cli("--gaps").stdout)
+
+    def test_passing_native_case_requires_a_native_binding_route(self) -> None:
+        case = {"id": "linear.forward", "inventory_id": "python:torch.nn.Linear",
+                "profile": "native", "devices": {"cpu": "pass"}}
+        for route in ("unresolved", "python_interop"):
+            with self.assertRaisesRegex(ValueError, "native route"):
+                CHECKER.gap_report(self.ledger(), {"python:torch.nn.Linear": "nn.linear"},
+                                   {"python:torch.nn.Linear": route}, [case])
+
+    def test_check_and_write_reject_a_missing_sidecar(self) -> None:
+        self.cli_root()
+        (self.root / "compat/pytorch_behavior.toml").unlink()
+        for mode in ("--check", "--write", "--gaps"):
+            result = self.run_cli(mode)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("pytorch_behavior.toml", result.stderr)
+        self.assertFalse((self.root / "docs/api-coverage.md").exists())
 
     def test_cli_check_accepts_current_generated_bytes(self) -> None:
         self.cli_root()

@@ -8,6 +8,11 @@ assert torch.__version__.split('+')[0] == '2.13.0'
 result = {}
 x = torch.tensor([0.2, -0.7, 1.1], dtype=torch.float64, requires_grad=True)
 v = torch.tensor([0.3, 0.4, -0.2], dtype=torch.float64)
+with torch.no_grad():
+    with torch.enable_grad():
+        score = x.square().sum()
+    result['nested_grad'] = tensor_data(torch.autograd.grad(score, x)[0])
+    result['after_enable_grad'] = x.square().requires_grad
 f = lambda x: torch.stack([x.sin().sum(), (x.square() * x.exp()).sum()])
 result['jacobian'] = tensor_data(torch.autograd.functional.jacobian(f, x))
 result['jvp'] = tensor_data(torch.autograd.functional.jvp(f, x, v)[1])

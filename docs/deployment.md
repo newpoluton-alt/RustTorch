@@ -12,8 +12,10 @@ constants. Every operation uses LibTorch; ordinary execution retains autograd.
 | ONNX | Exchange common inference operators | RustTorch or an ONNX runtime |
 | TorchScript | Save a native traced inference graph | LibTorch JIT |
 
-All operations return `rusttorch::Result`. Importing PT2 or ONNX does not compile
-a graph. `Model::trace` creates a real TorchScript artifact from a branch-free,
+Keep a separate [training checkpoint](https://docs.rs/rusttorch/latest/rusttorch/checkpoint/)
+when you need optimizer moments, loader position or a resumable training step.
+
+Loading PT2 or ONNX builds an executable tensor program. `Model::trace` creates a real TorchScript artifact from a branch-free,
 single-output program and freezes a copy of its state.
 
 ## Convert an existing graph

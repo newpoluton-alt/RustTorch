@@ -218,8 +218,8 @@ def inventory_counts(mapping):
     return Counter(mapping["mapping"].values())
 
 
-def render_inventory(inventory):
-    errors = validate_inventory(inventory)
+def render_inventory(inventory, reference=REFERENCE):
+    errors = validate_inventory(inventory, reference)
     if errors:
         raise ValueError("; ".join(errors))
     return json.dumps(inventory, indent=2, ensure_ascii=False) + "\n"

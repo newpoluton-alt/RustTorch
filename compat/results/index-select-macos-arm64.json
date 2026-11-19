@@ -1,0 +1,280 @@
+{
+  "cases": {
+    "index-select.rejects-float-indices": {
+      "cpu": {
+        "outcome": "executed",
+        "reference": {
+          "device": "cpu",
+          "dtype": "float32",
+          "layout": "strided",
+          "metadata": {
+            "error": "index_dtype",
+            "shape": [
+              2
+            ]
+          },
+          "values": {
+            "input_after_error": [
+              1.0,
+              2.0
+            ]
+          }
+        },
+        "rust": {
+          "device": "cpu",
+          "dtype": "float32",
+          "layout": "strided",
+          "metadata": {
+            "error": "index_dtype",
+            "shape": [
+              2
+            ]
+          },
+          "values": {
+            "input_after_error": [
+              1.0,
+              2.0
+            ]
+          }
+        }
+      },
+      "cuda": {
+        "outcome": "skipped",
+        "reason": "cuda unavailable in this runtime"
+      },
+      "mps": {
+        "outcome": "executed",
+        "reference": {
+          "device": "mps",
+          "dtype": "float32",
+          "layout": "strided",
+          "metadata": {
+            "error": "index_dtype",
+            "shape": [
+              2
+            ]
+          },
+          "values": {
+            "input_after_error": [
+              1.0,
+              2.0
+            ]
+          }
+        },
+        "rust": {
+          "device": "mps",
+          "dtype": "float32",
+          "layout": "strided",
+          "metadata": {
+            "error": "index_dtype",
+            "shape": [
+              2
+            ]
+          },
+          "values": {
+            "input_after_error": [
+              1.0,
+              2.0
+            ]
+          }
+        }
+      }
+    },
+    "index-select.repeated-rows.backward": {
+      "cpu": {
+        "outcome": "executed",
+        "reference": {
+          "device": "cpu",
+          "dtype": "float32",
+          "layout": "strided",
+          "metadata": {
+            "gradient_shape": [
+              3,
+              2
+            ],
+            "gradient_stride": [
+              2,
+              1
+            ],
+            "shape": [
+              3,
+              2
+            ],
+            "stride": [
+              2,
+              1
+            ]
+          },
+          "values": {
+            "gradient": [
+              2.0,
+              4.0,
+              0.0,
+              0.0,
+              20.0,
+              24.0
+            ],
+            "selected": [
+              5.0,
+              6.0,
+              1.0,
+              2.0,
+              5.0,
+              6.0
+            ]
+          }
+        },
+        "rust": {
+          "device": "cpu",
+          "dtype": "float32",
+          "layout": "strided",
+          "metadata": {
+            "gradient_shape": [
+              3,
+              2
+            ],
+            "gradient_stride": [
+              2,
+              1
+            ],
+            "shape": [
+              3,
+              2
+            ],
+            "stride": [
+              2,
+              1
+            ]
+          },
+          "values": {
+            "gradient": [
+              2.0,
+              4.0,
+              0.0,
+              0.0,
+              20.0,
+              24.0
+            ],
+            "selected": [
+              5.0,
+              6.0,
+              1.0,
+              2.0,
+              5.0,
+              6.0
+            ]
+          }
+        }
+      },
+      "cuda": {
+        "outcome": "skipped",
+        "reason": "cuda unavailable in this runtime"
+      },
+      "mps": {
+        "outcome": "executed",
+        "reference": {
+          "device": "mps",
+          "dtype": "float32",
+          "layout": "strided",
+          "metadata": {
+            "gradient_shape": [
+              3,
+              2
+            ],
+            "gradient_stride": [
+              2,
+              1
+            ],
+            "shape": [
+              3,
+              2
+            ],
+            "stride": [
+              2,
+              1
+            ]
+          },
+          "values": {
+            "gradient": [
+              2.0,
+              4.0,
+              0.0,
+              0.0,
+              20.0,
+              24.0
+            ],
+            "selected": [
+              5.0,
+              6.0,
+              1.0,
+              2.0,
+              5.0,
+              6.0
+            ]
+          }
+        },
+        "rust": {
+          "device": "mps",
+          "dtype": "float32",
+          "layout": "strided",
+          "metadata": {
+            "gradient_shape": [
+              3,
+              2
+            ],
+            "gradient_stride": [
+              2,
+              1
+            ],
+            "shape": [
+              3,
+              2
+            ],
+            "stride": [
+              2,
+              1
+            ]
+          },
+          "values": {
+            "gradient": [
+              2.0,
+              4.0,
+              0.0,
+              0.0,
+              20.0,
+              24.0
+            ],
+            "selected": [
+              5.0,
+              6.0,
+              1.0,
+              2.0,
+              5.0,
+              6.0
+            ]
+          }
+        }
+      }
+    }
+  },
+  "environment": {
+    "cuda": null,
+    "devices": {
+      "cpu": "arm64",
+      "mps": "Apple M4"
+    },
+    "hip": null,
+    "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "python": "3.14.7",
+    "revision": "267a9427f53469e14dee0e1891f38f4ad7bb3809",
+    "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+    "tch": "0.26.0",
+    "torch": "2.13.0",
+    "torch_commit": "cf30153c4c131c8164ee7798e5022d810682e2cb"
+  },
+  "fingerprints": {
+    "index-select.rejects-float-indices": "1c95e8743042e14b63eaba7fa6c339911a2d5ea43c0f269777f481d4beefb314",
+    "index-select.repeated-rows.backward": "c1b50ea56258b41c529edc9422a52e2ba694595a15af35dcfff8f970da4088f2"
+  },
+  "format_version": 1
+}

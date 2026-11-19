@@ -51,14 +51,14 @@ notes = "CPU Double numerical parity uses scripts/run-python-parity.sh. No nativ
 
 [[api]]
 id = "autograd.reverse_mode"
-python_symbols = ["torch.Tensor.backward", "torch.no_grad", "torch.Tensor.detach", "torch.autograd.grad_mode.no_grad"]
-rust_symbols = ["rusttorch_core::Tensor", "rusttorch_core::no_grad", "rusttorch_core::no_grad_guard", "rusttorch::Tensor", "rusttorch::no_grad", "rusttorch::no_grad_guard"]
+python_symbols = ["torch.Tensor.backward", "torch.no_grad", "torch.Tensor.detach", "torch.autograd.grad_mode.no_grad", "torch.enable_grad", "torch.autograd.grad_mode.enable_grad"]
+rust_symbols = ["rusttorch_core::Tensor", "rusttorch_core::no_grad", "rusttorch_core::no_grad_guard", "rusttorch_core::with_grad", "rusttorch::Tensor", "rusttorch::no_grad", "rusttorch::no_grad_guard", "rusttorch::with_grad"]
 status = "partial"
 implementation = "libtorch"
-scope = "Reverse-mode gradients through the tested eager and graph operations, plus tested no-grad and detach behavior."
+scope = "Reverse-mode gradients through the tested eager and graph operations, detach, and thread-local no_grad/with_grad closures that restore the previous recording mode on return or unwind."
 source = "torch/autograd/__init__.py"
-evidence = ["tests/eager.rs::gradients_accumulate_across_eager_residual_branches", "tests/eager.rs::no_grad_and_detach_stop_gradient_recording"]
-notes = "rusttorch-core owns these direct reexports and the rusttorch facade preserves them; LibTorch owns autograd, while hooks, custom Function, forward AD, and the rest of the Python surface remain outside this claim."
+evidence = ["tests/eager.rs::gradients_accumulate_across_eager_residual_branches", "tests/eager.rs::no_grad_and_detach_stop_gradient_recording", "crates/rusttorch-core/tests/public_api.rs::no_grad_restores_the_calling_threads_mode_after_unwinding", "crates/rusttorch-core/tests/public_api.rs::with_grad_records_inside_inference_and_restores_after_error_or_panic", "tests/autograd.rs::functional_derivatives_match_pinned_python"]
+notes = "rusttorch-core scopes closures with the LibTorch-backed guard. The rusttorch facade reexports them. Upstream grad modes are defined in torch/autograd/grad_mode.py. Hooks, custom Function and native forward AD remain outside this claim."
 
 [[api]]
 id = "autograd.surrogate"

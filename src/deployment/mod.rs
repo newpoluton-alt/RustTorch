@@ -756,7 +756,7 @@ impl Model {
             let count = storage.bytes.len() / storage.dtype.bytes();
             let base =
                 Tensor::f_from_data_size(&storage.bytes, &[count as i64], storage.dtype.kind())?;
-            tch::no_grad(|| -> Result<()> {
+            crate::no_grad(|| -> Result<()> {
                 for state in artifact.state.iter().filter(|s| s.storage == i) {
                     let mut view =
                         base.f_as_strided(&state.shape, &state.strides, Some(state.offset))?;

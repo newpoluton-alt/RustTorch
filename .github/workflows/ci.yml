@@ -367,6 +367,26 @@ jobs:
           "LIBTORCH_USE_PYTORCH=1" | Out-File -FilePath $env:GITHUB_ENV -Append
           $torchLib | Out-File -FilePath $env:GITHUB_PATH -Append
 
+      - name: Regenerate the dispatcher trace from the locked crates
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          python - <<'PYCODE'
+          import json, pathlib, subprocess, sys
+          metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--locked", "--format-version=1"]))
+          sources = {p["name"]: pathlib.Path(p["manifest_path"]).parent for p in metadata["packages"]}
+          subprocess.run([sys.executable, "scripts/trace-tch-dispatch.py", "--check",
+                          "--tch-source", sources["tch"], "--torch-sys-source", sources["torch-sys"]], check=True)
+          PYCODE
+
+      - name: Exercise native CPU runtime boundaries
+        shell: bash
+        run: |
+          torch_cmake=$(python -c 'import torch; print(torch.utils.cmake_prefix_path)')
+          cmake -S tests/native-runtime -B target/native-probes -DCMAKE_PREFIX_PATH="$torch_cmake" -DCMAKE_BUILD_TYPE=Release
+          cmake --build target/native-probes --config Release --parallel 2
+          ctest --test-dir target/native-probes -C Release --output-on-failure
+
       - name: Test loader runtime and conditional CUDA pinning
         run: cargo test -p rusttorch-data --tests --locked
 

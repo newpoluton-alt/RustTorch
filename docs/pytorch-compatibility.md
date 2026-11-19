@@ -49,7 +49,7 @@ After editing the canonical ledger, regenerate and verify the public page:
 
 Do not edit any generated compatibility page by hand. The checker validates
 schema version, sorted IDs, pinned metadata, source paths, exact evidence
-declarations, and all three byte-for-byte generated outputs. Package extraction
+declarations, and the generated coverage pages for the facade and domain crates. Package extraction
 changes symbol ownership only: `rusttorch_core` and `rusttorch_data` are the
 direct surfaces, while the existing `rusttorch` paths remain facade-compatible.
 The data ledger separately records loader workers, prefetch, pinning,
@@ -64,18 +64,20 @@ development host for forward/backward, gradients, one Adam/SGD step, movement,
 and SafeTensors transfer. CUDA was unavailable and was skipped, not passed. The latest run and the
 new model/optimizer CPU scopes are recorded in [backend evidence](backend-parity.md).
 
-## Interchange levels
+## Choose an interchange contract
 
-1. Weight/state interchange is required through SafeTensors when architectures,
-   names or mappings, shapes, and dtypes agree.
-2. Architecture interchange is supported only for manually equivalent eager
-   models and operations represented by RustTorch Graph IR.
-3. Full training-checkpoint interchange is not promised. Optimizer state and
-   Python runtime structures are not a stable cross-language contract.
+| Use case | RustTorch entry point | Supported boundary |
+|---|---|---|
+| Transfer trained parameters | `interop::save_state_dict`, `load_state_dict_with_mapping` | SafeTensors weights and persistent buffers with matching shapes and dtypes. Rebuild the architecture and map renamed parameters. |
+| Resume a Rust training job | `checkpoint::save`, `TrainingCheckpoint::restore` | Versioned archive containing weights, optimizer state and typed application progress. The caller supplies scheduler, scaler, loader or RNG state when needed. |
+| Exchange a functional tensor program | `deployment::Model::{load_pt2,save_pt2}` | Versioned PT2 subset with supported operators, calling trees, named state and dimension guards. |
+| Deploy an inference graph | `deployment::Model::{load_onnx,save_onnx}` | Default-domain ONNX opset 18, IR 10 and the documented operator subset. Initializers serve as inference constants. |
+| Run a native traced graph | `Model::trace`, `TracedModel::{save,load}` | Branch-free, single-output RustTorch tensor programs. Keep the guards sidecar with the frozen TorchScript artifact. |
 
-Backend changes can introduce normal floating-point differences without
-changing the logical state format. Tests use deterministic assigned weights
-and documented tolerances rather than assuming identical RNG streams.
+For runnable Rust examples, see [deployment](deployment.md),
+[checkpoint and resume](checkpoint-compatibility.md) and [weight exchange](model-interoperability.md).
+The reference tests use deterministic weights and per-case tolerances for
+cross-runtime and cross-device comparisons.
 
 ## Important differences
 
@@ -92,12 +94,13 @@ and documented tolerances rather than assuming identical RNG streams.
   no public checkpoint API, so loader checkpoint rows are RustTorch extensions.
 - `eval()` changes module behavior but does not disable autograd.
 - Explicit unavailable devices error instead of silently falling back.
-- SafeTensors is the only model-state format accepted by RustTorch;
-  pickle-based `.pt`/`.bin` files are not accepted.
-- TorchScript is not exposed by RustTorch. Callers can use `tch::CModule`
-  directly for opaque legacy inference, outside the RustTorch compatibility
-  surface.
-- `.pt2` import/export is not implemented or claimed until separately tested.
+- Weight and training-checkpoint readers accept their documented formats.
+  Arbitrary Python model objects and pickle-based optimizer state require a
+  separate trusted conversion. Native traced inference requires a trusted model producer.
+- Portable RustTorch conditionals can execute a selected branch with
+  gradients. PT2/ONNX interchange and native tracing each have a narrower
+  operator contract. See the [deployment guide](deployment.md) for the
+  version, supported operators and limits for each format.
 
 The canonical ledger and generated coverage page remain the authority when a
 summary elsewhere differs.

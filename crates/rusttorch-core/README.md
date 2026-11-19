@@ -43,5 +43,8 @@ fn main() -> Result<()> {
 
 Use `resolve_device(DeviceSpec::Auto)` to choose an available accelerator or
 CPU, and create or move tensors onto that device. Use `no_grad` for inference
-or parameter assignment. The [API guide](https://docs.rs/rusttorch-core) has
+or parameter assignment. To measure an input's sensitivity during inference,
+wrap the score calculation in `with_grad`, then call `f_backward()` on its
+scalar result. Both closures restore the calling thread's recording mode if
+the calculation returns an error or unwinds. The [API guide](https://docs.rs/rusttorch-core) has
 examples of matrix multiplication, backend selection, and gradients.
