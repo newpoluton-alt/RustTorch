@@ -20,6 +20,25 @@ counts, not a compatibility percentage. The snapshot records the actual
 `darwin/arm64` wheel fingerprint separately from the pinned CPU/Linux
 documentation selection.
 
+## Reproduced shipping baseline
+
+On 2026-11-19 both offline checks below passed on RustTorch commit
+`b7954ba40a0d09cbf03af1ce678b87f2c5a81fce`. The count script in the
+[baseline analysis](superpowers/specs/2026-09-19-full-pytorch-parity-analysis.md#reproduce-the-snapshot-counts)
+found 141 ledger rows (24 supported, 75 partial, 34 planned, 5 Python-only
+and 3 intentionally unsupported). Of the 12,462 identities, 12,179 map to broad
+census rows. Rust 1.98.0 and CPython 3.14.7 on macOS arm64 loaded the 2.13.0
+wheel with the exact source commit above. CPU and MPS were available.
+
+The Python-dependent contracts include CPython frame capture in `torch.compile`,
+Python program capture in export/FX, and runtime registration through DataPipe
+decorators. Executing an exported tensor graph in Rust, constructing a portable
+graph directly, and composing typed datasets and collators are separate native
+use cases. The private loader dispatch enum is an implementation detail.
+The full parity program tracks Python interoperability independently from native
+execution. The maintainer of record for W1–W14 is the project maintainer listed
+in [governance](../GOVERNANCE.md). See [tracking issue #27](https://github.com/newpoluton-alt/RustTorch/issues/27).
+
 ## Ordinary offline checks
 
 After creating the frozen project environment, run from the repository root:
