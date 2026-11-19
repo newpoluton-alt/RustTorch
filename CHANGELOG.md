@@ -5,6 +5,9 @@ or graph-format stability.
 
 ## Unreleased
 
+- Add `nn::RmsNormConfig` and `nn::functional::rms_norm` for normalizing
+  token features, with optional learned scale and native dtype-dependent epsilon.
+
 - Update the pinned uv setup action in CI and release builds to retry transient
   manifest-fetch failures; preserve uv 0.12.3 and disabled dependency caching.
 

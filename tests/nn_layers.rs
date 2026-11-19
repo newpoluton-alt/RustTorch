@@ -171,6 +171,76 @@ fn layer_norm_normalizes_trailing_features_and_optional_affine_parameters() -> R
 }
 
 #[test]
+fn rms_norm_preserves_native_epsilon_shape_and_registered_scale() -> Result<()> {
+    use rusttorch::nn::RmsNormConfig;
+
+    let mut store = VarStore::new(Device::Cpu);
+    store.set_kind(Kind::Double);
+    let mut norm = RmsNormConfig::new([2]).build(&(store.root() / "tokens"))?;
+    let weight = store.variables().remove("tokens.weight").unwrap();
+    assert_eq!(weight.kind(), Kind::Double);
+    assert!(weight.equal(&Tensor::ones_like(&weight)));
+    assert_eq!(store.trainable_variables().len(), 1);
+    let x = Tensor::from_slice(&[1e-8_f64, -2e-8]).set_requires_grad(true);
+    let output = norm.forward(&x)?;
+    let expected = &x / (2.5e-16 + f64::EPSILON).sqrt();
+    assert!(output.allclose(&expected, 1e-12, 1e-12, false));
+    output.sum(Kind::Double).f_backward()?;
+    assert!(x.grad().defined() && weight.grad().defined());
+    let _ = no_grad(|| weight.shallow_clone().f_fill_(3.))?;
+    norm.reset_parameters()?;
+    assert!(weight.equal(&Tensor::ones_like(&weight)));
+    assert_eq!(store.variables().len(), 1);
+
+    let mut plain = RmsNormConfig::new([2])
+        .eps(0.)
+        .elementwise_affine(false)
+        .build(&(store.root() / "unscaled"))?;
+    assert!(plain.weight().is_none());
+    plain.reset_parameters()?;
+    assert_eq!(store.variables().len(), 1);
+    let input = Tensor::from_slice(&[2_f32, -2., 8., 8.]).reshape([2, 2]);
+    assert_close(&plain.forward(&input)?, &[1., -1., 1., 1.]);
+    let scale = Tensor::from_slice(&[3_f32, 0.5]);
+    assert_close(
+        &functional::rms_norm(&input, &[2], Some(&scale), Some(0.))?,
+        &[3., -0.5, 3., 0.5],
+    );
+    Ok(())
+}
+
+#[test]
+fn rms_norm_checks_invalid_inputs_and_accepts_an_empty_feature_axis() -> Result<()> {
+    use rusttorch::nn::RmsNormConfig;
+
+    let mut store = VarStore::new(Device::Cpu);
+    let x = Tensor::zeros([2, 3], (Kind::Float, Device::Cpu));
+    for shape in [vec![], vec![-1]] {
+        assert!(
+            RmsNormConfig::new(shape.clone())
+                .build(&store.root())
+                .is_err()
+        );
+        assert!(functional::rms_norm(&x, &shape, None, None).is_err());
+    }
+    assert!(functional::rms_norm(&x, &[2], None, None).is_err());
+    assert!(functional::rms_norm(&x, &[3], Some(&x), None).is_err());
+    assert!(functional::rms_norm(&Tensor::new(), &[3], None, None).is_err());
+    assert!(functional::rms_norm(&x, &[3], Some(&Tensor::new()), None).is_err());
+    assert!(functional::rms_norm(&x.to_kind(Kind::Int64), &[3], None, None).is_err());
+    store.set_kind(Kind::Int64);
+    assert!(RmsNormConfig::new([3]).build(&store.root()).is_err());
+    assert!(store.variables().is_empty());
+
+    let empty = Tensor::zeros([2, 0], (Kind::Float, Device::Cpu));
+    assert_eq!(
+        functional::rms_norm(&empty, &[0], None, None)?.size(),
+        [2, 0]
+    );
+    Ok(())
+}
+
+#[test]
 fn embedding_padding_frequency_scaling_sparse_gradients_and_indices_are_checked() -> Result<()> {
     let store = VarStore::new(Device::Cpu);
     let layer = EmbeddingConfig::new(4, 2)

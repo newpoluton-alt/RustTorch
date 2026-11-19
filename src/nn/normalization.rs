@@ -1,9 +1,125 @@
-//! Channel normalization for image, sequence, and volume models.
+//! Channel and feature normalization for image, sequence, and volume models.
 
 use tch::{Kind, Tensor};
 
 use super::{Module, ParameterPath, layers::validate_parameter_kind};
 use crate::{Result, RustTorchError, device::ensure_device};
+
+/// Configures root mean square normalization across the final input dimensions.
+///
+/// For token embeddings shaped `[batch, tokens, features]`, use
+/// `RmsNormConfig::new([features])` to scale each token independently.
+/// By default each feature gets a trainable weight initialized to one.
+/// The same operation runs during training and evaluation.
+///
+/// ```
+/// use rusttorch::{Device, Kind, Tensor, nn::{Module, RmsNormConfig, VarStore}};
+///
+/// let store = VarStore::new(Device::Cpu);
+/// let norm = RmsNormConfig::new([4]).build(&(store.root() / "tokens"))?;
+/// let tokens = Tensor::ones([2, 3, 4], (Kind::Float, Device::Cpu));
+/// let features = norm.forward(&tokens)?;
+/// features.f_mean(Kind::Float)?.f_backward()?;
+/// assert_eq!(features.size(), [2, 3, 4]);
+/// assert!(store.variables()["tokens.weight"].grad().defined());
+/// # Ok::<(), rusttorch::RustTorchError>(())
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct RmsNormConfig {
+    normalized_shape: Vec<i64>,
+    eps: Option<f64>,
+    elementwise_affine: bool,
+}
+
+impl RmsNormConfig {
+    /// Selects one or more trailing dimensions, e.g. `RmsNormConfig::new([8, 16])`.
+    pub fn new(normalized_shape: impl Into<Vec<i64>>) -> Self {
+        Self {
+            normalized_shape: normalized_shape.into(),
+            eps: None,
+            elementwise_affine: true,
+        }
+    }
+
+    /// Sets the value added to the mean square before taking its square root.
+    /// For example, `.eps(1e-6)` fixes the value and `.eps(None)` restores
+    /// the native default. Float32 and Float64 use their respective machine epsilon.
+    #[must_use]
+    pub fn eps(mut self, eps: impl Into<Option<f64>>) -> Self {
+        self.eps = eps.into();
+        self
+    }
+
+    /// Sets whether each feature has a learned scale. Use
+    /// `.elementwise_affine(false)` for a parameter-free normalization layer.
+    #[must_use]
+    pub const fn elementwise_affine(mut self, enabled: bool) -> Self {
+        self.elementwise_affine = enabled;
+        self
+    }
+
+    /// Builds the layer and registers `weight` under the supplied model path
+    /// when affine scaling is enabled. Shape dimensions must be nonnegative,
+    /// and the shape list must contain at least one entry.
+    /// See the [token training example](Self).
+    pub fn build(self, path: &ParameterPath<'_>) -> Result<RmsNorm> {
+        if self.normalized_shape.is_empty() || self.normalized_shape.iter().any(|&d| d < 0) {
+            return Err(invalid(
+                "normalized_shape",
+                "expected one or more nonnegative dimensions",
+            ));
+        }
+        let weight = if self.elementwise_affine {
+            validate_parameter_kind(path)?;
+            Some(path.f_ones("weight", &self.normalized_shape)?)
+        } else {
+            None
+        };
+        Ok(RmsNorm {
+            config: self,
+            weight,
+        })
+    }
+}
+
+/// Normalizes trailing feature groups using their mean square and optional scale.
+///
+/// Construct a layer with [`RmsNormConfig`]. Call [`Module::forward`] for
+/// both training and inference. The output has the same shape as the input.
+#[derive(Debug)]
+pub struct RmsNorm {
+    config: RmsNormConfig,
+    weight: Option<Tensor>,
+}
+
+impl RmsNorm {
+    /// Returns the optional trainable scale. For a width-four layer, inspect
+    /// `norm.weight().map(Tensor::size)` to retrieve `Some(vec![4])`.
+    pub const fn weight(&self) -> Option<&Tensor> {
+        self.weight.as_ref()
+    }
+
+    /// Fills the registered scale with ones, preserving its identity in the
+    /// optimizer and model store. Call `norm.reset_parameters()?` to reuse a
+    /// layer in a new run. A parameter-free layer has nothing to reset.
+    pub fn reset_parameters(&mut self) -> Result<()> {
+        if let Some(weight) = &mut self.weight {
+            let _ = crate::no_grad(|| weight.f_fill_(1.0))?;
+        }
+        Ok(())
+    }
+}
+
+impl Module for RmsNorm {
+    fn forward(&self, input: &Tensor) -> Result<Tensor> {
+        super::functional::rms_norm(
+            input,
+            &self.config.normalized_shape,
+            self.weight(),
+            self.config.eps,
+        )
+    }
+}
 
 fn invalid(field: &'static str, reason: &str) -> RustTorchError {
     RustTorchError::InvalidConfiguration {

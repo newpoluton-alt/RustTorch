@@ -231,6 +231,33 @@ fn layer_examples() -> Result<Value> {
     result["layer_norm"] = layer_result(&layer, &store, &input)?;
     result["layer_norm"]["initial"] = initial;
 
+    for (affine, eps) in [(true, None), (false, Some(1e-3))] {
+        let store = VarStore::new(Device::Cpu);
+        let mut layer = nn::RmsNormConfig::new([2, 3])
+            .eps(eps)
+            .elementwise_affine(affine)
+            .build(&store.root())?;
+        let initial = state_json(&store);
+        if let Some(weight) = layer.weight() {
+            let scale = Tensor::arange(6, (Kind::Float, Device::Cpu)).reshape([2, 3]) / 4. + 0.5;
+            rusttorch::no_grad(|| weight.shallow_clone().f_copy_(&scale))?;
+        }
+        let input = (Tensor::arange(12, (Kind::Float, Device::Cpu)) / 5. - 0.8)
+            .reshape([2, 3, 2])
+            .transpose(1, 2)
+            .set_requires_grad(true);
+        assert!(!input.is_contiguous());
+        let key = if affine {
+            "rms_norm_affine"
+        } else {
+            "rms_norm_plain"
+        };
+        result[key] = layer_result(&layer, &store, &input)?;
+        result[key]["initial"] = initial;
+        layer.reset_parameters()?;
+        result[key]["reset"] = state_json(&store);
+    }
+
     for sparse in [false, true] {
         rusttorch::manual_seed(902);
         let store = VarStore::new(Device::Cpu);

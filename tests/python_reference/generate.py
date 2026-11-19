@@ -79,6 +79,19 @@ def layer_examples() -> dict[str, object]:
     value = (torch.arange(12).float().reshape(2, 2, 3) / 5 - 0.8).requires_grad_()
     result["layer_norm"] = {"initial": initial, **layer_result(model, value)}
 
+    for affine, eps in [(True, None), (False, 1e-3)]:
+        model = torch.nn.RMSNorm((2, 3), eps=eps, elementwise_affine=affine)
+        initial = state_data(model)
+        if affine:
+            with torch.no_grad():
+                model.weight.copy_(torch.arange(6).reshape(2, 3) / 4 + 0.5)
+        value = (torch.arange(12).float() / 5 - 0.8).reshape(2, 3, 2).transpose(1, 2)
+        assert not value.is_contiguous()
+        output = layer_result(model, value.requires_grad_())
+        model.reset_parameters()
+        key = "rms_norm_affine" if affine else "rms_norm_plain"
+        result[key] = {"initial": initial, **output, "reset": state_data(model)}
+
     for sparse in (False, True):
         torch.manual_seed(902)
         model = torch.nn.Embedding(5, 3, padding_idx=-1, scale_grad_by_freq=not sparse, sparse=sparse)
