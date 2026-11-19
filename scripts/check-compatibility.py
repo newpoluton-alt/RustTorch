@@ -447,6 +447,9 @@ def gap_report(ledger, mapping, routes, cases):
     failed = []
     untested = []
     for case in cases:
+        if (case["profile"] == "native" and "pass" in case["devices"].values()
+                and routes[case["inventory_id"]] in {"unresolved", "python_interop"}):
+            raise ValueError(f"{case['id']}: passing native case requires an audited native route")
         for device, status in case["devices"].items():
             if status == "fail":
                 failed.append(f"{case['id']}/{device}")

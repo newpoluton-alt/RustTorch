@@ -572,13 +572,14 @@ profile = "native"
 dtype = "float32"
 layout = "strided"
 options = "With bias"
+implementation_sources = ["Cargo.toml"]
 expected = "Affine transform"
 observe = {{ metadata = ["shape"], values = ["output"] }}
 tolerance = {{ rtol = 0.0, atol = 0.0 }}
 rust_test = "tests/eager.rs::linear_bias_and_no_bias_have_expected_shapes_and_values"
 reference_test = "tests/ref.py::test_linear"
 documentation = "docs/linear.md"
-devices = {{ cpu = "untested" }}
+devices = {{ cpu = "untested", mps = "untested", cuda = "untested" }}
 ''')
         return self.root
 
@@ -597,9 +598,17 @@ devices = {{ cpu = "untested" }}
         self.assertEqual(first.returncode, 0, first.stderr)
         report = json.loads(first.stdout)
         self.assertIn("aten:aten::linear", report["missing_binding"])
-        self.assertEqual(report["untested_hardware"], ["linear.forward/cpu"])
+        self.assertEqual(report["untested_hardware"], ["linear.forward/cpu", "linear.forward/cuda", "linear.forward/mps"])
         self.assertEqual(report["behavior_failure"], [])
         self.assertEqual(first.stdout, self.run_cli("--gaps").stdout)
+
+    def test_passing_native_case_requires_a_native_binding_route(self) -> None:
+        case = {"id": "linear.forward", "inventory_id": "python:torch.nn.Linear",
+                "profile": "native", "devices": {"cpu": "pass"}}
+        for route in ("unresolved", "python_interop"):
+            with self.assertRaisesRegex(ValueError, "native route"):
+                CHECKER.gap_report(self.ledger(), {"python:torch.nn.Linear": "nn.linear"},
+                                   {"python:torch.nn.Linear": route}, [case])
 
     def test_check_and_write_reject_a_missing_sidecar(self) -> None:
         self.cli_root()

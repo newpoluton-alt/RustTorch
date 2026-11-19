@@ -1,6 +1,6 @@
 use std::{env, fs};
 
-use rusttorch::{Device, Kind, Result, RustTorchError, Tensor, tensor::select_rows};
+use rusttorch::{Device, Kind, Result, RustTorchError, Tensor};
 use serde_json::{Value, json};
 
 fn probe_device() -> Device {
@@ -36,7 +36,7 @@ fn repeated_rows_backward() -> Result<()> {
         .f_to_device(device)?
         .set_requires_grad(true);
     let indices = Tensor::f_from_slice(&[2_i64, 0, 2])?.f_to_device(device)?;
-    let selected = select_rows(&input, &indices)?;
+    let selected = rusttorch::tensor::select_rows(&input, &indices)?;
     selected.f_square()?.f_sum(Kind::Float)?.f_backward()?;
     let grad = input.grad();
 
@@ -70,7 +70,8 @@ fn rejects_float_indices() -> Result<()> {
     let device = probe_device();
     let input = Tensor::f_from_slice(&[1_f32, 2.])?.f_to_device(device)?;
     let indices = Tensor::f_from_slice(&[1_f32])?.f_to_device(device)?;
-    let error = select_rows(&input, &indices).expect_err("float index must fail");
+    let error =
+        rusttorch::tensor::select_rows(&input, &indices).expect_err("float index must fail");
     assert!(
         matches!(error, RustTorchError::InvalidConfiguration {
         field: "select_rows.ids", ref reason,

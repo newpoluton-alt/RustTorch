@@ -19,7 +19,7 @@ ids_sha256 = "f68040bebb99b663214da363d6cbceececb2722979d8275cc12a05d649ab5021"
 reason = "The frozen initial audit found no unique directly compiled dispatcher call agreeing with the declaration, header schema and Rust wrapper for these IDs. Indirect calls and handwritten bindings still need review."
 
 [unresolved.python]
-ids_sha256 = "4a7919cfde8435aa1cf970a36f4178cfe09d7b3c00b0b83ce04f218ab1cfcc46"
+ids_sha256 = "d9f4d9a7c3c78dc9120c2e8611d9c7bfd9bf8dcd5803116cc5b6acade45a56db"
 reason = "The Python frontend still needs an exact Rust entry point and contract audit, including default options and errors. Its family ledger row is available through pytorch_inventory_map.toml."
 
 [[binding]]
@@ -57,6 +57,33 @@ source = "src/nn/functional.rs"
 source_commit = "b7954ba40a0d09cbf03af1ce678b87f2c5a81fce"
 evidence = "tests/binding_routes.rs::dense_dispatch_and_frontend_calls"
 limitations = "The Rust frontend exposes out-of-place activation."
+
+[[binding]]
+id = "python:torch.autograd.grad_mode.no_grad"
+route = "rust"
+rust_symbol = "rusttorch::no_grad"
+source = "crates/rusttorch-core/src/lib.rs"
+source_commit = "a43ca9588f86b8f30a57ba34376f8bf4a1b15b1c"
+evidence = "tests/autograd.rs::functional_derivatives_match_pinned_python"
+limitations = "Disables reverse-mode recording inside a Rust closure and restores the prior thread-local mode on unwind."
+
+[[binding]]
+id = "python:torch.no_grad"
+route = "rust"
+rust_symbol = "rusttorch::no_grad"
+source = "crates/rusttorch-core/src/lib.rs"
+source_commit = "a43ca9588f86b8f30a57ba34376f8bf4a1b15b1c"
+evidence = "tests/autograd.rs::functional_derivatives_match_pinned_python"
+limitations = "Disables reverse-mode recording inside a Rust closure and restores the prior thread-local mode on unwind."
+
+[[binding]]
+id = "python:torch.index_select"
+route = "rust"
+rust_symbol = "rusttorch::tensor::select_rows"
+source = "src/tensor.rs"
+source_commit = "b7954ba40a0d09cbf03af1ce678b87f2c5a81fce"
+evidence = "tests/behavior_index_select.rs::repeated_rows_backward"
+limitations = "Selects rows on axis zero using a one-dimensional Int64 index. Repeated rows accumulate gradients."
 
 [[capability]]
 family = "dtype"

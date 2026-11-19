@@ -13,6 +13,7 @@ options = "Select rows [2, 0, 2] from a contiguous 3 by 2 leaf with int64 indice
 expected = "The output contains the selected rows in order. The gradient accumulates both selections of row 2; row 1 receives zero."
 observe = { metadata = ["shape", "stride", "gradient_shape", "gradient_stride"], values = ["selected", "gradient"] }
 tolerance = { rtol = 0.0, atol = 0.0 }
+implementation_sources = ["src/tensor.rs"]
 rust_test = "tests/behavior_index_select.rs::repeated_rows_backward"
 reference_test = "tests/python_reference/behavior_index_select.py::test_repeated_rows_backward"
 documentation = "docs/tensor-workflows.md"
@@ -29,6 +30,7 @@ options = "Select a row from a two-element vector with float32 indices."
 expected = "The call returns an index dtype error and leaves both input values intact."
 observe = { metadata = ["error", "shape"], values = ["input_after_error"] }
 tolerance = { rtol = 0.0, atol = 0.0 }
+implementation_sources = ["src/tensor.rs"]
 rust_test = "tests/behavior_index_select.rs::rejects_float_indices"
 reference_test = "tests/python_reference/behavior_index_select.py::test_rejects_float_indices"
 documentation = "docs/tensor-workflows.md"
