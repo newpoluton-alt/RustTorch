@@ -35,3 +35,20 @@ rust_test = "tests/behavior_index_select.rs::rejects_float_indices"
 reference_test = "tests/python_reference/behavior_index_select.py::test_rejects_float_indices"
 documentation = "docs/tensor-workflows.md"
 devices = { cpu = "pass", mps = "pass", cuda = "untested" }
+
+[[case]]
+id = "rms-norm.noncontiguous-tokens.backward"
+inventory_id = "python:torch.nn.RMSNorm.forward"
+ledger = "nn.normalization.rms_norm"
+profile = "native"
+dtype = "float32"
+layout = "strided"
+options = "Normalize the last two axes of a noncontiguous 2 by 2 by 3 input, use the native default epsilon and a learned scale, then backpropagate a sum and reset scale."
+expected = "The functional and module results match. Both operands receive gradients and reset restores each registered scale element to one."
+observe = { metadata = ["shape", "input_stride", "output_stride", "input_gradient_stride", "weight_shape"], values = { output = 12, input_gradient = 12, weight_gradient = 6, reset_weight = 6 } }
+tolerance = { rtol = 1e-5, atol = 1e-6 }
+rust_test = "tests/behavior_rms_norm.rs::trainable_noncontiguous_token_features"
+reference_test = "tests/python_reference/behavior_rms_norm.py::test_trainable_noncontiguous_token_features"
+implementation_sources = ["src/nn/normalization.rs", "src/nn/functional.rs"]
+documentation = "docs/training.md"
+devices = { cpu = "untested", mps = "untested", cuda = "untested" }

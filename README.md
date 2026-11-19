@@ -138,7 +138,7 @@ checkpoint/resume combinations.
 | Tensor math and gradients | `Tensor`, `Kind`, `no_grad`, and fallible tensor operations |
 | Dense models | `nn::Linear`, `Sequential`, ReLU, GELU, Dropout, and Flatten |
 | Spatial features and upsampling | Conv1d/2d/3d, transposed convolution, max/average/adaptive pooling |
-| Feature normalization | LayerNorm, BatchNorm, InstanceNorm, and GroupNorm |
+| Feature normalization | LayerNorm, BatchNorm, InstanceNorm, GroupNorm, and [RmsNorm for token embeddings](docs/training.md#normalize-token-embeddings-by-root-mean-square) |
 | Recurrent models | RNN, LSTM with optional projections, and GRU with explicit state |
 | Numerical workflows | Indexing, views, reductions, linalg, FFT, sparse inference and validated quantization |
 | Sensitivity and probability | Functional derivatives, Jacobians, Hessians, surrogate gradients and three distribution families |
