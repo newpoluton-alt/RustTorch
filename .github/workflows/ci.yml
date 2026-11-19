@@ -1,316 +1,20 @@
-name: CI
+name: Qualify the PyTorch 2.14 candidate
 
 on:
-  pull_request:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  dco:
-    name: DCO
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Check out complete pull-request history
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Check introduced commits
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          TRUSTED_DEPENDABOT_ACTOR: ${{ github.actor == 'dependabot[bot]' }}
-        run: |
-          if [ "$TRUSTED_DEPENDABOT_ACTOR" = "true" ]; then
-            python3 scripts/check-dco.py --base "$BASE_SHA" --head "$HEAD_SHA" \
-              --trusted-dependabot-actor
-          else
-            python3 scripts/check-dco.py --base "$BASE_SHA" --head "$HEAD_SHA"
-          fi
-
-  dependency-review:
-    name: Dependency review
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Review dependency changes
-        uses: actions/dependency-review-action@595b5aeba73380359d98a5e087f648dbb0edce1b # v4.7.3
-        with:
-          comment-summary-in-pr: never
-
-  quality:
-    name: Stable quality
-    runs-on: ubuntu-latest
-    env:
-      LIBTORCH_USE_PYTORCH: "1"
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.14"
-
-      - name: Validate Python lock artifacts
-        run: python3 scripts/check-python-lock.py
-
-      - name: Set up UV
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          version: "0.12.3"
-          enable-cache: false
-
-      - name: Validate Python dependency lock
-        run: uv lock --check --offline --no-cache
-
-      - name: Synchronize locked Python environment
-        run: uv sync --frozen --no-cache
-
-      - name: Export project Python environment
-        run: |
-          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
-          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
-
-      - name: Set up stable Rust
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
-        with:
-          toolchain: stable
-          cache: false
-          components: rustfmt, clippy
-
-      - name: Export LibTorch library path
-        run: |
-          torch_lib="$(.venv/bin/python -c 'from pathlib import Path; import torch; print(Path(torch.__file__).resolve().parent / "lib")')"
-          echo "LD_LIBRARY_PATH=${torch_lib}" >> "$GITHUB_ENV"
-
-      - name: Build and audit the pinned LGPL FFmpeg runtime
-        run: |
-          python3 scripts/build-ffmpeg.py --prefix "$RUNNER_TEMP/rusttorch-ffmpeg"
-          echo "FFMPEG_LIBS_DIR=$RUNNER_TEMP/rusttorch-ffmpeg/lib" >> "$GITHUB_ENV"
-          echo "FFMPEG_INCLUDE_DIR=$RUNNER_TEMP/rusttorch-ffmpeg/include" >> "$GITHUB_ENV"
-          echo "FFMPEG_LINK_MODE=dynamic" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/rusttorch-ffmpeg/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
-
-      - name: Run Python policy tests
-        run: .venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
-
-      - name: Validate API census offline
-        run: .venv/bin/python scripts/sync-pytorch-inventory.py --check
-
-      - name: Validate compatibility ledger
-        run: .venv/bin/python scripts/check-compatibility.py --check
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Check workspace
-        run: cargo check --workspace --all-targets --locked --features rusttorch/full
-
-      - name: Check rusttorch-data feature combinations
-        run: |
-          cargo check -p rusttorch-data --all-targets --locked --no-default-features
-          cargo check -p rusttorch-data --all-targets --locked --no-default-features --features doc-only
-          cargo check -p rusttorch-data --all-targets --locked --no-default-features --features download-libtorch
-          cargo check -p rusttorch-data --all-targets --locked --all-features
-
-      - name: Lint workspace
-        run: cargo clippy --workspace --all-targets --locked --features rusttorch/full -- -D warnings
-
-      - name: Test workspace
-        run: cargo test --workspace --all-targets --locked --features rusttorch/full
-
-      - name: Test documentation examples
-        run: cargo test --workspace --doc --locked --features rusttorch/full
-
-      - name: Run training checkpoint example
-        run: cargo run --example training_checkpoint --locked
-
-      - name: Enforce Python parity
-        run: scripts/run-python-parity.sh
-
-      - name: Build workspace documentation
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: cargo doc --workspace --no-deps --locked --features rusttorch/full
-
-      - name: Build rusttorch-cli documentation
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: cargo doc -p rusttorch-cli --no-deps --locked
-
-      - name: Build rusttorch-core documentation
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: >-
-          cargo doc -p rusttorch-core --no-deps --locked --no-default-features
-          --features doc-only
-
-      - name: Build rusttorch-data documentation
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: >-
-          cargo doc -p rusttorch-data --no-deps --locked --no-default-features
-          --features doc-only
-
-      - name: Check docs.rs configuration
-        env:
-          DOCS_RS: "1"
-        run: >-
-          cargo check -p rusttorch --all-targets --locked --no-default-features
-          --features doc-only,full
-
-      - name: Build docs.rs documentation
-        env:
-          DOCS_RS: "1"
-          RUSTDOCFLAGS: -D warnings
-        run: >-
-          cargo doc -p rusttorch --no-deps --locked --no-default-features
-          --features doc-only,full
-
-      - name: Inspect rusttorch-core package
-        run: cargo package -p rusttorch-core --locked --list | tee "$RUNNER_TEMP/rusttorch-core-package-files.txt"
-
-      - name: Inspect rusttorch-data package
-        run: cargo package -p rusttorch-data --locked --list | tee "$RUNNER_TEMP/rusttorch-data-package-files.txt"
-
-      - name: Inspect rusttorch-codec package
-        run: cargo package -p rusttorch-codec --locked --list | tee "$RUNNER_TEMP/rusttorch-codec-package-files.txt"
-
-      - name: Inspect rusttorch-vision package
-        run: cargo package -p rusttorch-vision --locked --list | tee "$RUNNER_TEMP/rusttorch-vision-package-files.txt"
-
-      - name: Inspect rusttorch-audio package
-        run: cargo package -p rusttorch-audio --locked --list | tee "$RUNNER_TEMP/rusttorch-audio-package-files.txt"
-
-      - name: Inspect rusttorch-text package
-        run: cargo package -p rusttorch-text --locked --list | tee "$RUNNER_TEMP/rusttorch-text-package-files.txt"
-
-      - name: Inspect rusttorch-tabular package
-        run: cargo package -p rusttorch-tabular --locked --list | tee "$RUNNER_TEMP/rusttorch-tabular-package-files.txt"
-
-      - name: Inspect rusttorch package
-        run: cargo package -p rusttorch --locked --list | tee "$RUNNER_TEMP/rusttorch-package-files.txt"
-
-      - name: Inspect rusttorch-cli package
-        run: cargo package -p rusttorch-cli --locked --list | tee "$RUNNER_TEMP/rusttorch-cli-package-files.txt"
-
-      - name: Reject unsafe package contents
-        run: |
-          if grep -E '(^|/)(\.venv|target|__pycache__|libtorch)(/|$)|(^|/)(pyproject\.toml|uv\.lock)$|\.(pyc|pyo|so|dylib|dll)$' \
-            "$RUNNER_TEMP/rusttorch-core-package-files.txt" \
-            "$RUNNER_TEMP/rusttorch-data-package-files.txt" \
-            "$RUNNER_TEMP/rusttorch-codec-package-files.txt" \
-            "$RUNNER_TEMP/rusttorch-vision-package-files.txt" \
-            "$RUNNER_TEMP/rusttorch-audio-package-files.txt" \
-            "$RUNNER_TEMP/rusttorch-text-package-files.txt" \
-            "$RUNNER_TEMP/rusttorch-tabular-package-files.txt" \
-            "$RUNNER_TEMP/rusttorch-package-files.txt" \
-            "$RUNNER_TEMP/rusttorch-cli-package-files.txt"; then
-            echo "error: package contains Python tooling or a generated/native environment artifact" >&2
-            exit 1
-          fi
-
-      # Packaging needs Cargo 1.90+; the crate MSRV remains Rust 1.88 and is check-only below.
-      - name: Verify workspace archives
-        run: cargo package --workspace --locked
-
-  msrv:
-    name: MSRV / ${{ matrix.package }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        package:
-          - rusttorch-core
-          - rusttorch-data
-          - rusttorch-codec
-          - rusttorch-vision
-          - rusttorch-audio
-          - rusttorch-text
-          - rusttorch-tabular
-          - rusttorch
-          - rusttorch-cli
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Rust 1.88
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
-        with:
-          toolchain: "1.88"
-          cache: false
-
-      - name: Check library package on the MSRV
-        if: matrix.package != 'rusttorch-cli'
-        run: >-
-          cargo check -p ${{ matrix.package }} --all-targets --locked
-          --no-default-features --features doc-only
-
-      - name: Check all optional library features on the MSRV
-        if: matrix.package == 'rusttorch'
-        env:
-          DOCS_RS: "1"
-        run: cargo check -p rusttorch --all-targets --locked --no-default-features --features doc-only,full
-
-      - name: Check CLI package on the MSRV
-        if: matrix.package == 'rusttorch-cli'
-        run: cargo check -p rusttorch-cli --all-targets --locked
-
-  cli:
-    name: CLI / ${{ matrix.os }}
+  qualify:
+    name: Training and checkpoint restore / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up stable Rust
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
-        with:
-          toolchain: stable
-          cache: false
-
-      - name: Test the setup CLI
-        run: cargo test -p rusttorch-cli --all-targets --locked
-
-  loader-platform:
-    name: Data loader / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -329,12 +33,12 @@ jobs:
           enable-cache: false
 
       - name: Synchronize locked Python environment
-        run: uv sync --frozen --no-cache
+        run: uv sync --locked --no-dev --no-cache
 
-      - name: Set up stable Rust
+      - name: Set up the workspace Rust floor
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
         with:
-          toolchain: stable
+          toolchain: 1.88.0
           cache: false
 
       - name: Export Unix LibTorch library path
@@ -355,8 +59,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # Keep torch-sys's C++17 mode: Clang supports the header extensions
-          # without treating the binding's `module` typedef as C++20 syntax.
           "CXX=clang-cl" | Out-File -FilePath $env:GITHUB_ENV -Append
           "CXXFLAGS=$env:CXXFLAGS /EHsc" | Out-File -FilePath $env:GITHUB_ENV -Append
           # This upstream MSBuild-only option is ignored by cl.exe, not Clang.
@@ -367,94 +69,36 @@ jobs:
           "LIBTORCH_USE_PYTORCH=1" | Out-File -FilePath $env:GITHUB_ENV -Append
           $torchLib | Out-File -FilePath $env:GITHUB_PATH -Append
 
-      - name: Test loader runtime and conditional CUDA pinning
-        run: cargo test -p rusttorch-data --tests --locked
-
-      - name: Test RustTorch runtime on this platform
-        run: cargo test --workspace --all-targets --locked --features rusttorch/vision,rusttorch/audio,rusttorch/text,rusttorch/columnar
-
-      - name: Run loader examples
+      - name: Verify CPU runtime and binding fingerprints
+        shell: python
         run: |
-          cargo run -p rusttorch-data --example loader --locked
-          cargo run -p rusttorch-data --example checkpoint --locked
+          import os, platform, sys, tomllib
+          from pathlib import Path
+          from urllib.parse import unquote
+          import torch
 
-  loader-stress:
-    name: Data loader stress
-    runs-on: ubuntu-latest
-    env:
-      LIBTORCH_USE_PYTORCH: "1"
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
+          ref = "2b3ec34829036a65cd9d1398ea72a0167dc37470"
+          # Release wheels were cut before the tag's final test-only import.
+          assert torch.version.git_version in {"08187d9e0fba026dc8217405802ab5381dc88d90", ref}, torch.version.git_version
+          assert torch.__version__.split("+")[0] == "2.14.0", torch.__version__
+          assert "LIBTORCH_BYPASS_VERSION_CHECK" not in os.environ
+          suffix = {
+              "linux": "-cp314-cp314-manylinux_2_28_x86_64.whl",
+              "darwin": "-cp314-cp314-macosx_14_0_arm64.whl",
+              "win32": "-cp314-cp314-win_amd64.whl",
+          }[sys.platform]
+          lock = tomllib.loads(Path("uv.lock").read_text(encoding="utf-8"))
+          wheel, = [w for p in lock["package"] if p["name"] == "torch" and p["version"] == torch.__version__
+                    for w in p["wheels"] if w["url"].endswith(suffix)]
+          bindings = tomllib.loads(Path("Cargo.lock").read_text(encoding="utf-8"))["package"]
+          rev = "b75d71aa421ab38983184bd71cd1708dac669fc8"
+          for name in ["tch", "torch-sys"]:
+              package, = [p for p in bindings if p["name"] == name]
+              assert package["version"] == "0.27.0" and package["source"].endswith("#" + rev), package
+          print(f"{platform.platform()} / Python {platform.python_version()}")
+          print(f"Runtime {torch.__version__} ({torch.version.git_version}); candidate binding {rev}")
+          print(unquote(wheel["url"].split("/")[-1]), wheel["hash"])
+          print(torch.__config__.show())
 
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.14"
-
-      - name: Set up UV
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          version: "0.12.3"
-          enable-cache: false
-
-      - name: Synchronize locked Python environment
-        run: uv sync --frozen --no-cache
-
-      - name: Set up stable Rust
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
-        with:
-          toolchain: stable
-          cache: false
-
-      - name: Export LibTorch library path
-        run: |
-          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
-          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
-          torch_lib="$(.venv/bin/python -c 'from pathlib import Path; import torch; print(Path(torch.__file__).resolve().parent / "lib")')"
-          echo "LD_LIBRARY_PATH=${torch_lib}" >> "$GITHUB_ENV"
-
-      - name: Repeat deterministic lifecycle and checkpoint tests
-        run: |
-          for pass in 1 2 3; do
-            cargo test -p rusttorch-data --locked --test worker_lifecycle --test checkpoint_map --test checkpoint_stream
-          done
-
-  required:
-    name: required
-    if: always()
-    needs:
-      - dco
-      - dependency-review
-      - quality
-      - msrv
-      - cli
-      - loader-platform
-      - loader-stress
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require every applicable check
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          DCO_RESULT: ${{ needs.dco.result }}
-          DEPENDENCY_REVIEW_RESULT: ${{ needs.dependency-review.result }}
-          QUALITY_RESULT: ${{ needs.quality.result }}
-          MSRV_RESULT: ${{ needs.msrv.result }}
-          CLI_RESULT: ${{ needs.cli.result }}
-          LOADER_PLATFORM_RESULT: ${{ needs.loader-platform.result }}
-          LOADER_STRESS_RESULT: ${{ needs.loader-stress.result }}
-        run: |
-          test "$QUALITY_RESULT" = "success"
-          test "$MSRV_RESULT" = "success"
-          test "$CLI_RESULT" = "success"
-          test "$LOADER_PLATFORM_RESULT" = "success"
-          test "$LOADER_STRESS_RESULT" = "success"
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            test "$DCO_RESULT" = "success"
-            test "$DEPENDENCY_REVIEW_RESULT" = "success"
-          else
-            test "$DCO_RESULT" = "skipped"
-            test "$DEPENDENCY_REVIEW_RESULT" = "skipped"
-          fi
+      - name: Train, save, restore and compare the next CPU update
+        run: cargo run --locked -p rusttorch --no-default-features --example training_checkpoint
