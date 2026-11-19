@@ -80,10 +80,12 @@ print(json.dumps(dict(wheel_version=torch.__version__, git_commit=torch.version.
         tools.verify_source_checkout(source, reference)
     inventory = dict(format_version=1, pytorch_version=runtime["version"], pytorch_commit=runtime["commit"],
                      scope=["torch"], symbols=sorted(symbols, key=lambda item: item["id"]), runtime_build=fingerprint)
-    errors = tools.validate_inventory(inventory, reference)
-    if errors:
-        raise ValueError("; ".join(errors))
-    return tools.render_inventory(inventory)
+    return render_wheel_census(inventory)
+
+
+def render_wheel_census(inventory):
+    tools = census_tools()
+    return tools.render_inventory(inventory, wheel_reference(tools))
 
 
 def semantic_delta(baseline, candidate, schemas):
