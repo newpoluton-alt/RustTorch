@@ -34,9 +34,14 @@ The initial audit tasks below are directly executable. Later API designs depend
 on their findings; this document does not invent native interfaces that have not
 been shown to exist or be safe.
 
-This planning change does not upgrade dependencies, change compatibility status,
-publish packages or implement the work packages. The old eight milestones remain
-historical delivery evidence. Tracking issue [#27](https://github.com/newpoluton-alt/RustTorch/issues/27) records program ownership and the reproduced baseline.
+The eight earlier milestones document the releases through 0.4.0. Tracking issue [#27](https://github.com/newpoluton-alt/RustTorch/issues/27) records program ownership and the reproduced baseline.
+
+## Implementation record, November 2026
+
+- W1 A/B and W14 E have implementation and local test evidence. Use the [shipping census guide](../../api-census.md#find-a-binding-and-run-its-behavior-cases) for exact binding routes, reproducible gaps, and how to run each device case.
+- W1 C produced a [migration decision](../../pytorch-2.14-migration.md). The available wheels identify a different source commit from the release tag. RustTorch continues shipping the 2.13 reference.
+- Task D has measured native results for CPU generator state, forward AD, callback execution, a compiled package and Gloo. The [native report and four follow-on packets](../../native-runtime-capabilities.md) identify the next production ownership, lifetime and platform tests. Rust exposes scoped gradient recording with unwind restoration.
+- W5's first independent layer uses the traced RMS normalization operator for token features. [Issue #28](https://github.com/newpoluton-alt/RustTorch/issues/28) defines its use cases, exact public surface and tests. W2–W14 retain their remaining family and certification gates.
 
 ## Delivery order and dependencies
 
@@ -155,21 +160,21 @@ is necessary for these checks. They validate records, not full functionality.
 **Interface:** Consumes exact shipping 2.13 census IDs; produces the two record types above
 and deterministic validation, with no compatibility-status promotion.
 
-- [ ] First write rejection fixtures for duplicate/missing IDs, unknown
+- [x] First write rejection fixtures for duplicate/missing IDs, unknown
   ledger targets, an invented Rust symbol, claimed evidence without a test,
   and a hardware skip presented as a pass. An empty binding map must fail
   completeness; it must not be silently populated as supported.
-- [ ] Run the relevant policy tests and confirm these new cases fail for the
+- [x] Run the relevant policy tests and confirm these new cases fail for the
   intended validation reason before implementing the schema checks.
-- [ ] Trace exact schemas through `tch` generation/native wrappers. Classify
+- [x] Trace exact schemas through `tch` generation/native wrappers. Classify
   every 2.13 baseline identity, using `unresolved` with a reason when not established.
   Compile representative calls; do not infer bindings from name similarity.
-- [ ] Enumerate capabilities outside ordinary object IDs: dtype/device values,
+- [x] Enumerate capabilities outside ordinary object IDs: dtype/device values,
   layouts, memory formats, generators, guards, storage and platform tags. Add
   explicit records with pinned sources and no invented completion results.
-- [ ] Implement only the validation needed by those records in the existing
+- [x] Implement only the validation needed by those records in the existing
   scripts. Re-run negative fixtures, offline validation and deterministic output.
-- [ ] Generate a gap report grouped by missing binding, missing frontend,
+- [x] Generate a gap report grouped by missing binding, missing frontend,
   behavior failure, untested hardware and Python dependency; sign off the commit.
 
 ```sh
@@ -201,11 +206,11 @@ delta and a tested runtime/binding combination, or explicit blocking evidence.
 - [ ] Reconcile Task B's binding and behavior records against the 2.14 delta.
   G0 for the proposed target requires complete target dispositions, including
   removed/changed entries; a complete 2.13 map alone cannot satisfy it.
-- [ ] Verify the candidate binding's required LibTorch version and minimum
+- [x] Verify the candidate binding's required LibTorch version and minimum
   Rust/C++ toolchain. Do not use a version-check bypass as the solution.
 - [ ] Run tensor creation/backward, a model update, save/load and native linkage
   on Linux, macOS and Windows. Record failed/unsupported configurations.
-- [ ] Decide from evidence: upgrade all related pins atomically, upstream the
+- [x] Decide from evidence: upgrade all related pins atomically, upstream the
   missing binding patch, or keep the upgrade blocked while 2.13 work continues.
 - [ ] For an upgrade, run the full contribution/parity/doc/package gates and
   generate the inventory twice with identical bytes before sign-off.
@@ -221,13 +226,13 @@ create `docs/native-runtime-capabilities.md` with probe results.
 **Interface:** Consumes W1 routes; produces a selected implementation route and
 lifetime/error/build contract for each probe.
 
-- [ ] Probe meta/XPU device representation and a currently unrepresentable
+- [x] Probe meta/XPU device representation and a currently unrepresentable
   scalar type; reject an unsupported runtime without invalid native enum casts.
-- [ ] Probe shared tensor ownership, native RNG state round trip, stream/guard
+- [x] Probe shared tensor ownership, native RNG state round trip, stream/guard
   restoration, one native forward-AD operation and one custom backward callback.
-- [ ] Probe loading an upstream compiled AOT package and creating a two-process
+- [x] Probe loading an upstream compiled AOT package and creating a two-process
   native process group with one collective. Check actual packaged headers/symbols.
-- [ ] Compare existing `tch`, an upstream `tch` patch, limited stable ABI and
+- [x] Compare existing `tch`, an upstream `tch` patch, limited stable ABI and
   pinned C++ bridge routes. Measure build/package cost; review licenses/unsafe
   invariants. Add a new crate only if the selected route requires it.
 - [ ] Test exceptions/panics at callback boundaries, use after owner drop,
@@ -245,12 +250,12 @@ execution behavior must pass, and inaccessible hardware remains untested.
 **Interface:** Consumes current ledger/code/evidence; produces consistent
 descriptions of the existing 0.4.0 scopes, without changing scope.
 
-- [ ] Replace the stale blanket negatives about PT2/TorchScript and model-state
+- [x] Replace the stale blanket negatives about PT2/TorchScript and model-state
   formats with the exact scoped deployment/checkpoint behavior.
-- [ ] Search for other outdated support/non-support statements and compare
+- [x] Search for other outdated support/non-support statements and compare
   them with the ledger and actual API. Keep upstream references in compatibility
   material and Rust use cases at user-facing entry points.
-- [ ] Check local links and build affected rustdoc with warnings denied. Run
+- [x] Check local links and build affected rustdoc with warnings denied. Run
   any example changed by the correction, then sign off the documentation commit.
 
 ## W2 — runtime, devices, dispatcher and extension foundation

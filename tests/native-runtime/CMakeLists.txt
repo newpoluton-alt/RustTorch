@@ -36,6 +36,8 @@ if(GLOO_INCLUDE_DIR)
   target_compile_definitions(gloo_probe PRIVATE USE_C10D_GLOO)
   target_include_directories(gloo_probe PRIVATE "${GLOO_INCLUDE_DIR}")
   target_link_libraries(gloo_probe PRIVATE ${TORCH_LIBRARIES})
-  add_test(NAME native_gloo COMMAND "${Python3_EXECUTABLE}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/run_two_ranks.py" "$<TARGET_FILE:gloo_probe>")
+  foreach(scenario IN ITEMS sum rank_loss)
+    add_test(NAME native_gloo_${scenario} COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/run_two_ranks.py" "$<TARGET_FILE:gloo_probe>" ${scenario})
+  endforeach()
 endif()

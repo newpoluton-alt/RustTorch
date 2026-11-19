@@ -160,3 +160,56 @@ inventory ID -> ledger disposition -> scoped design/plan -> failing test
 One coherent change may cover several IDs; every included identity remains
 visible and mapped. Broader domain repositories require their own separately
 pinned manifests and are outside this `torch` census.
+
+## Find a binding and run its behavior cases
+
+To implement an operator, look up its exact overload in the
+[dispatcher trace](../compat/pytorch_tch_dispatch.tsv). For example, the
+`aten:aten::rms_norm` row identifies `tch::Tensor::f_rms_norm`, its C wrapper
+and its native dispatcher entry. Check the accepted arguments before writing a
+frontend. Some generated wrappers supply fixed defaults for native parameters.
+The [binding manifest](../compat/pytorch_bindings.toml) also records hand-audited
+Rust frontends, non-object capabilities and the reason for each unresolved group.
+The source commits, compiler and trace generation method are recorded there.
+
+For a reproducible list of open work, run the offline checker from the repository
+root. Create the output directory on a fresh checkout. The JSON lists exact identities or case/device pairs. Groups can overlap.
+
+```sh
+mkdir -p target
+.venv/bin/python scripts/check-compatibility.py --gaps > target/parity-gaps.json
+.venv/bin/python -c 'import json; print({k: len(v) for k, v in json.load(open("target/parity-gaps.json")).items()})'
+```
+
+| JSON field | What an entry needs |
+|---|---|
+| `missing_binding` | An audited route. Includes unresolved census identities and separate `capability:` entries. |
+| `missing_frontend` | A Rust frontend for a documented Python identity whose ledger disposition is planned and has no recorded Rust symbol. |
+| `behavior_failure` | A fix or diagnosis for a measured discrepancy in a specific case on a specific device. |
+| `untested_hardware` | A measured result for the named case and device. |
+| `python_dependency` | A Python-only ledger disposition or an explicit Python interoperability route/profile. |
+| `without_behavior_case` | An exact identity with no case in the new behavior matrix. Existing family tests are cataloged separately in the canonical ledger. |
+
+The initial [behavior matrix](../compat/pytorch_behavior.toml) exercises repeated
+row selection in forward and backward, and checks what happens when an index
+tensor has a floating-point dtype. Each case names its Rust and Python tests,
+input options, observations, tolerances, documentation and device obligations.
+Run the pair against the installed runtime to capture the output, metadata and
+device on each available backend. The full Python parity gate also runs it.
+
+```sh
+. scripts/dev-env.sh
+python scripts/pytorch_behavior.py --run --output target/pytorch-behavior.json
+```
+
+Review new observations before referencing them in the matrix. The offline
+checker compares the paired results and verifies their test, implementation-source and environment
+fingerprints. A skipped device retains its untested status. To verify the
+dispatcher snapshot itself, use the packaged sources at the exact commits in
+the manifest and run the trace checker with a Clang C++ compiler.
+
+```sh
+. scripts/dev-env.sh
+python scripts/trace-tch-dispatch.py --tch-source /path/to/tch-0.26.0 \
+    --torch-sys-source /path/to/torch-sys-0.26.0 --check
+```
