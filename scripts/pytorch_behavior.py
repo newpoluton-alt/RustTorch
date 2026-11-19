@@ -65,7 +65,8 @@ def compare_observations(case, device, actual, reference):
         return False
     for key, expected in reference["values"].items():
         observed = actual["values"][key]
-        if not isinstance(expected, list) or not isinstance(observed, list) or len(expected) != len(observed):
+        if (not isinstance(expected, list) or not isinstance(observed, list)
+                or len(expected) != case["observe"]["values"][key] or len(observed) != len(expected)):
             return False
         for x, y in zip(observed, expected):
             if not finite_number(x) or not finite_number(y):
@@ -111,10 +112,16 @@ def validate_case(root, case, ids, mapping, commit, validate_evidence):
             except ValueError as error:
                 errors.append(f"{case_id}: implementation source: {error}")
     observe = case["observe"]
-    if (not isinstance(observe, dict) or observe.keys() != {"metadata", "values"}
-            or any(not isinstance(names, list) or not names or not all(nonempty(n) for n in names)
-                   or len(names) != len(set(names)) for names in observe.values())):
-        errors.append(f"{case_id}: observe requires exact metadata and value field names")
+    if not isinstance(observe, dict) or observe.keys() != {"metadata", "values"}:
+        errors.append(f"{case_id}: observe requires metadata and values")
+    else:
+        names, counts = observe["metadata"], observe["values"]
+        if (not isinstance(names, list) or not names or not all(nonempty(n) for n in names)
+                or len(names) != len(set(names))):
+            errors.append(f"{case_id}: observe requires unique metadata field names")
+        if (not isinstance(counts, dict) or not counts or not all(nonempty(n) for n in counts)
+                or any(type(n) is not int or n < 0 for n in counts.values())):
+            errors.append(f"{case_id}: observe requires the element count for each value field")
     tolerance = case["tolerance"]
     if (not isinstance(tolerance, dict) or tolerance.keys() != {"rtol", "atol"}
             or any(not finite_number(v) or v < 0 for v in tolerance.values())):

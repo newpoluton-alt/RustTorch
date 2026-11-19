@@ -574,7 +574,7 @@ layout = "strided"
 options = "With bias"
 implementation_sources = ["Cargo.toml"]
 expected = "Affine transform"
-observe = {{ metadata = ["shape"], values = ["output"] }}
+observe = {{ metadata = ["shape"], values = {{ output = 1 }} }}
 tolerance = {{ rtol = 0.0, atol = 0.0 }}
 rust_test = "tests/eager.rs::linear_bias_and_no_bias_have_expected_shapes_and_values"
 reference_test = "tests/ref.py::test_linear"

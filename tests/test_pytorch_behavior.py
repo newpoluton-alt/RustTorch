@@ -142,6 +142,14 @@ class BehaviorTests(unittest.TestCase):
         path.write_text(path.read_text() + "\n// implementation changed\n")
         self.assertIn("changed case", self.errors())
 
+    def test_rejects_matching_but_truncated_values(self):
+        receipt = json.loads(self.receipt.read_text())
+        cell = receipt["cases"][self.case["id"]]["cpu"]
+        for side in ["rust", "reference"]:
+            cell[side]["values"]["gradient"] = []
+        self.receipt.write_text(json.dumps(receipt))
+        self.assertIn("fail", self.errors())
+
     def test_does_not_reuse_receipt_after_test_changed(self):
         source = self.root / self.case["reference_test"].split("::")[0]
         source.write_text(source.read_text() + "\n# changed\n")

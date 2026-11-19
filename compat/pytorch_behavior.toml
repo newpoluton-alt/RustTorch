@@ -11,7 +11,7 @@ dtype = "float32"
 layout = "strided"
 options = "Select rows [2, 0, 2] from a contiguous 3 by 2 leaf with int64 indices, then sum the squared outputs and backpropagate."
 expected = "The output contains the selected rows in order. The gradient accumulates both selections of row 2; row 1 receives zero."
-observe = { metadata = ["shape", "stride", "gradient_shape", "gradient_stride"], values = ["selected", "gradient"] }
+observe = { metadata = ["shape", "stride", "gradient_shape", "gradient_stride"], values = { selected = 6, gradient = 6 } }
 tolerance = { rtol = 0.0, atol = 0.0 }
 implementation_sources = ["src/tensor.rs"]
 rust_test = "tests/behavior_index_select.rs::repeated_rows_backward"
@@ -28,7 +28,7 @@ dtype = "float32"
 layout = "strided"
 options = "Select a row from a two-element vector with float32 indices."
 expected = "The call returns an index dtype error and leaves both input values intact."
-observe = { metadata = ["error", "shape"], values = ["input_after_error"] }
+observe = { metadata = ["error", "shape"], values = { input_after_error = 2 } }
 tolerance = { rtol = 0.0, atol = 0.0 }
 implementation_sources = ["src/tensor.rs"]
 rust_test = "tests/behavior_index_select.rs::rejects_float_indices"
