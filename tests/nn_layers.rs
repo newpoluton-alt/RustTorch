@@ -213,24 +213,36 @@ fn rms_norm_preserves_native_epsilon_shape_and_registered_scale() -> Result<()> 
 fn rms_norm_checks_invalid_inputs_and_accepts_an_empty_feature_axis() -> Result<()> {
     use rusttorch::nn::RmsNormConfig;
 
-    let mut store = VarStore::new(Device::Cpu);
+    let store = VarStore::new(Device::Cpu);
     let x = Tensor::zeros([2, 3], (Kind::Float, Device::Cpu));
+    assert!(RmsNormConfig::new([-1]).build(&store.root()).is_err());
+    assert!(store.variables().is_empty());
+    let scalar = RmsNormConfig::new([]).build(&(store.root() / "scalar"))?;
+    assert!(store.variables()["scalar.weight"].size().is_empty());
+    assert_eq!(scalar.weight().unwrap().double_value(&[]), 1.);
+    assert!(scalar.forward(&x).is_err());
     for shape in [vec![], vec![-1]] {
-        assert!(
-            RmsNormConfig::new(shape.clone())
-                .build(&store.root())
-                .is_err()
-        );
+        let plain = RmsNormConfig::new(shape.clone())
+            .elementwise_affine(false)
+            .build(&(store.root() / "plain"))?;
+        assert!(plain.weight().is_none());
+        assert!(plain.forward(&x).is_err());
         assert!(functional::rms_norm(&x, &shape, None, None).is_err());
     }
+    assert_eq!(store.variables().len(), 1);
     assert!(functional::rms_norm(&x, &[2], None, None).is_err());
     assert!(functional::rms_norm(&x, &[3], Some(&x), None).is_err());
     assert!(functional::rms_norm(&Tensor::new(), &[3], None, None).is_err());
     assert!(functional::rms_norm(&x, &[3], Some(&Tensor::new()), None).is_err());
     assert!(functional::rms_norm(&x.to_kind(Kind::Int64), &[3], None, None).is_err());
-    store.set_kind(Kind::Int64);
-    assert!(RmsNormConfig::new([3]).build(&store.root()).is_err());
-    assert!(store.variables().is_empty());
+    let mut integer_store = VarStore::new(Device::Cpu);
+    integer_store.set_kind(Kind::Int64);
+    assert!(
+        RmsNormConfig::new([3])
+            .build(&integer_store.root())
+            .is_err()
+    );
+    assert!(integer_store.variables().is_empty());
 
     let empty = Tensor::zeros([2, 0], (Kind::Float, Device::Cpu));
     assert_eq!(

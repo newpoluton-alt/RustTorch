@@ -92,6 +92,15 @@ def layer_examples() -> dict[str, object]:
         key = "rms_norm_affine" if affine else "rms_norm_plain"
         result[key] = {"initial": initial, **output, "reset": state_data(model)}
 
+    for key, shape, affine in [("rms_norm_empty_affine", (), True), ("rms_norm_negative_plain", (-1,), False)]:
+        model = torch.nn.RMSNorm(shape, elementwise_affine=affine)
+        try:
+            model(torch.ones(2, 3))
+        except RuntimeError:
+            result[key] = {"state": state_data(model), "forward_error": True}
+        else:
+            raise AssertionError("invalid RMSNorm shape accepted during forward")
+
     for sparse in (False, True):
         torch.manual_seed(902)
         model = torch.nn.Embedding(5, 3, padding_idx=-1, scale_grad_by_freq=not sparse, sparse=sparse)

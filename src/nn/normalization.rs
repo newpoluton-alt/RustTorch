@@ -59,16 +59,12 @@ impl RmsNormConfig {
     }
 
     /// Builds the layer and registers `weight` under the supplied model path
-    /// when affine scaling is enabled. Shape dimensions must be nonnegative,
-    /// and the shape list must contain at least one entry.
+    /// when affine scaling is enabled. The scale has exactly the supplied
+    /// shape, so negative extents fail allocation, and an empty shape list
+    /// registers a scalar. A parameter-free layer allocates no state.
+    /// Forward requires a nonempty shape list matching the input suffix.
     /// See the [token training example](Self).
     pub fn build(self, path: &ParameterPath<'_>) -> Result<RmsNorm> {
-        if self.normalized_shape.is_empty() || self.normalized_shape.iter().any(|&d| d < 0) {
-            return Err(invalid(
-                "normalized_shape",
-                "expected one or more nonnegative dimensions",
-            ));
-        }
         let weight = if self.elementwise_affine {
             validate_parameter_kind(path)?;
             Some(path.f_ones("weight", &self.normalized_shape)?)

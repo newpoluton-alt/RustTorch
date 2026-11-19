@@ -258,6 +258,18 @@ fn layer_examples() -> Result<Value> {
         result[key]["reset"] = state_json(&store);
     }
 
+    for (key, shape, affine) in [
+        ("rms_norm_empty_affine", vec![], true),
+        ("rms_norm_negative_plain", vec![-1], false),
+    ] {
+        let store = VarStore::new(Device::Cpu);
+        let layer = nn::RmsNormConfig::new(shape)
+            .elementwise_affine(affine)
+            .build(&store.root())?;
+        let input = Tensor::ones([2, 3], (Kind::Float, Device::Cpu));
+        result[key] = json!({"state": state_json(&store), "forward_error": nn::Module::forward(&layer, &input).is_err()});
+    }
+
     for sparse in [false, true] {
         rusttorch::manual_seed(902);
         let store = VarStore::new(Device::Cpu);
