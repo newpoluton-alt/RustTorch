@@ -43,7 +43,7 @@ class BehaviorTests(unittest.TestCase):
         self.document["observations"] = [receipt_path]
         self.receipt = self.root / receipt_path
         paths = [
-            "Cargo.lock", receipt_path, self.case["documentation"],
+            "src/tensor.rs", "Cargo.lock", receipt_path, self.case["documentation"],
             self.case["rust_test"].split("::")[0], self.case["reference_test"].split("::")[0],
         ]
         for path in paths:
@@ -75,6 +75,12 @@ class BehaviorTests(unittest.TestCase):
         self.assertIn('ledger', self.errors())
         self.case['inventory_id'] = 'unknown'
         self.assertIn('inventory', self.errors())
+
+    def test_device_obligations_cannot_be_dropped(self):
+        self.document["case"] = [self.case]
+        self.document["observations"] = []
+        self.case["devices"] = {"cpu": "untested"}
+        self.assertIn("device matrix", self.errors())
 
     def test_requires_runnable_evidence(self):
         self.case['rust_test'] += '_absent'
@@ -128,6 +134,19 @@ class BehaviorTests(unittest.TestCase):
         cell = receipt["cases"][self.case["id"]]["cpu"]
         for side in ["rust", "reference"]:
             del cell[side]["values"]["gradient"]
+        self.receipt.write_text(json.dumps(receipt))
+        self.assertIn("fail", self.errors())
+
+    def test_changed_production_source_invalidates_previous_pass(self):
+        path = self.root / "src/tensor.rs"
+        path.write_text(path.read_text() + "\n// implementation changed\n")
+        self.assertIn("changed case", self.errors())
+
+    def test_rejects_matching_but_truncated_values(self):
+        receipt = json.loads(self.receipt.read_text())
+        cell = receipt["cases"][self.case["id"]]["cpu"]
+        for side in ["rust", "reference"]:
+            cell[side]["values"]["gradient"] = []
         self.receipt.write_text(json.dumps(receipt))
         self.assertIn("fail", self.errors())
 

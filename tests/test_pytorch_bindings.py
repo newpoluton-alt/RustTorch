@@ -130,7 +130,11 @@ limitations = "No audited native device encoding."
     def test_nonexistent_frontend_symbol_fails_even_with_a_valid_named_test(self):
         test_dir = self.root / "tests"
         test_dir.mkdir()
-        (test_dir / "witness.rs").write_text("#[test]\nfn works() {\n}\n", encoding="utf-8")
+        (test_dir / "witness.rs").write_text(
+            '#[test]\nfn works() {\n    /* nested /* comment */ rusttorch::nn::invented */\n'
+            '    // rusttorch::nn::invented\n    let _ = r#"a "rusttorch::nn::invented" b"#;\n}\n',
+            encoding="utf-8",
+        )
         self.ledger["api"][0]["rust_symbols"] = ["rusttorch::nn::invented"]
         extra = f'''[[binding]]
 id = "{PYTHON}"

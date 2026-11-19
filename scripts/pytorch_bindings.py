@@ -28,6 +28,38 @@ def _source_path(value):
             and PurePosixPath(value).as_posix() == value and value != ".")
 
 
+# Mask Rust comments and literals before linking a compiled test to a path.
+# A path quoted in an assertion message cannot witness name resolution.
+_NONCODE = re.compile(r'//[^\n]*|/\*|(?:br|cr|r)(?P<hash>\#*)"|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])\'', re.S)
+_COMMENT_EDGE = re.compile(r'/\*|\*/')
+
+
+def _rust_code(source):
+    spans = []
+    start = 0
+    while match := _NONCODE.search(source, start):
+        spans.append(source[start:match.start()])
+        end = match.end()
+        if match.group() == "/*":
+            depth = 1
+            for edge in _COMMENT_EDGE.finditer(source, end):
+                depth += 1 if edge.group() == "/*" else -1
+                if not depth:
+                    end = edge.end()
+                    break
+            else:
+                raise ValueError("unterminated block comment in binding witness")
+        elif match["hash"] is not None:
+            closing = '"' + match["hash"]
+            pos = source.find(closing, end)
+            if pos < 0:
+                raise ValueError("unterminated raw string in binding witness")
+            end = pos + len(closing)
+        spans.append(" " + "\n" * source.count("\n", match.start(), end))
+        start = end
+    return "".join(spans) + source[start:]
+
+
 def _witness(root, evidence, symbols):
     """The compiled integration test must use each exact path in its named test."""
     if not isinstance(evidence, str) or evidence.count("::") != 1:
@@ -37,7 +69,7 @@ def _witness(root, evidence, symbols):
         raise ValueError("binding evidence requires a repo-relative Rust integration test")
     if not re.fullmatch(r"[A-Za-z_]\w*", test):
         raise ValueError("binding evidence contains an invalid test name")
-    source = (root / path).read_text(encoding="utf-8")
+    source = _rust_code((root / path).read_text(encoding="utf-8"))
     declaration = r"^#\[test\][ \t]*\n(?:#\[[^\n]*\][ \t]*\n)*fn "
     body = re.search(declaration + re.escape(test) + r"\b(.*?)^\}", source, re.M | re.S)
     if not body:

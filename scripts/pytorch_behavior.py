@@ -21,7 +21,7 @@ DEVICES = {"cpu", "mps", "cuda"}
 STATUSES = {"pass", "fail", "untested", "upstream_inapplicable"}
 CASE_FIELDS = {
     "id", "inventory_id", "ledger", "profile", "dtype", "layout", "options",
-    "expected", "observe", "tolerance", "rust_test", "reference_test", "documentation", "devices",
+    "expected", "observe", "tolerance", "rust_test", "reference_test", "documentation", "devices", "implementation_sources",
 }
 
 
@@ -38,8 +38,9 @@ def fingerprint(root, case):
     # Status and device availability may change between runs of the same case.
     contract = {k: v for k, v in case.items() if k not in {"devices", "upstream_restrictions"}}
     inputs = [json.dumps(contract, sort_keys=True).encode()]
-    for field in ["rust_test", "reference_test"]:
-        path = local_file(root, case[field].split("::")[0])
+    paths = [case[field].split("::")[0] for field in ["rust_test", "reference_test"]]
+    for relative in paths + case["implementation_sources"]:
+        path = local_file(root, relative)
         inputs.append(path.read_bytes().replace(b"\r\n", b"\n"))
     return hashlib.sha256(b"\0".join(inputs)).hexdigest()
 
@@ -64,7 +65,8 @@ def compare_observations(case, device, actual, reference):
         return False
     for key, expected in reference["values"].items():
         observed = actual["values"][key]
-        if not isinstance(expected, list) or not isinstance(observed, list) or len(expected) != len(observed):
+        if (not isinstance(expected, list) or not isinstance(observed, list)
+                or len(expected) != case["observe"]["values"][key] or len(observed) != len(expected)):
             return False
         for x, y in zip(observed, expected):
             if not finite_number(x) or not finite_number(y):
@@ -87,7 +89,7 @@ def validate_case(root, case, ids, mapping, commit, validate_evidence):
     if missing or unknown:
         return [f"{case_id}: missing fields {sorted(missing)}, unknown fields {sorted(unknown)}"]
     errors = []
-    for field in CASE_FIELDS - {"devices", "tolerance", "observe"}:
+    for field in CASE_FIELDS - {"devices", "tolerance", "observe", "implementation_sources"}:
         if not nonempty(case[field]):
             errors.append(f"{case_id}: {field} requires a nonempty string")
     if errors:
@@ -100,11 +102,26 @@ def validate_case(root, case, ids, mapping, commit, validate_evidence):
         errors.append(f"{case_id}: ledger does not match inventory disposition")
     if case["profile"] not in {"native", "python_interop"}:
         errors.append(f"{case_id}: unknown execution profile")
+    sources = case["implementation_sources"]
+    if not isinstance(sources, list) or not sources or not all(nonempty(path) for path in sources):
+        errors.append(f"{case_id}: implementation_sources requires repository source files")
+    else:
+        for path in sources:
+            try:
+                local_file(root, path)
+            except ValueError as error:
+                errors.append(f"{case_id}: implementation source: {error}")
     observe = case["observe"]
-    if (not isinstance(observe, dict) or observe.keys() != {"metadata", "values"}
-            or any(not isinstance(names, list) or not names or not all(nonempty(n) for n in names)
-                   or len(names) != len(set(names)) for names in observe.values())):
-        errors.append(f"{case_id}: observe requires exact metadata and value field names")
+    if not isinstance(observe, dict) or observe.keys() != {"metadata", "values"}:
+        errors.append(f"{case_id}: observe requires metadata and values")
+    else:
+        names, counts = observe["metadata"], observe["values"]
+        if (not isinstance(names, list) or not names or not all(nonempty(n) for n in names)
+                or len(names) != len(set(names))):
+            errors.append(f"{case_id}: observe requires unique metadata field names")
+        if (not isinstance(counts, dict) or not counts or not all(nonempty(n) for n in counts)
+                or any(type(n) is not int or n < 0 for n in counts.values())):
+            errors.append(f"{case_id}: observe requires the element count for each value field")
     tolerance = case["tolerance"]
     if (not isinstance(tolerance, dict) or tolerance.keys() != {"rtol", "atol"}
             or any(not finite_number(v) or v < 0 for v in tolerance.values())):
@@ -123,8 +140,8 @@ def validate_case(root, case, ids, mapping, commit, validate_evidence):
     except (OSError, ValueError) as error:
         errors.append(f"{case_id}: documentation: {error}")
     devices = case["devices"]
-    if not isinstance(devices, dict) or not devices or devices.keys() - DEVICES:
-        return [*errors, f"{case_id}: devices must name applicable hardware"]
+    if not isinstance(devices, dict) or devices.keys() != DEVICES:
+        return [*errors, f"{case_id}: device matrix must include cpu, mps and cuda"]
     if any(not isinstance(s, str) or s not in STATUSES for s in devices.values()):
         errors.append(f"{case_id}: unknown device result status")
     inapplicable = {d for d, s in devices.items() if s == "upstream_inapplicable"}
