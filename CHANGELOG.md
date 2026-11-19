@@ -5,6 +5,8 @@ or graph-format stability.
 
 ## Unreleased
 
+- Add `nn::RmsNormConfig` and `nn::functional::rms_norm` for normalizing
+  token features, with optional learned scale and native dtype-dependent epsilon.
 - Restore the calling thread's gradient mode when a `no_grad` closure unwinds,
   including nested inference within a training loop. Use `with_grad` to
   compute an input gradient inside that inference scope.

@@ -475,6 +475,37 @@ pub(crate) fn validate_layer_norm(normalized_shape: &[i64], eps: f64) -> Result<
     Ok(())
 }
 
+/// Scales each group of trailing features by its root mean square.
+///
+/// For each group, computes `input / sqrt(mean(input²) + eps)`, then
+/// multiplies by the optional elementwise weight. Supply a weight tensor
+/// when several model components share a learned scale. Its shape must
+/// equal `normalized_shape` and its device must match the input. Pass
+/// `None` for epsilon to use the native computation dtype's machine epsilon.
+/// An empty shape list or a mismatched suffix returns an error.
+///
+/// ```
+/// use rusttorch::{Tensor, nn::functional::rms_norm};
+///
+/// let tokens = Tensor::from_slice(&[2_f32, -2., 4., 4.]).reshape([1, 2, 2]);
+/// let scale = Tensor::from_slice(&[1_f32, 0.5]);
+/// let features = rms_norm(&tokens, &[2], Some(&scale), Some(0.0))?;
+/// assert_eq!(Vec::<f32>::try_from(features.reshape([-1]))?, [1., -0.5, 1., 0.5]);
+/// # Ok::<(), rusttorch::RustTorchError>(())
+/// ```
+pub fn rms_norm(
+    input: &Tensor,
+    normalized_shape: &[i64],
+    weight: Option<&Tensor>,
+    eps: Option<f64>,
+) -> Result<Tensor> {
+    let device = input_device(input)?;
+    if let Some(weight) = weight {
+        ensure_device("RMS normalization weight", weight, device)?;
+    }
+    Ok(input.f_rms_norm(normalized_shape, weight, eps)?)
+}
+
 /// Looks up integer token IDs in a weight matrix `[vocabulary, vector_width]`.
 ///
 /// The output appends the vector width to the input shape. `padding_idx`

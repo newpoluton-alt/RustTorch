@@ -65,3 +65,10 @@ The corrected [required CI run](https://github.com/newpoluton-alt/RustTorch/acti
 also passes on the affected macOS virtual-M1 runner, including these affine,
 attention and deployment regressions. Linux and Windows runtime lanes pass;
 CUDA checks on hosts without CUDA remain explicit skips.
+
+The Float32 RMSNorm case normalizes noncontiguous token activations over their
+two trailing dimensions. It compares Rust and reference forward values, input
+and scale gradients, strides, and the scale after an in-place reset. CPU and
+MPS passed on macOS arm64 with MPS CPU fallback disabled, at `rtol=1e-5` and
+`atol=1e-6`. CUDA remains untested for this case.
+[Recorded values and environment](../compat/results/rms-norm-macos-arm64.json).

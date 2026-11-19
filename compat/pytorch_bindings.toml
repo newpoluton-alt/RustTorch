@@ -19,7 +19,7 @@ ids_sha256 = "f68040bebb99b663214da363d6cbceececb2722979d8275cc12a05d649ab5021"
 reason = "The frozen initial audit found no unique directly compiled dispatcher call agreeing with the declaration, header schema and Rust wrapper for these IDs. Indirect calls and handwritten bindings still need review."
 
 [unresolved.python]
-ids_sha256 = "d9f4d9a7c3c78dc9120c2e8611d9c7bfd9bf8dcd5803116cc5b6acade45a56db"
+ids_sha256 = "5d4e213311906ffbcd1c6391f9354e82a872aaf46c5cc42e5f6deff418b21a12"
 reason = "The Python frontend still needs an exact Rust entry point and contract audit, including default options and errors. Its family ledger row is available through pytorch_inventory_map.toml."
 
 [[binding]]
@@ -84,6 +84,78 @@ source = "src/tensor.rs"
 source_commit = "b7954ba40a0d09cbf03af1ce678b87f2c5a81fce"
 evidence = "tests/behavior_index_select.rs::repeated_rows_backward"
 limitations = "Selects rows on axis zero using a one-dimensional Int64 index. Repeated rows accumulate gradients."
+
+[[binding]]
+id = "python:torch.nn.RMSNorm"
+route = "rust"
+rust_symbol = "rusttorch::nn::RmsNorm"
+source = "src/nn/normalization.rs"
+source_commit = "09886d4676e3847da83398560ddda499491667c8"
+evidence = "tests/behavior_rms_norm.rs::trainable_noncontiguous_token_features"
+limitations = "The typed layer operates on supplied tensors and keeps optional scale under its model path."
+
+[[binding]]
+id = "python:torch.nn.RMSNorm.forward"
+route = "rust"
+rust_symbol = "rusttorch::nn::RmsNorm::forward"
+source = "src/nn/normalization.rs"
+source_commit = "09886d4676e3847da83398560ddda499491667c8"
+evidence = "tests/behavior_rms_norm.rs::trainable_noncontiguous_token_features"
+limitations = "The typed layer operates on supplied tensors and keeps optional scale under its model path."
+
+[[binding]]
+id = "python:torch.nn.RMSNorm.reset_parameters"
+route = "rust"
+rust_symbol = "rusttorch::nn::RmsNorm::reset_parameters"
+source = "src/nn/normalization.rs"
+source_commit = "09886d4676e3847da83398560ddda499491667c8"
+evidence = "tests/behavior_rms_norm.rs::trainable_noncontiguous_token_features"
+limitations = "The typed layer operates on supplied tensors and keeps optional scale under its model path."
+
+[[binding]]
+id = "python:torch.nn.functional.rms_norm"
+route = "rust"
+rust_symbol = "rusttorch::nn::functional::rms_norm"
+source = "src/nn/functional.rs"
+source_commit = "4da484c43f04dfb5cac440834f50eb54b81efc6b"
+evidence = "tests/behavior_rms_norm.rs::trainable_noncontiguous_token_features"
+limitations = "The Rust function passes the trailing shape, optional scale and optional epsilon to the native operator."
+
+[[binding]]
+id = "python:torch.nn.modules.normalization.RMSNorm"
+route = "rust"
+rust_symbol = "rusttorch::nn::RmsNorm"
+source = "src/nn/normalization.rs"
+source_commit = "09886d4676e3847da83398560ddda499491667c8"
+evidence = "tests/behavior_rms_norm.rs::trainable_noncontiguous_token_features"
+limitations = "The typed layer operates on supplied tensors and keeps optional scale under its model path."
+
+[[binding]]
+id = "python:torch.nn.modules.normalization.RMSNorm.forward"
+route = "rust"
+rust_symbol = "rusttorch::nn::RmsNorm::forward"
+source = "src/nn/normalization.rs"
+source_commit = "09886d4676e3847da83398560ddda499491667c8"
+evidence = "tests/behavior_rms_norm.rs::trainable_noncontiguous_token_features"
+limitations = "The typed layer operates on supplied tensors and keeps optional scale under its model path."
+
+[[binding]]
+id = "python:torch.nn.modules.normalization.RMSNorm.reset_parameters"
+route = "rust"
+rust_symbol = "rusttorch::nn::RmsNorm::reset_parameters"
+source = "src/nn/normalization.rs"
+source_commit = "09886d4676e3847da83398560ddda499491667c8"
+evidence = "tests/behavior_rms_norm.rs::trainable_noncontiguous_token_features"
+limitations = "The typed layer operates on supplied tensors and keeps optional scale under its model path."
+
+[[binding]]
+id = "python:torch.rms_norm"
+route = "rust"
+rust_symbol = "rusttorch::nn::functional::rms_norm"
+source = "src/nn/functional.rs"
+source_commit = "4da484c43f04dfb5cac440834f50eb54b81efc6b"
+evidence = "tests/behavior_rms_norm.rs::trainable_noncontiguous_token_features"
+limitations = "The Rust function passes the trailing shape, optional scale and optional epsilon to the native operator."
 
 [[capability]]
 family = "dtype"

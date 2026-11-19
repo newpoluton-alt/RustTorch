@@ -12,6 +12,7 @@
 //! | Upsampling | [`ConvTransposeConfig`] |
 //! | Time series | [`RnnConfig`], [`Rnn`], [`Gru`], [`Lstm`] |
 //! | Token relationships | [`MultiheadAttentionConfig`], [`AttentionMask`] |
+//! | Scale token features by root mean square | [`RmsNormConfig`], [`functional::rms_norm`] |
 //! | Sequence-to-sequence learning | [`TransformerConfig`], [`TransformerMasks`] |
 //! | Small-batch normalization | [`GroupNormConfig`], [`InstanceNormConfig`] |
 //!

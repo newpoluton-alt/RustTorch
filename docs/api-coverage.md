@@ -745,6 +745,17 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **Evidence:** [`tests/nn_layers.rs::layer_norm_normalizes_trailing_features_and_optional_affine_parameters`](../tests/nn_layers.rs), [`tests/nn_layers.rs::sequential_builds_image_and_token_models_with_registered_parameters`](../tests/nn_layers.rs), [`tests/python_parity.rs::bidirectional_python_parity`](../tests/python_parity.rs), [`tests/nn_layers.rs::invalid_parameter_dtype_returns_errors_without_poisoning_the_store`](../tests/nn_layers.rs), [`tests/nn_layers.rs::undefined_tensors_are_rejected_without_metadata_panics`](../tests/nn_layers.rs)
 - **Notes:** CPU evidence covers the tested shapes and affine variants. Zero-sized normalized dimensions are rejected; the full dtype/backend matrix is not claimed.
 
+### `nn.normalization.rms_norm`
+
+- **PyTorch:** `torch.nn.RMSNorm`, `torch.nn.RMSNorm.forward`, `torch.nn.RMSNorm.reset_parameters`, `torch.nn.modules.normalization.RMSNorm`, `torch.nn.modules.normalization.RMSNorm.forward`, `torch.nn.modules.normalization.RMSNorm.reset_parameters`, `torch.nn.functional.rms_norm`, `torch.rms_norm`, `aten:aten::rms_norm`
+- **RustTorch:** `rusttorch::nn::RmsNormConfig`, `rusttorch::nn::RmsNorm`, `rusttorch::nn::RmsNorm::forward`, `rusttorch::nn::RmsNorm::reset_parameters`, `rusttorch::nn::functional::rms_norm`
+- **Implementation:** RustTorch frontend backed by LibTorch
+- **Pinned inventory:** 9 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** CPU dense trailing-feature RMS normalization via the native rms\_norm operator. The layer registers an optional per-element weight initialized to one and resets it in place. The functional form accepts caller-owned weights and passes optional epsilon to LibTorch. Float32 paired module tests compare noncontiguous multidimensional inputs, outputs, input and weight gradients, initial/reset state, native default epsilon and explicit epsilon. A Float64 scale and near-zero input exercise the native Float64 default. One Float32 strided CPU and MPS case compares module and functional outputs, input/weight gradients, strides and in-place reset.
+- **Pinned source:** [`torch/nn/modules/normalization.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/modules/normalization.py)
+- **Evidence:** [`tests/behavior_rms_norm.rs::trainable_noncontiguous_token_features`](../tests/behavior_rms_norm.rs), [`tests/nn_layers.rs::rms_norm_preserves_native_epsilon_shape_and_registered_scale`](../tests/nn_layers.rs), [`tests/nn_layers.rs::rms_norm_checks_invalid_inputs_and_accepts_an_empty_feature_axis`](../tests/nn_layers.rs), [`tests/python_parity.rs::bidirectional_python_parity`](../tests/python_parity.rs)
+- **Notes:** Pinned v2.13.0 torch/nn/functional.py delegates to torch.rms\_norm. The Rust functional call dispatches through tch::Tensor::f\_rms\_norm. An empty shape registers a scalar scale. A negative extent fails affine construction, while a parameter-free configuration defers shape checking to forward. Tests cover construction state, forward errors, undefined tensors, a zero-length feature axis and disabled affine state. Python module representation, other accelerator combinations, mixed-precision and complex execution remain open.
+
 ### `nn.pooling`
 
 - **PyTorch:** `torch.nn.MaxPool1d`, `torch.nn.MaxPool2d`, `torch.nn.MaxPool3d`, `torch.nn.AvgPool1d`, `torch.nn.AvgPool2d`, `torch.nn.AvgPool3d`, `torch.nn.AdaptiveMaxPool1d`, `torch.nn.AdaptiveMaxPool2d`, `torch.nn.AdaptiveMaxPool3d`, `torch.nn.AdaptiveAvgPool1d`, `torch.nn.AdaptiveAvgPool2d`, `torch.nn.AdaptiveAvgPool3d`, `torch.nn.modules.pooling.AdaptiveAvgPool1d`, `torch.nn.modules.pooling.AdaptiveAvgPool2d`, `torch.nn.modules.pooling.AdaptiveAvgPool3d`, `torch.nn.modules.pooling.AdaptiveMaxPool1d`, `torch.nn.modules.pooling.AdaptiveMaxPool2d`, `torch.nn.modules.pooling.AdaptiveMaxPool3d`, `torch.nn.modules.pooling.AvgPool1d`, `torch.nn.modules.pooling.AvgPool2d`, `torch.nn.modules.pooling.AvgPool3d`, `torch.nn.modules.pooling.MaxPool1d`, `torch.nn.modules.pooling.MaxPool2d`, `torch.nn.modules.pooling.MaxPool3d`
@@ -1148,7 +1159,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `ATen canonical operators schemas`
 - **RustTorch:** —
 - **Implementation:** Not implemented
-- **Pinned inventory:** 1912 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Pinned inventory:** 1911 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Canonical public-name ATen operators schemas mapped here are binding candidates awaiting exact Rust binding and executable compatibility evidence, including declared generated functional/out variants.
 - **Pinned source:** [`aten/src/ATen/native/native_functions.yaml`](https://github.com/pytorch/pytorch/blob/cf30153/aten/src/ATen/native/native_functions.yaml)
 - **Evidence:** —
@@ -1302,7 +1313,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.nn`
 - **RustTorch:** —
 - **Implementation:** Not implemented
-- **Pinned inventory:** 1179 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Pinned inventory:** 1172 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Remaining documented torch.nn inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
 - **Pinned source:** [`torch/nn/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/nn/__init__.py)
 - **Evidence:** —
@@ -1357,7 +1368,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch`
 - **RustTorch:** —
 - **Implementation:** Not implemented
-- **Pinned inventory:** 1239 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Pinned inventory:** 1238 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Remaining documented torch inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
 - **Pinned source:** [`torch/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/__init__.py)
 - **Evidence:** —

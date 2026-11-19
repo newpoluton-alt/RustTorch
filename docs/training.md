@@ -16,6 +16,7 @@ store so it can update every registered parameter.
 | Volumes | `Conv3d` | `[batch, channels, depth, height, width]` |
 | Token IDs or categories | `Embedding` | Integer IDs → `[..., embedding_dim]` |
 | Normalize feature vectors | `LayerNorm` | Normalize the configured trailing dimensions |
+| Set the scale of each token | `RmsNorm` | Normalize the final feature axes by root mean square |
 | Normalize spatial features | Batch/InstanceNorm1d/2d/3d, GroupNorm | Channel axis after the batch axis |
 | Reduce or expand spatial resolution | Max/Avg/Adaptive pools, ConvTranspose1d/2d/3d | One, two or three spatial axes |
 | Learn relationships between tokens | MultiheadAttention, TransformerEncoder/Decoder | Sequence and batch layouts are configurable |
@@ -25,6 +26,36 @@ dilation, groups, and bias. Embedding padding IDs can reserve a row that does
 not receive gradients. Layer normalization can learn scale and bias, or use
 only input statistics. See the [API reference](https://docs.rs/rusttorch/latest/rusttorch/nn/)
 for each configuration's defaults, shape requirements, and examples.
+
+## Normalize token embeddings by root mean square
+
+Given activations shaped `[batch, tokens, features]`, an RMS normalization
+layer divides each token vector by the square root of its mean squared value
+plus epsilon. A learned scale multiplies each feature afterward. Register the
+layer at a named path so its scale participates in optimizer updates and model
+checkpoints. RMS normalization uses the same calculation during evaluation.
+
+```rust
+use rusttorch::{Device, Kind, Result, Tensor, nn::{Module, RmsNormConfig, VarStore}};
+
+fn main() -> Result<()> {
+    let store = VarStore::new(Device::Cpu);
+    let norm = RmsNormConfig::new([2]).eps(1e-6).build(&(store.root() / "pre_attn"))?;
+    let embeddings = Tensor::from_slice(&[3_f32, -3., 1., 1.]).reshape([1, 2, 2]);
+    let normalized = norm.forward(&embeddings)?;
+    assert_eq!(normalized.size(), [1, 2, 2]);
+    assert!((normalized.double_value(&[0, 0, 1]) + 1.).abs() < 1e-5);
+    normalized.f_mean(Kind::Float)?.f_backward()?;
+    assert!(store.variables()["pre_attn.weight"].grad().defined());
+    Ok(())
+}
+```
+
+Use `.elementwise_affine(false)` to normalize without learned parameters, or
+call `nn::functional::rms_norm(&input, &[2], Some(&scale), None)` to share a
+scale tensor across blocks. The final input dimensions and the scale's
+shape must both match `normalized_shape`. Omit the explicit epsilon to select
+the native computation dtype's machine epsilon.
 
 ## Build a model with a residual connection
 
