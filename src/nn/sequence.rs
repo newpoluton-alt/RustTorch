@@ -1,9 +1,9 @@
 //! Recurrent sequence models and masked attention for time series and tokens.
 
-use tch::{Kind, Tensor, nn::Init, no_grad};
+use tch::{Kind, Tensor, nn::Init};
 
 use super::{LayerNorm, LayerNormConfig, Linear, LinearConfig, Module, ParameterPath, functional};
-use crate::{Result, RustTorchError, device::ensure_device};
+use crate::{Result, RustTorchError, device::ensure_device, no_grad};
 
 fn invalid(field: &'static str, reason: &str) -> RustTorchError {
     RustTorchError::InvalidConfiguration {

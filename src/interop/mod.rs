@@ -90,9 +90,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use tch::{Device, Tensor, nn::VarStore, no_grad};
+use tch::{Device, Tensor, nn::VarStore};
 
-use crate::{Result, RustTorchError};
+use crate::{Result, RustTorchError, no_grad};
 
 /// Explicit source-key to destination-key mappings for a state dictionary.
 #[derive(Debug, Clone, Default)]

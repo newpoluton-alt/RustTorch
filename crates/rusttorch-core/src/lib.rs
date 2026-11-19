@@ -57,7 +57,55 @@ pub mod error;
 
 pub use device::{DeviceCapabilities, DeviceSpec, available_devices, resolve_device};
 pub use error::{Result, RustTorchError};
-pub use tch::{Device, Kind, Reduction, Tensor, no_grad, no_grad_guard};
+pub use tch::{Device, Kind, Reduction, Tensor, no_grad_guard};
+
+/// Runs a closure with reverse-mode gradient recording disabled on this thread.
+///
+/// Use this for inference on a tracked input. Nested calls preserve the
+/// surrounding mode. The previous mode is restored when the closure returns
+/// or unwinds, so later training on this thread can record gradients again.
+///
+/// ```
+/// use rusttorch_core::{Tensor, no_grad};
+///
+/// let input = Tensor::from(3.0).set_requires_grad(true);
+/// let prediction = no_grad(|| input.f_square())?;
+/// assert_eq!(prediction.double_value(&[]), 9.0);
+/// assert!(!prediction.requires_grad());
+/// assert!(input.f_square()?.requires_grad());
+/// # Ok::<(), rusttorch_core::RustTorchError>(())
+/// ```
+pub fn no_grad<T, F: FnOnce() -> T>(f: F) -> T {
+    let _guard = no_grad_guard();
+    f()
+}
+
+/// Enables reverse-mode recording for a calculation on this thread.
+///
+/// Use this inside [`no_grad`] to compute an input sensitivity while the rest
+/// of an evaluation loop runs without a gradient graph. Inputs whose gradients
+/// you need must already require gradients. On return or unwind, the calling
+/// thread resumes its previous recording mode.
+///
+/// ```
+/// use rusttorch_core::{Result, Tensor, no_grad, with_grad};
+///
+/// let input = Tensor::from(3.0).set_requires_grad(true);
+/// no_grad(|| -> Result<()> {
+///     let score = with_grad(|| input.f_square())?;
+///     score.f_backward()?;
+///     assert_eq!(input.grad().double_value(&[]), 6.0);
+///     assert!(!input.f_square()?.requires_grad());
+///     Ok(())
+/// })?;
+/// # Ok::<(), rusttorch_core::RustTorchError>(())
+/// ```
+pub fn with_grad<T, F: FnOnce() -> T>(f: F) -> T {
+    // tch::with_grad restores its mode only on normal return. This guard
+    // remembers the caller's mode and restores it on either return path.
+    let _restore = no_grad_guard();
+    tch::with_grad(f)
+}
 
 /// Seeds LibTorch's shared random generator before drawing tensors.
 ///

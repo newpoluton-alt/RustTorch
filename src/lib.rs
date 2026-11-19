@@ -188,7 +188,9 @@ pub use rusttorch_vision as vision;
 
 pub use device::{DeviceCapabilities, DeviceSpec, available_devices, resolve_device};
 pub use error::{Result, RustTorchError};
-pub use rusttorch_core::{Device, Kind, Reduction, Tensor, manual_seed, no_grad, no_grad_guard};
+pub use rusttorch_core::{
+    Device, Kind, Reduction, Tensor, manual_seed, no_grad, no_grad_guard, with_grad,
+};
 /// Native indexing syntax for tensor slices, such as `tensor.i((.., 0))`.
 pub use tch::IndexOp;
 

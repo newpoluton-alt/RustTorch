@@ -133,6 +133,18 @@ fn functional_derivatives_match_pinned_python() -> Result<()> {
         close(&actual, &expected);
     };
     let x = Tensor::from_slice(&[0.2_f64, -0.7, 1.1]).set_requires_grad(true);
+    rusttorch::no_grad(|| -> Result<()> {
+        let score = rusttorch::with_grad(|| x.f_square()?.f_sum(Kind::Double))?;
+        compare(
+            "nested_grad",
+            autograd::grad(&score, &[&x], GradOptions::default())?.remove(0),
+        );
+        assert_eq!(
+            Some(x.f_square()?.requires_grad()),
+            reference["after_enable_grad"].as_bool(),
+        );
+        Ok(())
+    })?;
     let function = |x: &Tensor| -> Result<Tensor> {
         Ok(Tensor::f_stack(
             &[
