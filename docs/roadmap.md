@@ -103,7 +103,7 @@ Rust recipes and exact boundaries.
 
 | Plan | Status and next action |
 |---|---|
-| [Full PyTorch functionality program](superpowers/plans/2026-09-19-full-pytorch-parity.md) | [Issue #27](https://github.com/newpoluton-alt/RustTorch/issues/27) tracks the [reproduced shipping baseline](api-census.md#reproduced-shipping-baseline), binding and behavior evidence, and qualification of the proposed 2.14 target |
+| [Full PyTorch functionality program](superpowers/plans/2026-09-19-full-pytorch-parity.md) | [Issue #27](https://github.com/newpoluton-alt/RustTorch/issues/27) tracks the [reproduced shipping baseline](api-census.md#reproduced-shipping-baseline), [binding and behavior evidence](api-census.md#find-a-binding-and-run-its-behavior-cases), [native runtime probes](native-runtime-capabilities.md), and the [2.14 migration decision](pytorch-2.14-migration.md) |
 | [Workspace foundation](superpowers/plans/2026-08-31-data-workspace-foundation.md) | Core/data packages and facade paths exist; preserve their source compatibility |
 | [Complete DataLoader](superpowers/plans/2026-08-31-complete-data-loader.md) | Runtime tasks 1–13 have implementations and focused tests; task 14 has examples, repeated benchmarks, docs and CI lanes. Hardware-conditional evidence and documented unsupported checkpoint combinations remain scoped |
 | [Core models and documentation](superpowers/plans/2026-09-12-core-models-and-documentation.md) | Initial model and documentation foundation implemented |
