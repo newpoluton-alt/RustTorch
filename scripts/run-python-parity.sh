@@ -25,3 +25,4 @@ cargo test --locked --test python_parity --test nn_spatial --test nn_sequence \
     --test training_losses --test amp --test optim_state --test tensor_workflows \
     --test autograd --test distributions --test distributed --test deployment \
     --test framework_tools -- --ignored --nocapture
+python "$RUSTTORCH_ROOT/scripts/pytorch_behavior.py" --run

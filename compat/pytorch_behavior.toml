@@ -1,0 +1,35 @@
+format_version = 1
+pytorch_commit = "cf30153c4c131c8164ee7798e5022d810682e2cb"
+observations = ["compat/results/index-select-macos-arm64.json"]
+
+[[case]]
+id = "index-select.repeated-rows.backward"
+inventory_id = "python:torch.index_select"
+ledger = "core.tensor.indexing"
+profile = "native"
+dtype = "float32"
+layout = "strided"
+options = "Select rows [2, 0, 2] from a contiguous 3 by 2 leaf with int64 indices, then sum the squared outputs and backpropagate."
+expected = "The output contains the selected rows in order. The gradient accumulates both selections of row 2; row 1 receives zero."
+observe = { metadata = ["shape", "stride", "gradient_shape", "gradient_stride"], values = ["selected", "gradient"] }
+tolerance = { rtol = 0.0, atol = 0.0 }
+rust_test = "tests/behavior_index_select.rs::repeated_rows_backward"
+reference_test = "tests/python_reference/behavior_index_select.py::test_repeated_rows_backward"
+documentation = "docs/tensor-workflows.md"
+devices = { cpu = "pass", mps = "pass", cuda = "untested" }
+
+[[case]]
+id = "index-select.rejects-float-indices"
+inventory_id = "python:torch.index_select"
+ledger = "core.tensor.indexing"
+profile = "native"
+dtype = "float32"
+layout = "strided"
+options = "Select a row from a two-element vector with float32 indices."
+expected = "The call returns an index dtype error and leaves both input values intact."
+observe = { metadata = ["error", "shape"], values = ["input_after_error"] }
+tolerance = { rtol = 0.0, atol = 0.0 }
+rust_test = "tests/behavior_index_select.rs::rejects_float_indices"
+reference_test = "tests/python_reference/behavior_index_select.py::test_rejects_float_indices"
+documentation = "docs/tensor-workflows.md"
+devices = { cpu = "pass", mps = "pass", cuda = "untested" }
