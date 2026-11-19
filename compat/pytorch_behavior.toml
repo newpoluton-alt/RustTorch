@@ -1,6 +1,6 @@
 format_version = 1
 pytorch_commit = "cf30153c4c131c8164ee7798e5022d810682e2cb"
-observations = ["compat/results/index-select-macos-arm64.json"]
+observations = ["compat/results/index-select-macos-arm64.json", "compat/results/rms-norm-macos-arm64.json"]
 
 [[case]]
 id = "index-select.repeated-rows.backward"
@@ -51,4 +51,4 @@ rust_test = "tests/behavior_rms_norm.rs::trainable_noncontiguous_token_features"
 reference_test = "tests/python_reference/behavior_rms_norm.py::test_trainable_noncontiguous_token_features"
 implementation_sources = ["src/nn/normalization.rs", "src/nn/functional.rs"]
 documentation = "docs/training.md"
-devices = { cpu = "untested", mps = "untested", cuda = "untested" }
+devices = { cpu = "pass", mps = "pass", cuda = "untested" }
