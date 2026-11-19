@@ -1,4 +1,5 @@
 from copy import deepcopy
+import json
 from pathlib import Path
 import runpy
 import unittest
@@ -39,6 +40,14 @@ class MigrationDeltaTests(unittest.TestCase):
         self.assertEqual(result["changed"]["runtime_present"], {self.id: {"before": False, "after": True}})
         self.assertEqual(result["changed"]["documented_signature"]["python:torch.add"]["after"],
                          "(input, other, *, alpha=1)")
+
+    def test_rendered_candidate_uses_wheel_pin_and_canonical_encoding(self):
+        rendered = MIGRATION["render_wheel_census"](self.candidate)
+        self.assertEqual(rendered, json.dumps(self.candidate, indent=2, ensure_ascii=False) + "\n")
+        wrong = deepcopy(self.candidate)
+        wrong["pytorch_version"] = "2.13.0"
+        with self.assertRaisesRegex(ValueError, "pytorch_version"):
+            MIGRATION["render_wheel_census"](wrong)
 
     def test_candidate_must_match_both_binary_and_exact_tagged_source(self):
         compare = MIGRATION["semantic_delta"]
