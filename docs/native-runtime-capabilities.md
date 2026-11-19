@@ -26,7 +26,7 @@ are development probes.
 | Custom backward | A C++ autograd function rounded its forward value and returned the incoming seed in backward. A throwing gradient hook propagated an exception. Removing the hook allowed a new differentiation to succeed. | Rust callback registration, panic translation, ownership across engine threads and cancellation still need a reviewed interface. |
 | MPS stream | A native stream guard ran and synchronized a real tensor reduction. It restored stream 0 after unwinding. Requesting a new stream also returned ID 0 on this build. | Switching between distinct accelerator streams needs a device and backend with independent streams. |
 | Compiled model | AOTInductor compiled an exported Float32 square function for input shape `[3]`. A standalone C++ process opened the resulting package with `AOTIModelPackageLoader` and matched eager output on `[-3, 2, 0]`. | A production loader needs an explicit trusted-code boundary and ownership of the runner for the lifetime of each call. Existing RustTorch graph imports have their own [documented scope](deployment.md). |
-| Native process group | Two native executables opened a file store and Gloo group on loopback. Both waited for sum all-reduce and read 3 from rank inputs 1 and 2. | The wheel exports the symbols but omits transitive Gloo headers. Compilation succeeded with the matching upstream Gloo checkout. Production rank-loss, abort, shutdown and platform packaging remain open. |
+| Native process group | Two native executables opened a file store and Gloo group on loopback. Both waited for sum all-reduce and read 3 from rank inputs 1 and 2. | The wheel exports the symbols but omits transitive Gloo headers. Compilation succeeded with the matching upstream Gloo checkout. A second collective failed after peer exit and a fresh pair successfully summed again. Production abort, shutdown and platform packaging remain open. |
 
 ## Reproduce the probes
 
@@ -62,9 +62,9 @@ cmake --build "$probe_build" --parallel 3
 ctest --test-dir "$probe_build" --output-on-failure
 ```
 
-The five CTest cases passed locally. One clean three-job Ninja build of the
+All six CTest cases passed on macOS arm64, including the peer-loss and recovery scenario. The two default tests also passed on Linux arm64 with GCC 12.2.0, CMake 3.25.1 and the pinned 2.13.0 CPU wheel. Windows execution awaits the hosted runner. One clean three-job Ninja build of the
 four probe executables took 4.5 seconds on this host after configuration.
-The executables totaled 1,697,456 bytes; the locally generated model occupied
+Before adding the peer-loss scenario, the executables totaled 1,697,456 bytes; the locally generated model occupied
 329,465 bytes. Cargo builds no probe code. These measurements exclude the
 installed runtime, model compilation and the external header checkout.
 
@@ -90,3 +90,19 @@ The probes introduce no production Rust dependency or FFI. The external
 PyTorch and Gloo sources and build products stay outside the repository.
 [Pinned generated bindings](https://github.com/LaurentMazare/tch-rs/tree/4227b89b72059b0651ff83a38637693574e0a2d6)
 and [Gloo source and license](https://github.com/pytorch/gloo/tree/bcd1672ee07538123ea8f4fac76832efc58fb8ef).
+
+## Production binding packets for review
+
+Each packet can be reviewed independently. The contracts below describe the
+first user-visible operation and the test that must pass before exposing it.
+
+| Packet | First contract and implementation route | Acceptance before documenting support |
+|---|---|---|
+| W2 owned CPU generator | Map `python:torch.Generator.get_state` and `set_state` onto an owned LibTorch CPU generator through a checked `tch` extension. Keep snapshots separate from the existing RustTorch `TensorRngState` in `src/reproducibility.rs`. | Advance the generator, restore it and reproduce the next two draws. Reject malformed state without advancing it. Verify state ownership after the original handle drops and serialize draws against concurrent state changes. |
+| W4 forward AD | Add native dual-level entry and exit to the existing make/unpack operations for `python:torch.autograd.forward_ad.dual_level`, `make_dual` and `unpack_dual`. Scope the level lifetime to the call in `src/autograd.rs`. | For a noncontiguous primal and tangent, compare both value and tangent with the reference. Exercise nested entry, mismatch errors, concurrent callers, unwinding and retained outputs after exit. A Rust backward callback is a separate packet requiring a reviewed panic and lifetime boundary. |
+| W10 compiled CPU packages | Provide a trusted, version-checked loader for `python:torch._inductor.aoti_load_package` in `src/deployment/`. The importer must distinguish native code packages from the existing portable PT2 interpretation. | Load the locally compiled square program in a fresh process, compare outputs on multiple inputs, check wrong dtype/shape errors, and release every handle after constructor/run failure. Qualify the loader on each platform it advertises. |
+| W11 native CPU collectives | Map `python:torch.distributed.FileStore` and the CPU sum subset of `python:torch.distributed.all_reduce` onto the proven c10d/Gloo route under `src/distributed/`. Pin the matching native header distribution and make waits bounded. | Launch two Rust processes, check the sum on both ranks, interrupt a participant and join both processes within the deadline. Recreate a group and complete another sum. Exercise explicit abort and outstanding work during teardown before promising cancellation. |
+
+The executable probes above provide reference outputs for these packets.
+Production interfaces that add FFI or change package dependencies require the
+issue and architecture review described in [CONTRIBUTING.md](../CONTRIBUTING.md).
