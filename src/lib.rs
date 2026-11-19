@@ -19,7 +19,7 @@
 //! | Model sequences or token relationships | [`nn::Lstm`], [`nn::MultiheadAttention`], [`nn::TransformerConfig`] |
 //! | Train a regressor or classifier | [`nn::functional`], [`optim::Adam`], [`optim::Sgd`] |
 //! | Batch samples or load data in workers | [`data::DataLoader`], [`data::TensorDataset`] |
-//! | Resume training or schedule updates | [`optim::OptimizerState`], [`optim::StepLr`], [`amp::GradScaler`] |
+//! | Resume training or schedule updates | [`tutorials::checkpoints`], [`optim::OptimizerState`], [`optim::StepLr`], [`amp::GradScaler`] |
 //! | Save or restore model parameters | [`nn::Sequential::save_weights`], [`interop`] |
 //! | Inspect an explicit computation graph | [`graph`] |
 //! | Train across CPU processes or shard large parameter groups | [`distributed`], [`tutorials::distributed`] |
@@ -188,7 +188,9 @@ pub use rusttorch_vision as vision;
 
 pub use device::{DeviceCapabilities, DeviceSpec, available_devices, resolve_device};
 pub use error::{Result, RustTorchError};
-pub use rusttorch_core::{Device, Kind, Reduction, Tensor, manual_seed, no_grad, no_grad_guard};
+pub use rusttorch_core::{
+    Device, Kind, Reduction, Tensor, manual_seed, no_grad, no_grad_guard, with_grad,
+};
 /// Native indexing syntax for tensor slices, such as `tensor.i((.., 0))`.
 pub use tch::IndexOp;
 
@@ -201,6 +203,8 @@ pub mod tutorials {
     /// Choose domain packages and connect their typed samples to data loaders.
     #[doc = include_str!("../docs/domain-data.md")]
     pub mod domains {}
+    #[doc = include_str!("../docs/checkpoint-compatibility.md")]
+    pub mod checkpoints {}
     #[doc = include_str!("../docs/training.md")]
     pub mod training {}
     #[doc = include_str!("../docs/sequence-models.md")]

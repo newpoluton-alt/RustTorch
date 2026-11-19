@@ -1,0 +1,309 @@
+# Binding availability for the shipping PyTorch inventory.
+# The trace joins tch src/wrappers/tensor_fallible_generated.rs to torch-sys
+# src/c_generated.rs and libtch/torch_api_generated.cpp at tch_commit.
+# Only direct dispatcher calls that agree with the exact schema in tch
+# third_party/pytorch/Declarations-v2.13.0.yaml and the runtime ATen/ops
+# headers qualify. Source availability does not certify all options or devices.
+# For example f_add and f_add_scalar use the native default alpha of 1.
+# Run scripts/trace-tch-dispatch.py to reproduce the table. The recorded trace
+# used Apple clang 21.0.0 (clang-2100.3.34.2), arm64-apple-darwin27.0.0, -O1.
+format_version = 1
+pytorch_commit = "cf30153c4c131c8164ee7798e5022d810682e2cb"
+tch_version = "0.26.0"
+tch_commit = "4227b89b72059b0651ff83a38637693574e0a2d6"
+capabilities_sha256 = "ce172b33091330efeeae88980b5373d656732bb8646575f287501cfc5f68a83a"
+trace_sha256 = "520743942c62488963c7830ee71f6d558a05c332216aaf3e8209f3431d8f2022"
+
+[unresolved.aten]
+ids_sha256 = "f68040bebb99b663214da363d6cbceececb2722979d8275cc12a05d649ab5021"
+reason = "The frozen initial audit found no unique directly compiled dispatcher call agreeing with the declaration, header schema and Rust wrapper for these IDs. Indirect calls and handwritten bindings still need review."
+
+[unresolved.python]
+ids_sha256 = "4a7919cfde8435aa1cf970a36f4178cfe09d7b3c00b0b83ce04f218ab1cfcc46"
+reason = "The Python frontend still needs an exact Rust entry point and contract audit, including default options and errors. Its family ledger row is available through pytorch_inventory_map.toml."
+
+[[binding]]
+id = "python:torch.autograd.grad_mode.enable_grad"
+route = "rust"
+rust_symbol = "rusttorch::with_grad"
+source = "crates/rusttorch-core/src/lib.rs"
+source_commit = "a43ca9588f86b8f30a57ba34376f8bf4a1b15b1c"
+evidence = "tests/autograd.rs::functional_derivatives_match_pinned_python"
+limitations = "Scopes native gradient recording to the supplied Rust closure and restores the previous mode on return or panic."
+
+[[binding]]
+id = "python:torch.enable_grad"
+route = "rust"
+rust_symbol = "rusttorch::with_grad"
+source = "crates/rusttorch-core/src/lib.rs"
+source_commit = "a43ca9588f86b8f30a57ba34376f8bf4a1b15b1c"
+evidence = "tests/autograd.rs::functional_derivatives_match_pinned_python"
+limitations = "Scopes native gradient recording to the supplied Rust closure and restores the previous mode on return or panic."
+
+[[binding]]
+id = "python:torch.nn.functional.linear"
+route = "rust"
+rust_symbol = "rusttorch::nn::functional::linear"
+source = "src/nn/functional.rs"
+source_commit = "b7954ba40a0d09cbf03af1ce678b87f2c5a81fce"
+evidence = "tests/binding_routes.rs::dense_dispatch_and_frontend_calls"
+limitations = "Rust validates compatible dense inputs and uses the RustTorch MPS affine path where documented."
+
+[[binding]]
+id = "python:torch.nn.functional.relu"
+route = "rust"
+rust_symbol = "rusttorch::nn::functional::relu"
+source = "src/nn/functional.rs"
+source_commit = "b7954ba40a0d09cbf03af1ce678b87f2c5a81fce"
+evidence = "tests/binding_routes.rs::dense_dispatch_and_frontend_calls"
+limitations = "The Rust frontend exposes out-of-place activation."
+
+[[capability]]
+family = "dtype"
+ledger = "core.tensor"
+source = "torch/csrc/utils/tensor_dtypes.cpp"
+route = "existing_tch"
+limitations = "The Rust type can represent the dtype. Kernel, device and conversion coverage are separate obligations."
+values = [
+    "bfloat16",
+    "bool",
+    "complex128",
+    "complex32",
+    "complex64",
+    "float16",
+    "float32",
+    "float64",
+    "float8_e4m3fn",
+    "float8_e4m3fnuz",
+    "float8_e5m2",
+    "float8_e5m2fnuz",
+    "int16",
+    "int32",
+    "int64",
+    "int8",
+    "qint32",
+    "qint8",
+    "quint8",
+    "uint8",
+]
+binding_source = "src/wrappers/kind.rs"
+evidence = "tests/binding_routes.rs::runtime_value_encodings"
+[capability.symbols]
+bfloat16 = "tch::Kind::BFloat16"
+bool = "tch::Kind::Bool"
+complex128 = "tch::Kind::ComplexDouble"
+complex32 = "tch::Kind::ComplexHalf"
+complex64 = "tch::Kind::ComplexFloat"
+float16 = "tch::Kind::Half"
+float32 = "tch::Kind::Float"
+float64 = "tch::Kind::Double"
+float8_e4m3fn = "tch::Kind::Float8e4m3fn"
+float8_e4m3fnuz = "tch::Kind::Float8e4m3fnuz"
+float8_e5m2 = "tch::Kind::Float8e5m2"
+float8_e5m2fnuz = "tch::Kind::Float8e5m2fnuz"
+int16 = "tch::Kind::Int16"
+int32 = "tch::Kind::Int"
+int64 = "tch::Kind::Int64"
+int8 = "tch::Kind::Int8"
+qint32 = "tch::Kind::QInt32"
+qint8 = "tch::Kind::QInt8"
+quint8 = "tch::Kind::QUInt8"
+uint8 = "tch::Kind::Uint8"
+
+[[capability]]
+family = "dtype"
+ledger = "core.tensor"
+source = "torch/csrc/utils/tensor_dtypes.cpp"
+route = "unresolved"
+limitations = "The pinned tch Kind enum has no variant for these canonical Python dtypes."
+values = [
+    "bits16",
+    "bits1x8",
+    "bits2x4",
+    "bits4x2",
+    "bits8",
+    "float4_e2m1fn_x2",
+    "float8_e8m0fnu",
+    "int1",
+    "int2",
+    "int3",
+    "int4",
+    "int5",
+    "int6",
+    "int7",
+    "quint2x4",
+    "quint4x2",
+    "uint1",
+    "uint16",
+    "uint2",
+    "uint3",
+    "uint32",
+    "uint4",
+    "uint5",
+    "uint6",
+    "uint64",
+    "uint7",
+]
+
+[[capability]]
+family = "layout"
+ledger = "core.tensor"
+source = "torch/csrc/utils/tensor_layouts.cpp"
+route = "existing_tch"
+limitations = "Layout value encoding only. Native operator layout support requires independent evidence."
+values = [
+    "_mkldnn",
+    "sparse_bsc",
+    "sparse_bsr",
+    "sparse_coo",
+    "sparse_csc",
+    "sparse_csr",
+    "strided",
+]
+binding_source = "src/wrappers/layout.rs"
+evidence = "tests/binding_routes.rs::runtime_value_encodings"
+[capability.symbols]
+_mkldnn = "tch::Layout::Mkldnn"
+sparse_bsc = "tch::Layout::SparseBsc"
+sparse_bsr = "tch::Layout::SparseBsr"
+sparse_coo = "tch::Layout::Sparse"
+sparse_csc = "tch::Layout::SparseCsc"
+sparse_csr = "tch::Layout::SparseCsr"
+strided = "tch::Layout::Strided"
+
+[[capability]]
+family = "layout"
+ledger = "core.tensor"
+source = "torch/csrc/utils/tensor_layouts.cpp"
+route = "unresolved"
+limitations = "The pinned tch Layout enum has no jagged variant."
+values = [
+    "jagged",
+]
+
+[[capability]]
+family = "device"
+ledger = "core.device"
+source = "torch/headeronly/core/DeviceType.h"
+route = "existing_tch"
+limitations = "Representation only. Device availability, allocation and kernel execution require runtime tests."
+values = [
+    "cpu",
+    "cuda",
+    "mps",
+    "vulkan",
+]
+binding_source = "src/wrappers/device.rs"
+evidence = "tests/binding_routes.rs::runtime_value_encodings"
+[capability.symbols]
+cpu = "tch::Device::Cpu"
+cuda = "tch::Device::Cuda"
+mps = "tch::Device::Mps"
+vulkan = "tch::Device::Vulkan"
+
+[[capability]]
+family = "device"
+ledger = "core.device"
+source = "torch/headeronly/core/DeviceType.h"
+route = "unresolved"
+limitations = "These native enum values have no corresponding pinned tch Device variant. Some are reserved device types."
+values = [
+    "fpga",
+    "hip",
+    "hpu",
+    "ideep",
+    "ipu",
+    "lazy",
+    "maia",
+    "meta",
+    "metal",
+    "mkldnn",
+    "mtia",
+    "opencl",
+    "opengl",
+    "privateuse1",
+    "ve",
+    "xla",
+    "xpu",
+]
+
+[[capability]]
+family = "memory_format"
+ledger = "core.tensor.views"
+source = "torch/csrc/utils/tensor_memoryformats.cpp"
+route = "unresolved"
+limitations = "An exact Rust format selector and stride semantics still require audit."
+values = [
+    "channels_last",
+    "channels_last_3d",
+    "contiguous_format",
+    "preserve_format",
+]
+
+[[capability]]
+family = "generator"
+ledger = "core.random"
+source = "aten/src/ATen/core/Generator.h"
+route = "unresolved"
+limitations = "Generator handles, state restoration and per-device ownership still require audit."
+values = [
+    "default",
+    "per_device",
+    "get_state",
+    "set_state",
+    "clone_state",
+]
+
+[[capability]]
+family = "guard"
+ledger = "core.device"
+source = "c10/core/DeviceGuard.h"
+route = "unresolved"
+limitations = "Scoped restoration, thread isolation and errors still require a native binding audit."
+values = [
+    "current_device",
+    "optional_device",
+]
+
+[[capability]]
+family = "guard"
+ledger = "core.device"
+source = "c10/core/StreamGuard.h"
+route = "unresolved"
+limitations = "Stream and device restoration require native ownership and runtime tests."
+values = [
+    "current_stream",
+    "optional_stream",
+    "multi_stream",
+]
+
+[[capability]]
+family = "storage"
+ledger = "core.tensor.views"
+source = "c10/core/Storage.h"
+route = "unresolved"
+limitations = "The route for each storage lifetime and ownership contract still requires review."
+values = [
+    "allocation",
+    "aliasing",
+    "capacity_bytes",
+    "data_pointer",
+    "resize",
+    "device",
+]
+
+[[capability]]
+family = "platform"
+ledger = "census.python.runtime"
+source = "torch/utils/collect_env.py"
+route = "unresolved"
+limitations = "These runtime profiles track testing obligations. Binding availability per platform requires direct evidence."
+values = [
+    "linux-cpu",
+    "macos-cpu",
+    "windows-cpu",
+    "cuda",
+    "rocm",
+    "mps",
+    "xpu",
+]

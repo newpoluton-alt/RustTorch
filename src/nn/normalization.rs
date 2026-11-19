@@ -395,7 +395,7 @@ macro_rules! norm_accessors {
             /// Resets tracked means/counters to zero and variances to one.
             /// Affine parameters are preserved; useful when recalibrating a model.
             pub fn reset_running_stats(&self) -> Result<()> {
-                tch::no_grad(|| {
+                crate::no_grad(|| {
                     if let Some(mean) = self.running_mean() {
                         let _ = mean.shallow_clone().f_zero_()?;
                     }

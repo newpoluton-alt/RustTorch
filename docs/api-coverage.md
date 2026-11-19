@@ -307,14 +307,14 @@ Each entry is independently scoped. Supported applies only to its written scope;
 
 ### `autograd.reverse_mode`
 
-- **PyTorch:** `torch.Tensor.backward`, `torch.no_grad`, `torch.Tensor.detach`, `torch.autograd.grad_mode.no_grad`
-- **RustTorch:** `rusttorch_core::Tensor`, `rusttorch_core::no_grad`, `rusttorch_core::no_grad_guard`, `rusttorch::Tensor`, `rusttorch::no_grad`, `rusttorch::no_grad_guard`
+- **PyTorch:** `torch.Tensor.backward`, `torch.no_grad`, `torch.Tensor.detach`, `torch.autograd.grad_mode.no_grad`, `torch.enable_grad`, `torch.autograd.grad_mode.enable_grad`
+- **RustTorch:** `rusttorch_core::Tensor`, `rusttorch_core::no_grad`, `rusttorch_core::no_grad_guard`, `rusttorch_core::with_grad`, `rusttorch::Tensor`, `rusttorch::no_grad`, `rusttorch::no_grad_guard`, `rusttorch::with_grad`
 - **Implementation:** Delegated to LibTorch
-- **Pinned inventory:** 4 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
-- **Scope:** Reverse-mode gradients through the tested eager and graph operations, plus tested no-grad and detach behavior.
+- **Pinned inventory:** 6 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Scope:** Reverse-mode gradients through the tested eager and graph operations, detach, and thread-local no\_grad/with\_grad closures that restore the previous recording mode on return or unwind.
 - **Pinned source:** [`torch/autograd/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/autograd/__init__.py)
-- **Evidence:** [`tests/eager.rs::gradients_accumulate_across_eager_residual_branches`](../tests/eager.rs), [`tests/eager.rs::no_grad_and_detach_stop_gradient_recording`](../tests/eager.rs)
-- **Notes:** rusttorch-core owns these direct reexports and the rusttorch facade preserves them; LibTorch owns autograd, while hooks, custom Function, forward AD, and the rest of the Python surface remain outside this claim.
+- **Evidence:** [`tests/eager.rs::gradients_accumulate_across_eager_residual_branches`](../tests/eager.rs), [`tests/eager.rs::no_grad_and_detach_stop_gradient_recording`](../tests/eager.rs), [`crates/rusttorch-core/tests/public_api.rs::no_grad_restores_the_calling_threads_mode_after_unwinding`](../crates/rusttorch-core/tests/public_api.rs), [`crates/rusttorch-core/tests/public_api.rs::with_grad_records_inside_inference_and_restores_after_error_or_panic`](../crates/rusttorch-core/tests/public_api.rs), [`tests/autograd.rs::functional_derivatives_match_pinned_python`](../tests/autograd.rs)
+- **Notes:** rusttorch-core scopes closures with the LibTorch-backed guard. The rusttorch facade reexports them. Upstream grad modes are defined in torch/autograd/grad\_mode.py. Hooks, custom Function and native forward AD remain outside this claim.
 
 ### `codec`
 
@@ -1203,7 +1203,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch.autograd`
 - **RustTorch:** —
 - **Implementation:** Not implemented
-- **Pinned inventory:** 231 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Pinned inventory:** 230 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Remaining documented torch.autograd inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
 - **Pinned source:** [`torch/autograd/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/autograd/__init__.py)
 - **Evidence:** —
@@ -1368,7 +1368,7 @@ Each entry is independently scoped. Supported applies only to its written scope;
 - **PyTorch:** `torch`
 - **RustTorch:** —
 - **Implementation:** Not implemented
-- **Pinned inventory:** 1239 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
+- **Pinned inventory:** 1238 identities ([exact mapping](../compat/pytorch_inventory_map.toml)); disposition only, not a support claim.
 - **Scope:** Remaining documented torch inventory identities mapped to this row have no individually evidenced RustTorch compatibility claim. Existing implemented subsets remain in their separate scoped ledger rows.
 - **Pinned source:** [`torch/__init__.py`](https://github.com/pytorch/pytorch/blob/cf30153/torch/__init__.py)
 - **Evidence:** —

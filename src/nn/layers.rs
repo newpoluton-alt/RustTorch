@@ -508,7 +508,7 @@ impl EmbeddingConfig {
         // Adapted behavior: torch.nn.modules.sparse.Embedding.reset_parameters,
         // PyTorch v2.13.0 (cf30153), torch/nn/modules/sparse.py; see THIRD_PARTY_NOTICES.md.
         if let Some(index) = self.padding_idx {
-            let _ = tch::no_grad(|| weight.f_get(index)?.f_zero_())?;
+            let _ = crate::no_grad(|| weight.f_get(index)?.f_zero_())?;
         }
         Ok(Embedding {
             weight,

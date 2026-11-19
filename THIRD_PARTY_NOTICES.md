@@ -154,6 +154,17 @@ from the pinned documentation's resolved Sphinx domain and canonical schemas
 from pinned torchgen. Its manifest records the exact source/runtime identity.
 No upstream documentation prose, native libraries or source checkout is vendored.
 
+The dispatcher table in `compat/pytorch_tch_dispatch.tsv` records symbol names
+from the published `tch` and `torch-sys` 0.26.0 crates (MIT OR Apache-2.0),
+Git commit `4227b89b72059b0651ff83a38637693574e0a2d6`. The trace generator
+follows fallible Rust methods and FFI declarations into the compiled C++ bridge.
+It matches dispatcher calls against PyTorch 2.13.0 ATen headers, canonical
+schemas and the declaration metadata bundled with `tch`. Each row identifies
+one callable Rust method for a matched overload. The two commits and generated
+table digest are recorded in `compat/pytorch_bindings.toml`.
+[Binding sources](https://github.com/LaurentMazare/tch-rs/tree/4227b89b72059b0651ff83a38637693574e0a2d6),
+[PyTorch schema source](https://github.com/pytorch/pytorch/blob/cf30153c4c131c8164ee7798e5022d810682e2cb/aten/src/ATen/native/native_functions.yaml).
+
 ## Runtime acquisition and external components
 
 With RustTorch's default download feature, `torch-sys` downloads official

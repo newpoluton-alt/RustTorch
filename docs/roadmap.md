@@ -103,6 +103,7 @@ Rust recipes and exact boundaries.
 
 | Plan | Status and next action |
 |---|---|
+| [Full PyTorch functionality program](superpowers/plans/2026-09-19-full-pytorch-parity.md) | [Issue #27](https://github.com/newpoluton-alt/RustTorch/issues/27) tracks the [reproduced shipping baseline](api-census.md#reproduced-shipping-baseline), binding and behavior evidence, and qualification of the proposed 2.14 target |
 | [Workspace foundation](superpowers/plans/2026-08-31-data-workspace-foundation.md) | Core/data packages and facade paths exist; preserve their source compatibility |
 | [Complete DataLoader](superpowers/plans/2026-08-31-complete-data-loader.md) | Runtime tasks 1–13 have implementations and focused tests; task 14 has examples, repeated benchmarks, docs and CI lanes. Hardware-conditional evidence and documented unsupported checkpoint combinations remain scoped |
 | [Core models and documentation](superpowers/plans/2026-09-12-core-models-and-documentation.md) | Initial model and documentation foundation implemented |
@@ -112,7 +113,7 @@ Rust recipes and exact boundaries.
 | [Remaining four workstreams](superpowers/plans/2026-09-13-remaining-roadmap.md) | Distributed, deployment, five domain packages and framework tools released in 0.4.0 with passing Linux/macOS/Windows CI and live GitHub/docs.rs guides |
 | [Shared data ecosystem](superpowers/specs/2026-08-31-unified-data-ecosystem-design.md) | Five optional domain packages use shared loader/collation/resource contracts; native FFmpeg and portable feature tests cover the documented pipeline profiles |
 | [Graph compilation](graph-compilation-roadmap.md) | Evaluation graph lowering, guarded portable execution and actual TorchScript compilation exist; general program capture and AOTInductor remain extensions |
-| [PT2 interoperability](torch-export-roadmap.md) | Pinned archive/schema validation, bounded state and operator mapping, control flow and forward/gradient round trips delivered for the documented subset |
+| [PT2 interoperability](torch-export-roadmap.md) | Pinned archive/schema validation, bounded state and operator mapping, and forward/gradient round trips for the documented branch-free subset |
 
 Older plan checkboxes describe the original implementation procedure. This
 index and the executable compatibility ledger distinguish shipped source from

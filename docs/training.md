@@ -317,7 +317,10 @@ CUDA hardware; CPU scaler tests do not establish CUDA numerical coverage.
 
 ## Save a training run and resume the next update
 
-Save a completed update boundary: weights and buffers with SafeTensors,
+For a single atomic file, use the [checkpoint recipe](https://github.com/newpoluton-alt/RustTorch/blob/main/docs/checkpoint-compatibility.md).
+It saves weights, optimizer state and typed progress together.
+
+For a directory of separately managed files, save weights and buffers with SafeTensors,
 `optimizer.state_dict()` for named moments, configuration and parameter groups,
 the scheduler itself with serde, and `scaler.state_dict()` for scale and growth
 tracking. Deserialize `OptimizerState` and call `load_state_dict` on an optimizer
