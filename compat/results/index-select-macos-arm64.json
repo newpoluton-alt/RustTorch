@@ -266,15 +266,15 @@
     "hip": null,
     "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
     "python": "3.14.7",
-    "revision": "acd76c03eb9d8ca58f7258b20848dc27b76a2a69",
+    "revision": "9ea22998a6b4f198b04dbe95549b35b8b19c3dc4",
     "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
     "tch": "0.26.0",
     "torch": "2.13.0",
     "torch_commit": "cf30153c4c131c8164ee7798e5022d810682e2cb"
   },
   "fingerprints": {
-    "index-select.rejects-float-indices": "30d776b14d4be3677b8e6d8f22ed11db75c830636f5ea360d0f5e9d016319787",
-    "index-select.repeated-rows.backward": "9699069dd4b6162acf86d43553aa08dd187d8e5446c29ea1bc742e7c719cc36a"
+    "index-select.rejects-float-indices": "fc90f11e000d05945aa8068a29c252fe87d0f48c0cb44e1ce880de33fc0b7af0",
+    "index-select.repeated-rows.backward": "ba3881868b2e1ae67bcd8c572283b306251ac120c3226e8f42f62be205de6833"
   },
   "format_version": 1
 }
