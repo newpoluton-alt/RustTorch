@@ -330,14 +330,14 @@
     "hip": null,
     "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
     "python": "3.14.7",
-    "revision": "601296e240bc55c1aedb51c8a15224969e14215c",
+    "revision": "09886d4676e3847da83398560ddda499491667c8",
     "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
     "tch": "0.26.0",
     "torch": "2.13.0",
     "torch_commit": "cf30153c4c131c8164ee7798e5022d810682e2cb"
   },
   "fingerprints": {
-    "rms-norm.noncontiguous-tokens.backward": "b87c75ad8cb7f694fdf29695d9c527b1f7a7a56569bc0ecfbe208c2a463ae104"
+    "rms-norm.noncontiguous-tokens.backward": "5551411543d828e774288741cb298c4180b931cbe8010a819bb3760cc516f031"
   },
   "format_version": 1
 }
